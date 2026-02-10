@@ -1,0 +1,15 @@
+Point = struct { x: int, y: int }
+
+distance = (ref p1: Point, ref p2: Point): float64 => {
+    dx := p1.x - p2.x
+    dy := p1.y - p2.y
+    return (dx * dx + dy * dy) as float64
+}
+
+main = (): int => {
+    origin := Point{x = 0, y = 0}
+    pt := Point{x = 3, y = 4}
+    d := distance(origin, pt)
+    printf("Distance: %f", d)
+    0
+}

@@ -1,0 +1,11 @@
+Point = struct { x: int, y: int }
+
+foo = (pt: Point, ): int => {
+  3
+}
+
+main = (): int => {
+    origin := Point{x = 0, y = 0}
+    pt := Point{x = 3, y = 4}
+    0
+}
