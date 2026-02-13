@@ -51,10 +51,6 @@ param:
 field_decl:
   | name = IDENT COLON t = typ { (name, t) }
 
-else_clause:
-  | %prec IF { None }
-  | ELSE e = expr { Some e }
-
 expr:
   | e = atomic_expr { e }
   | e1 = expr PLUS e2 = expr { EBinOp (Add, e1, e2) }
@@ -62,8 +58,6 @@ expr:
   | e1 = expr STAR e2 = expr { EBinOp (Mul, e1, e2) }
   | e1 = expr EQEQ e2 = expr { EBinOp (Eq, e1, e2) }
   | e1 = expr NEQ e2 = expr { EBinOp (Neq, e1, e2) }
-  | IF cond = expr THEN t = expr else_part = else_clause
-    { EIf (cond, t, else_part) }
   | LBRACE stmts = stmt_list expr_opt = expr_opt RBRACE
     { EBlock (stmts, expr_opt) }
   | struct_init_expr { $1 }
@@ -89,6 +83,8 @@ stmt:
   | MUT IDENT COLONEQ expr { SLet (true, $2, $4) }
   | IDENT EQ expr { SAssign ($1, $3) }  (* 赋值语句：x = 值 *)
   | RETURN expr { SReturn $2 }
+  | IF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE { SExpr (EIf (cond, EBlock (t, expr_opt), None)) }
+  | IF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE ELSE LBRACE e = stmt_list expr_opt_else = expr_opt RBRACE { SExpr (EIf (cond, EBlock (t, expr_opt), Some (EBlock (e, expr_opt_else)))) }
   | expr { SExpr $1 }
 
 struct_init_expr:

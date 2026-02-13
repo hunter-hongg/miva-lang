@@ -53,14 +53,8 @@ and cxx_expr_of_expr indent_level ctx expr =
   | EChar c -> "'" ^ Char.escaped c ^ "'"
   | EString s -> "\"" ^ String.escaped s ^ "\""
   | EVar name -> name
-  | EMove name -> name
-  | EClone name -> 
-      let typ = (Env.find name ctx.vars).typ in
-      (match typ with
-       | TString -> "std::string(" ^ name ^ ")"
-       | TArray _ -> cxx_type_of_typ typ ^ "(" ^ name ^ ")"
-       | TStruct (_, _) -> "std::move(" ^ name ^ ")"
-       | _ -> name)
+  | EMove name -> "std::move(" ^ name ^ ")"
+  | EClone name -> name
   | EStructLit (name, fields) -> 
       if List.length fields = 0 then
         name ^ "{}"
@@ -113,12 +107,6 @@ and cxx_expr_of_expr indent_level ctx expr =
           | SLet (is_mutable, name, expr) ->
               (* 处理变量初始化表达式 *)
               let expr_str = cxx_expr_of_expr (indent_level + 1) local_ctx expr in
-              
-              (* 从语义分析环境中获取变量类型信息 *)
-              let var_info = Env.find name ctx.vars in
-              
-              (* 为代码生成环境添加变量信息 *)
-              local_ctx.vars <- Env.add name var_info local_ctx.vars;
               
               (* 生成变量声明的C++代码 *)
               let mut_str = if is_mutable then "auto " else "const auto " in

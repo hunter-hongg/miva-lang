@@ -1,0 +1,16 @@
+dang = (ref x: int): int => {
+  y := move x
+  0
+}
+
+main = (): int => {
+  a := 1
+  b := clone a
+  printf("%d, %d\n", a, b)
+  if (a == b) {
+    printf("Right")
+  } else {
+    printf("Wrong")
+  }
+  0
+}
