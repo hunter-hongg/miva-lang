@@ -1,4 +1,5 @@
 # The MVP Programming Language
+**Explicit. Safe. Predictable.**
 
 ## 🚀 Introduction
 **MVP** is not just an acronym; it is a triple promise for modern system programming:
