@@ -83,12 +83,13 @@ eprintf "Codegen succeeded!\n%!";
 
   let cpp_file = !output_file ^ ".cpp" in
   let oc = open_out cpp_file in
+  let mvp_std = Sys.getenv "MVP_STD" in
   output_string oc cpp_code;
   close_out oc;
 
-  let cmd = sprintf "g++ -O2 %s -o %s 2>/dev/null" cpp_file !output_file in
+  let cmd = sprintf "g++ -O2 %s -o %s -I%s 2>/dev/null" cpp_file !output_file mvp_std in
   if Sys.command cmd <> 0 then (
-    let cmd_verbose = sprintf "g++ -O2 %s -o %s" cpp_file !output_file in
+    let cmd_verbose = sprintf "g++ -O2 %s -o %s -I%s" cpp_file !output_file mvp_std in
     eprintf "Compilation failed. Running: %s\n%!" cmd_verbose;
     let _ = Sys.command cmd_verbose in
     eprintf "C++ code saved to %s\n%!" cpp_file;

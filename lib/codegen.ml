@@ -15,15 +15,14 @@ type context = {
 let indent n = String.make (n * 2) ' '
 
 let rec cxx_type_of_typ = function
-  | TInt -> "int"
-  | TBool -> "bool"
-  | TFloat32 -> "float"
-  | TFloat64 -> "double"
-  | TChar -> "char"
-  | TString -> "std::string"
+  | TInt -> "mvp_builtin_int"
+  | TBool -> "mvp_builtin_boolean"
+  | TFloat64 -> "mvp_builtin_float"
+  | TChar -> "mvp_builtin_byte"
+  | TString -> "mvp_builtin_string"
   | TArray typ -> "std::vector<" ^ cxx_type_of_typ typ ^ ">"
   | TStruct (name, _) -> name
-  (* | _ -> failwith "Unsupported type in C++ code generation" *)
+  | _ -> failwith "The type is not supported in C++ code generation"
 
 let rec cxx_stmt_of_stmt indent_level ctx stmt = 
   let ind = indent indent_level in
@@ -134,6 +133,27 @@ let cxx_def_of_def indent_level ctx def =
       ind ^ "struct " ^ name ^ " {\n" ^ 
       String.concat "" field_strs ^ 
       ind ^ "};\n\n"
+  | DFunc ("main", params, _, body) -> 
+      let local_ctx = List.fold_left (fun ctx param -> 
+          match param with
+          | PRef (pname, ptyp) | POwn (pname, ptyp) -> 
+              { ctx with vars = Env.add pname { typ = ptyp; state = `Valid; is_mutable = false } ctx.vars }
+        ) ctx params in
+      let func_signature = "mvp_builtin_unit mvp_own_main(mvp_builtin_int argc)" in
+      let body_str = match body with
+        | EBlock (stmts, _) ->
+            let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts in
+            ind ^ func_signature ^ " {\n" ^ 
+            String.concat "" stmt_strs ^ 
+            ind ^ "}\n\n"
+        | _ -> 
+            (* 单表达式函数：直接返回表达式 *)
+            ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
+      in
+      body_str ^ "int main(int argc, char** argv)\n" ^
+      ind ^ "{\n" ^
+      ind ^ "mvp_own_main(argc);\n" ^
+      ind ^ "}\n\n"
   | DFunc (name, params, ret_typ_opt, body) -> 
       let param_strs = List.map (fun param -> 
           match param with
@@ -144,7 +164,7 @@ let cxx_def_of_def indent_level ctx def =
         ) params in
       let ret_type = match ret_typ_opt with
         | Some typ -> cxx_type_of_typ typ
-        | None -> "void" in
+        | None -> "mvp_builtin_unit" in
       let func_signature = ret_type ^ " " ^ name ^ "(" ^ String.concat ", " param_strs ^ ")" in
       
       (* Create a local context with function parameters *)
@@ -187,7 +207,13 @@ let cxx_def_of_def indent_level ctx def =
       body_str
 
 let build_ir defs = 
-  let header = "#include <iostream>\n#include <string>\n#include <vector>\n#include <cstdint>\n\nusing namespace std;\n\n" in
+  let header = "#include <iostream>\n" ^
+  "#include <string>\n" ^
+  "#include <vector>\n" ^
+  "#include <cstdint>\n" ^
+  "#include <mvp_builtin.h>\n" ^
+  "\n" ^
+  "\nusing namespace std;\n\n" in
   
   (* Create a minimal context with empty types and vars *)
   let ctx = { types = Env.empty; vars = Env.empty } in
