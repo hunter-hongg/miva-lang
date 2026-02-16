@@ -46,7 +46,7 @@ and cxx_expr_of_expr indent_level ctx expr =
   (* let ind = indent indent_level in *)
   (* let ind_inner = indent (indent_level + 1) in *)
   match expr with
-  | EInt i -> Int64.to_string i
+  | EInt i -> "static_cast<mvp_builtin_int>(" ^ Int64.to_string i ^ ")"
   | EBool b -> if b then "true" else "false"
   | EFloat f -> string_of_float f
   | EChar c -> "'" ^ Char.escaped c ^ "'"
@@ -89,7 +89,20 @@ and cxx_expr_of_expr indent_level ctx expr =
       "if (" ^ cond_str ^ ") { " ^ then_str ^ " }" ^ else_str
   | ECall (name, args) -> 
       let args_str = List.map (cxx_expr_of_expr indent_level ctx) args in
-      name ^ "(" ^ String.concat ", " args_str ^ ")"
+      let call_name = match name with
+        | "print" -> "mvp_print"
+        | "prints" -> "mvp_prints"
+        | "println" -> "mvp_println"
+        | "printlns" -> "mvp_printlns"
+        | "exit" -> "mvp_exit"
+        | "abort" -> "mvp_abort"
+        | "panic" -> "mvp_panic"
+        | "string_concat" -> "mvp_string_concat"
+        | "string_parse" -> "mvp_string_parse"
+        | "string_length" -> "mvp_string_length"
+        | _ -> name
+      in
+      call_name ^ "(" ^ String.concat ", " args_str ^ ")"
   | ECast (expr, typ) -> 
       let expr_str = cxx_expr_of_expr indent_level ctx expr in
       "static_cast<" ^ cxx_type_of_typ typ ^ ">(" ^ expr_str ^ ")"
@@ -120,6 +133,26 @@ and cxx_expr_of_expr indent_level ctx expr =
         | None -> "" in
       
       "{\n" ^ stmt_strs ^ expr_str ^ ind ^ "}"
+  | EChoose (var_expr, cases, otherwise_opt) ->
+      let var_str = cxx_expr_of_expr indent_level ctx var_expr in
+      let ind = indent indent_level in
+      (* let ind_inner = indent (indent_level + 1) in *)
+      
+      (* 生成每个when分支 *)
+      let cases_str = List.fold_left (fun acc (value_expr, body_expr) ->
+          let value_str = cxx_expr_of_expr indent_level ctx value_expr in
+          let body_str = cxx_expr_of_expr (indent_level + 1) ctx body_expr in
+          acc ^ ind ^ "if (" ^ var_str ^ " == " ^ value_str ^ ") { " ^ body_str ^ " }\n"
+        ) "" cases in
+      
+      (* 生成otherwise分支 *)
+      let otherwise_str = match otherwise_opt with
+        | Some otherwise_expr ->
+            let body_str = cxx_expr_of_expr (indent_level + 1) ctx otherwise_expr in
+            ind ^ "else { " ^ body_str ^ " }"
+        | None -> "" in
+      
+      "([&]() {\n" ^ cases_str ^ otherwise_str ^ "\n" ^ ind ^ "}())"
 
 
 let cxx_def_of_def indent_level ctx def = 
@@ -145,6 +178,7 @@ let cxx_def_of_def indent_level ctx def =
             let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts in
             ind ^ func_signature ^ " {\n" ^ 
             String.concat "" stmt_strs ^ 
+            ind_inner ^ "return mvp_builtin_void;\n" ^
             ind ^ "}\n\n"
         | _ -> 
             (* 单表达式函数：直接返回表达式 *)
@@ -153,6 +187,7 @@ let cxx_def_of_def indent_level ctx def =
       body_str ^ "int main(int argc, char** argv)\n" ^
       ind ^ "{\n" ^
       ind ^ "mvp_own_main(argc);\n" ^
+      ind ^ "return 0;\n" ^
       ind ^ "}\n\n"
   | DFunc (name, params, ret_typ_opt, body) -> 
       let param_strs = List.map (fun param -> 
@@ -175,38 +210,66 @@ let cxx_def_of_def indent_level ctx def =
         ) ctx params in
 
       (* Helper function to extract the last expression from statements for auto-return *)
-      let extract_last_expr stmts =
+      (* let extract_last_expr stmts =
         match List.rev stmts with
         | SExpr expr :: _ -> Some expr
         | SReturn expr :: _ -> Some expr
         | _ -> None
-      in
+      in *)
       
       let body_str = match body with
         | EBlock (stmts, expr_opt) ->
             (* 根据MVP规范：函数自动返回最后一个表达式 *)
-            let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts in
-            let expr_str = match expr_opt with
-              | Some expr -> 
-                  (* 如果显式指定了返回表达式，使用它 *)
-                  ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
-              | None ->
-                  (* 如果没有显式指定，自动返回最后一个表达式 *)
-                  match extract_last_expr stmts with
-                  | Some last_expr ->
-                      ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx last_expr ^ ";\n"
-                  | None -> ""
+            let stmt_strs, expr_str = 
+              match ret_type with
+              | "mvp_builtin_unit" ->
+                  (* unit类型：所有语句都执行，最后插入return mvp_builtin_void; *)
+                  let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts in
+                  let expr_str = match expr_opt with
+                    | Some expr -> 
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                    | None ->
+                        ind_inner ^ "return mvp_builtin_void;\n"
+                  in
+                  (stmt_strs, expr_str)
+              | _ ->
+                  (* 非unit类型：最后一个表达式语句只作为返回值，不作为普通语句 *)
+                  let stmt_strs, last_expr = 
+                    match List.rev stmts with
+                    | SExpr expr :: rest ->
+                        (* 最后一个语句是表达式，不将其作为普通语句生成，只作为返回值 *)
+                        let rev_stmts = List.rev rest in
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) rev_stmts, Some expr)
+                    | _ ->
+                        (* 最后一个语句不是表达式，或者没有语句 *)
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts, None)
+                  in
+                  let expr_str = match expr_opt with
+                    | Some expr -> 
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                    | None ->
+                        match last_expr with
+                        | Some expr ->
+                            ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                        | None -> ""
+                  in
+                  (stmt_strs, expr_str)
             in
             ind ^ func_signature ^ " {\n" ^ 
             String.concat "" stmt_strs ^ expr_str ^ 
             ind ^ "}\n\n"
         | _ -> 
             (* 单表达式函数：直接返回表达式 *)
-            ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
+            match ret_type with
+            | "mvp_builtin_unit" ->
+                (* 返回类型是unit，直接返回mvp_builtin_void *)
+                ind ^ func_signature ^ " { return mvp_builtin_void; }\n\n"
+            | _ ->
+                ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
       in
       body_str
 
-let build_ir defs = 
+let build_ir _fpath defs = 
   let header = "#include <iostream>\n" ^
   "#include <string>\n" ^
   "#include <vector>\n" ^
@@ -227,12 +290,4 @@ let build_ir defs =
   in
   
   let program = header ^ generate ctx "" defs ^ "\n" in
-  
-  (* Write to a temporary file for testing *)
-  let temp_file = "temp.cpp" in
-  let oc = open_out temp_file in
-  output_string oc program;
-  close_out oc;
- (* Create a minimal context with empty types and vars *)
- 
   program

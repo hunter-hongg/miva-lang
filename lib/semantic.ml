@@ -53,9 +53,56 @@ let rec check_expr ctx e =
   | EBinOp (_, e1, e2) -> check_expr ctx e1; check_expr ctx e2
   | EIf (cond, t, eopt) ->
       check_expr ctx cond;
+      
+      (* 悲观合并：保存分支前的变量状态 *)
+      let vars_before = ctx.vars in
+      
+      (* 检查then分支 *)
       check_expr ctx t;
-      Option.iter (check_expr ctx) eopt
+      let vars_after_then = ctx.vars in
+      
+      (* 恢复变量状态，检查else分支（如果有） *)
+      ctx.vars <- vars_before;
+      let vars_after_else = match eopt with
+        | Some e -> 
+            check_expr ctx e;
+            ctx.vars
+        | None -> vars_before
+      in
+      
+      (* 悲观合并：如果变量在任一分支中被移动，则合并后状态为移动 *)
+      let merged_vars = Env.merge (fun _ var_info_opt var_info_opt' ->
+          match var_info_opt, var_info_opt' with
+          | Some info1, Some info2 -> 
+              (* 如果任一分支中变量状态为移动，则合并后为移动 *)
+              if info1.state = `Moved || info2.state = `Moved then
+                Some {info1 with state = `Moved}
+              else
+                Some info1
+          | Some info, None | None, Some info ->
+              (* 变量只在一个分支中存在，保持其状态 *)
+              Some info
+          | None, None -> None
+        ) vars_after_then vars_after_else in
+      
+      ctx.vars <- merged_vars
   | ECast (e, _) -> check_expr ctx e
+  | EChoose (var_expr, when_branches, otherwise_opt) ->
+      (* 检查choose表达式：otherwise分支不可省略 *)
+      if otherwise_opt = None then
+        err "choose expression must have an otherwise branch";
+      
+      (* 检查变量表达式 *)
+      check_expr ctx var_expr;
+      
+      (* 检查所有when分支 *)
+      List.iter (fun (when_val, when_body) ->
+          check_expr ctx when_val;
+          check_expr ctx when_body
+        ) when_branches;
+      
+      (* 检查otherwise分支 *)
+      Option.iter (check_expr ctx) otherwise_opt
   | EBlock (stmts, expr_opt) ->
       (* 保存当前变量环境，用于块结束后恢复 *)
       let saved_vars = ctx.vars in
@@ -84,8 +131,27 @@ let rec check_expr ctx e =
         ) stmts;
       (* 检查块中的最后表达式 *)
       Option.iter (check_expr ctx) expr_opt;
-      (* 恢复保存的变量环境 *)
-      ctx.vars <- saved_vars
+      
+      (* 悲观合并：传播对外层变量的移动操作 *)
+      (* 只保留外层作用域中存在的变量，并更新它们的状态 *)
+      let propagated_vars = Env.merge (fun _name saved_info_opt current_info_opt ->
+          match saved_info_opt, current_info_opt with
+          | Some saved_info, Some current_info ->
+              (* 变量在块内外都存在，如果块内移动了变量，则传播移动状态 *)
+              if current_info.state = `Moved then
+                Some {saved_info with state = `Moved}
+              else
+                Some saved_info
+          | Some saved_info, None ->
+              (* 变量只在块外存在，保持原状态 *)
+              Some saved_info
+          | None, Some _ ->
+              (* 变量只在块内存在，不传播到外层 *)
+              None
+          | None, None -> None
+        ) saved_vars ctx.vars in
+      
+      ctx.vars <- propagated_vars
   | _ -> ()
 
 let check_program defs =

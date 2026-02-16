@@ -14,6 +14,7 @@
 %token INT BOOL FLOAT32 FLOAT64 CHAR STRING
 %token EOF
 %token OWN THEN COLON
+%token CHOOSE WHEN OTHERWISE
 
 %left PLUS MINUS          /* 最低优先级，左结合 */
 %left STAR                /* 中等优先级，左结合 */
@@ -61,6 +62,8 @@ expr:
   | LBRACE stmts = stmt_list expr_opt = expr_opt RBRACE
     { EBlock (stmts, expr_opt) }
   | struct_init_expr { $1 }
+  | CHOOSE LPAREN var = expr RPAREN LBRACE cases = list(when_case) otherwise = otherwise_opt RBRACE
+    { EChoose (var, cases, otherwise) }
 
 atomic_expr:
   | i = INT_LIT { EInt i }
@@ -100,6 +103,13 @@ struct_inits:
 
 struct_init:
   | name = IDENT EQ e = expr { (name, e) }
+
+when_case:
+  | WHEN LPAREN value = expr RPAREN LBRACE stmts = stmt_list expr_opt = expr_opt RBRACE { (value, EBlock (stmts, expr_opt)) }
+
+otherwise_opt:
+  | /* empty */ { None }
+  | OTHERWISE LBRACE stmts = stmt_list expr_opt = expr_opt RBRACE { Some (EBlock (stmts, expr_opt)) }
 
 binop:
   | PLUS { Add }

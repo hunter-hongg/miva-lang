@@ -1,0 +1,13 @@
+main = () => {
+  choose (2) {
+    when (1) {
+      println("1")
+    }
+    when (2) {
+      println("2")
+    }
+    otherwise {
+      println("other")
+    }
+  }
+}

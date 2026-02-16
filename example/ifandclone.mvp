@@ -3,14 +3,19 @@ dang = (ref x: int): int => {
   0
 }
 
-main = (): int => {
+main = () => {
   a := 1
   b := clone a
-  printf("%d, %d\n", a, b)
+  c := 2
+  printlns(a, b)
   if (a == b) {
-    printf("Right")
+    println("Right")
+    if (c == a) {
+      d := move c
+    }
   } else {
-    printf("Wrong")
+    println("Wrong")
   }
+  printlns(c)
   0
 }

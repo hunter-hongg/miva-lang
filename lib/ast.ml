@@ -21,6 +21,7 @@ type expr =
   | EFieldAccess of expr * string
   | EBinOp of binop * expr * expr
   | EIf of expr * expr * expr option
+  | EChoose of expr * (expr * expr) list * expr option  (* choose (var) { when (val) { ... } otherwise { ... } } *)
   | ECall of string * expr list
   | ECast of expr * typ
   | EBlock of stmt list * expr option  (* 块级表达式：语句列表 + 可选的返回表达式 *)
