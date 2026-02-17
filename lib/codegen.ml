@@ -1,4 +1,5 @@
 open Ast
+open Symbol_table
 
 module Env = Map.Make(String)
 
@@ -14,6 +15,21 @@ type context = {
 }
 let indent n = String.make (n * 2) ' '
 
+let write_file filename content =
+  let channel = open_out filename in  (* 打开文件，如果存在则覆盖 *)
+  output_string channel content;
+  close_out channel 
+
+let read_file filename =
+  let channel = open_in filename in
+  let content = really_input_string channel (in_channel_length channel) in
+  close_in channel;
+  content
+
+let get_head list = 
+  match list with
+  | h :: _ -> h
+  | [] -> ""
 let rec cxx_type_of_typ = function
   | TInt -> "mvp_builtin_int"
   | TBool -> "mvp_builtin_boolean"
@@ -41,7 +57,6 @@ let rec cxx_stmt_of_stmt indent_level ctx stmt =
   | SAssign (name, expr) -> 
       let expr_str = cxx_expr_of_expr indent_level ctx expr in
       ind ^ name ^ " = " ^ expr_str ^ ";\n"
-
 and cxx_expr_of_expr indent_level ctx expr = 
   (* let ind = indent indent_level in *)
   (* let ind_inner = indent (indent_level + 1) in *)
@@ -154,6 +169,13 @@ and cxx_expr_of_expr indent_level ctx expr =
       
       "([&]() {\n" ^ cases_str ^ otherwise_str ^ "\n" ^ ind ^ "}())"
 
+let cxx_deal_module name = 
+    if String.compare name "main" == 0 then 
+        "mvp_main"
+    else if String.starts_with ~prefix:"std" name then 
+        String.concat "::" (List.tl (String.split_on_char '.' name))
+    else
+        String.concat "::" (String.split_on_char '.' name)
 
 let cxx_def_of_def indent_level ctx def = 
   let ind = indent indent_level in
@@ -184,11 +206,7 @@ let cxx_def_of_def indent_level ctx def =
             (* 单表达式函数：直接返回表达式 *)
             ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
       in
-      body_str ^ "int main(int argc, char** argv)\n" ^
-      ind ^ "{\n" ^
-      ind ^ "mvp_own_main(argc);\n" ^
-      ind ^ "return 0;\n" ^
-      ind ^ "}\n\n"
+      body_str 
   | DFunc (name, params, ret_typ_opt, body) -> 
       let param_strs = List.map (fun param -> 
           match param with
@@ -268,8 +286,111 @@ let cxx_def_of_def indent_level ctx def =
                 ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
       in
       body_str
+  | DModule s -> (
+      "namespace " ^ cxx_deal_module s ^ " {\n\n"
+  )
+  | SExport _ ->
+      ""
+  | SImport import -> (
+    let toml = read_file "mvp.toml" in
+    match Toml.Parser.from_string toml with 
+    | `Ok table -> (
+      try 
+        match Toml.Types.Table.find (Toml.Min.key "project") table with 
+        | Toml.Types.TTable t -> (
+          match Toml.Types.Table.find (Toml.Min.key "name") t with 
+          | Toml.Types.TString s -> (
+            if String.starts_with ~prefix:s import then
+              let res = "#include <src/" ^
+                (String.concat "/" ((String.split_on_char '/' import) |> List.tl))
+                ^ ".h>\n" in
+              res
+            else
+              let pstk = String.split_on_char '/' import in
+              let res = "#include <" ^ get_head pstk ^ "/src/" ^ (String.concat "/" (List.tl pstk)) ^ ".h>\n" in
+              res
+          )
+          | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+        )
+        | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+      with 
+        | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+      )
+    | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
+  )
+
+
+(* 生成函数声明（用于头文件） *)
+let cxx_func_declaration func_name params ret_typ_opt =
+  let param_strs = List.map (fun param -> 
+      match param with
+      | PRef (pname, ptyp) -> 
+          cxx_type_of_typ ptyp ^ " const& " ^ pname
+      | POwn (pname, ptyp) -> 
+          cxx_type_of_typ ptyp ^ " " ^ pname
+    ) params in
+  let ret_type = match ret_typ_opt with
+    | Some typ -> cxx_type_of_typ typ
+    | None -> "mvp_builtin_unit" in
+  ret_type ^ " " ^ func_name ^ "(" ^ String.concat ", " param_strs ^ ");\n"
+
+(* 生成头文件内容 *)
+let generate_header defs =
+  let symbol_table = build_symbol_table defs in
+  
+  let header_guard = "#pragma once\n\n" in
+  
+  let includes = "#include <mvp_builtin.h>\n\n" in
+  
+  (* 收集所有导出的函数声明和结构体声明，考虑模块结构 *)
+  let rec collect_exported_decls defs current_modules = 
+    match defs with
+    | [] -> ""
+    | def :: rest ->
+        match def with
+        | DModule module_name ->
+            (* 进入新模块 *)
+            let new_modules = current_modules @ [module_name] in
+            let module_name_str = cxx_deal_module module_name in
+            let module_start = "namespace " ^ module_name_str ^ " {\n\n" in
+            let inner_content = collect_exported_decls rest new_modules in
+            let module_end = "}\n\n" in
+            module_start ^ inner_content ^ module_end
+        | SExport name ->
+            (* 先检查是否是结构体 *)
+            let struct_info = List.find_opt (fun (sname, _) -> sname = name) symbol_table.structs in
+            let decl = match struct_info with
+              | Some (sname, _) ->
+                  (* 生成结构体前向声明 *)
+                  "struct " ^ sname ^ ";\n"
+              | None ->
+                  (* 不是结构体，检查是否是函数 *)
+                  let func_info = List.find_opt (fun (fname, _, _) -> fname = name) symbol_table.functions in
+                  match func_info with
+                  | Some (fname, params, ret_typ_opt) ->
+                      cxx_func_declaration fname params ret_typ_opt
+                  | None ->
+                      (* 如果符号表中找不到，发出警告但继续处理 *)
+                      Printf.eprintf "Warning: '%s' not found in symbol table, skipping export\n" name;
+                      ""
+            in
+            decl ^ collect_exported_decls rest current_modules
+        | _ ->
+            collect_exported_decls rest current_modules
+  in
+  let exported_decls = collect_exported_decls defs [] in
+  
+  let footer = "\n" in
+  
+  if exported_decls = "" then
+    "" (* 没有导出的函数，不生成头文件 *)
+  else
+    header_guard ^ includes ^ exported_decls ^ footer
 
 let build_ir _fpath defs = 
+  (* 生成头文件 *)
+  let header_content = generate_header defs in
+  
   let header = "#include <iostream>\n" ^
   "#include <string>\n" ^
   "#include <vector>\n" ^
@@ -281,13 +402,47 @@ let build_ir _fpath defs =
   (* Create a minimal context with empty types and vars *)
   let ctx = { types = Env.empty; vars = Env.empty } in
   
-  let rec generate ctx defs_str defs = 
+  (* Helper function to process definitions with module scope handling *)
+  let rec generate_with_scope ctx current_module main_functions defs_str defs = 
     match defs with
-    | [] -> defs_str
+    | [] -> (defs_str, main_functions)
     | def :: rest -> 
-        let def_str = cxx_def_of_def 0 ctx def in
-        generate ctx (defs_str ^ def_str) rest
+        match def with
+        | DModule module_name ->
+            (* Start a new module scope *)
+            let module_start = "namespace " ^ cxx_deal_module module_name ^ " {\n\n" in
+            let inner_content, new_main_functions = generate_with_scope ctx (Some module_name) main_functions "" rest in
+            let module_end = "}\n\n" in
+            (defs_str ^ module_start ^ inner_content ^ module_end, new_main_functions)
+        | DFunc ("main", params, _, body) ->
+            (* 处理main函数：生成mvp_main在模块内，main函数在全局 *)
+            let mvp_main_def = DFunc ("main", params, None, body) in
+            let mvp_main_str = cxx_def_of_def 0 ctx mvp_main_def in
+            
+            (* 生成全局的main函数，调用模块中的mvp_main *)
+            let global_main = match current_module with
+              | Some module_name ->
+                  "int main(int argc, char** argv)\n" ^
+                  "{\n" ^
+                  "  " ^ cxx_deal_module module_name ^ "::mvp_own_main(argc);\n" ^
+                  "  return 0;\n" ^
+                  "}\n\n"
+              | None ->
+                  "int main(int argc, char** argv)\n" ^
+                  "{\n" ^
+                  "  mvp_own_main(argc);\n" ^
+                  "  return 0;\n" ^
+                  "}\n\n"
+            in
+            
+            (* 将mvp_main放在当前模块内，main函数放在全局 *)
+            generate_with_scope ctx current_module (main_functions ^ global_main) (defs_str ^ mvp_main_str) rest
+        | _ ->
+            (* Generate definition in current module scope *)
+            let def_str = cxx_def_of_def 0 ctx def in
+            generate_with_scope ctx current_module main_functions (defs_str ^ def_str) rest
   in
   
-  let program = header ^ generate ctx "" defs ^ "\n" in
-  program
+  let module_content, main_functions = generate_with_scope ctx None "" "" defs in
+  let program = header ^ module_content ^ main_functions ^ "\n" in
+  [program;header_content]

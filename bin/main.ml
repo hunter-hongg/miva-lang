@@ -6,7 +6,24 @@ module Ast = Mvp_lib.Ast
 module Lexer = Mvp_lib.Lexer
 module Parser = Mvp_lib.Parser
 module Semantic = Mvp_lib.Semantic
+module SymbolTable = Mvp_lib.Symbol_table
 module Codegen = Mvp_lib.Codegen
+
+let write_file filename content =
+  let channel = open_out filename in  (* 打开文件，如果存在则覆盖 *)
+  output_string channel content;
+  close_out channel 
+
+let read_file filename =
+  let channel = open_in filename in
+  let content = really_input_string channel (in_channel_length channel) in
+  close_in channel;
+  content
+let remove_prefix (a : string) (b : string) : string =
+  let len_a = String.length a in
+  let len_b = String.length b in
+  (* 从索引 len_a 开始，截取 len_b - len_a 个字符 *)
+  String.sub b len_a (len_b - len_a)
 
 (* ---------- 全局选项 ---------- *)
 let verbose =
@@ -39,6 +56,12 @@ let check_semantics ast =
     eprintf "Semantic error: %s\n%!" msg;
     exit 1
 
+let check_symbol_table ast =
+  try SymbolTable.check_symbols ast
+  with Failure msg ->
+    eprintf "Symbol table error: %s\n%!" msg;
+    exit 1
+
 let generate_cpp_code inp ast =
   try Codegen.build_ir inp ast
   with Failure msg ->
@@ -49,6 +72,9 @@ let generate_cpp_code inp ast =
 let get_build_dir () =
   try Sys.getenv "MVP_BUILD" with Not_found -> "build"
 
+let get_cache_dir () =
+  try Sys.getenv "MVP_BUILD_CACHE" with Not_found -> "build/cache"
+
 let get_std_include_dir () =
   try Sys.getenv "MVP_STD" with Not_found -> "util"
 
@@ -57,40 +83,35 @@ let ensure_dir_for_file file_path =
   if not (Sys.file_exists dir) then
     ignore (Sys.command (sprintf "mkdir -p %s" dir))
 
-let compile_cpp ~verbose ~_input_file ~output_file cpp_code =
+let compile_cpp ~verbose ~_input_file ~output_file =
   let build_dir = get_build_dir () in
+  let cache_dir = get_cache_dir () in
   let std_include = get_std_include_dir () in
   
-  (* 生成唯一的构建文件名，避免冲突 *)
-  let timestamp = string_of_float (Unix.gettimeofday ()) in
-  let hash_hex = Digest.string timestamp |> Digest.to_hex in
-  let unique_suffix = String.sub hash_hex 0 8 in
-  let base_name = Filename.remove_extension output_file in
-  let unique_base = base_name ^ "_" ^ unique_suffix in
+  let base_name = Filename.remove_extension _input_file in
+  let unique_base = base_name in
   
-  let cpp_file = build_dir ^ "/" ^ unique_base ^ ".cpp" in
-  let exe_file = build_dir ^ "/" ^ unique_base in
+  let cpp_file = unique_base ^ ".cpp" in
+  let header_file = unique_base ^ ".h" in
+  let obj_file = unique_base ^ ".o" in
+  let exe_file = output_file in
   
   (* 确保文件路径的目录存在 *)
   ensure_dir_for_file cpp_file;
+  ensure_dir_for_file header_file;
   ensure_dir_for_file exe_file;
   
-  (* 写入C++源代码 *)
-  let oc = open_out cpp_file in
-  output_string oc cpp_code;
-  close_out oc;
-
   (* 编译命令 *)
   let cmd =
-    sprintf "g++ -O2 %s -o %s -I%s -std=c++20 %s"
-      cpp_file exe_file std_include (if verbose then "" else "2>/dev/null")
+    sprintf "g++ -O2 %s -o %s -I%s -I%s -I%s -std=c++20 %s -c"
+      cpp_file obj_file cache_dir std_include build_dir (if verbose then "" else "2>/dev/null")
   in
   
   if Sys.command cmd <> 0 then (
     if not verbose then (
       (* 重试并显示详细输出 *)
       let cmd_verbose =
-        sprintf "g++ -O2 %s -o %s -I%s -std=c++20" cpp_file exe_file std_include
+        cmd
       in
       eprintf "Compilation failed. Running: %s\n%!" cmd_verbose;
       ignore (Sys.command cmd_verbose)
@@ -100,25 +121,265 @@ let compile_cpp ~verbose ~_input_file ~output_file cpp_code =
   );
   
   (* 清理中间文件，除非设置了保留标志 *)
-  if not (try Sys.getenv "MVP_KEEP_CPP" <> "" with Not_found -> false) then
+  if not (try Sys.getenv "MVP_KEEP_CPP" <> "" with Not_found -> false) then (
     ignore (Sys.command (sprintf "rm -f %s" cpp_file));
+  );
   
-  if verbose then eprintf "Compiled successfully: %s\n%!" exe_file;
+  if verbose then eprintf "Compiled successfully: %s\n%!" obj_file;
+  obj_file
+
+let link_file ~verbose ~obj_files ~output_file =
+  let build_dir = get_build_dir () in
+  let exe_file = build_dir ^ "/" ^ output_file in
+  let cmd =
+    sprintf "g++ -O2 %s -o %s -std=c++20"
+      (String.concat " " obj_files) exe_file
+  in
+  if Sys.command cmd <> 0 then (
+    if not verbose then (
+      (* 重试并显示详细输出 *)
+      let cmd_verbose =
+        sprintf "g++ -O2 %s -o %s -std=c++20"
+          (String.concat " " obj_files) exe_file
+      in
+      eprintf "Linking failed. Running: %s\n%!" cmd_verbose;
+      ignore (Sys.command cmd_verbose)
+    );
+    eprintf "Linking failed: %s\n%!" exe_file;
+    exit 1
+  );
+  if verbose then eprintf "Linked successfully: %s\n%!" exe_file;
   exe_file
 
 (* ---------- 公共编译流程函数 ---------- *)
-let compile_program ~verbose ~input_file ~output_file =
+let compile_program_obj ~verbose ~input_file ~output_file =
   if verbose then eprintf "Parsing %s...\n%!" input_file;
   let ast = parse_input_file input_file in
   if verbose then eprintf "Checking semantics...\n%!";
   check_semantics ast;
+  if verbose then eprintf "Checking symbol table...\n%!";
+  check_symbol_table ast;
   if verbose then eprintf "Generating C++ code...\n%!";
   let cpp_code = generate_cpp_code input_file ast in
-  if verbose then eprintf "Compiling with g++...\n%!";
-  let exe_path = compile_cpp ~verbose ~_input_file:input_file ~output_file:output_file cpp_code in
+  let cache_dir = get_cache_dir () in
+  let base_name = Filename.remove_extension output_file in
+  let unique_base = base_name in
+  let cpp_file = cache_dir ^ "/" ^ unique_base ^ ".cpp" in
+
+  let header_file = cache_dir ^ "/" ^ unique_base ^ ".h" in
+  ensure_dir_for_file cpp_file;
+  ensure_dir_for_file header_file;
+  let cpp_code_, header_code = match cpp_code with
+    | [cpp; header] -> (cpp, header)
+    | _ -> failwith "Unexpected codegen output format"
+  in
+  
+  (* 写入C++源代码 *)
+  let oc = open_out cpp_file in
+  output_string oc cpp_code_;
+  close_out oc;
+  
+  (* 写入头文件（如果头文件内容不为空） *)
+  if header_code <> "" then (
+    let oc_header = open_out header_file in
+    output_string oc_header header_code;
+    close_out oc_header;
+    if verbose then eprintf "Generated header file: %s\n%!" header_file;
+  );
+  cpp_file
+let compile_program ~verbose ~input_file ~output_file =
+  let ast = parse_input_file input_file in
+  let symtab = SymbolTable.build_symbol_table ast in
+  let queue = input_file :: symtab.files in
+  let hist = [] in
+  (* 实现代码：编译文件*)
+  let rec process_queue queue hist obj_paths = 
+    match queue with
+    | [] -> obj_paths
+    | s :: rest ->
+        (* 核心逻辑：编译文件 *)
+        if verbose then eprintf "Compiling %s...\n%!" s;
+        eprintf "found %s\n" s;
+        let symt = SymbolTable.build_symbol_table (parse_input_file s) in
+        let stdp = get_std_include_dir () in
+        let objq = if String.starts_with ~prefix:stdp s then (
+          compile_program_obj ~verbose ~input_file:s ~output_file:(
+            Filename.remove_extension (remove_prefix stdp s)
+          )
+        ) else (
+          compile_program_obj ~verbose ~input_file:s ~output_file:(Filename.remove_extension s)
+        ) in
+        (* s出队列queue进入历史记录hist，如果queue和hist都没有objp，objp入queue *)
+        let new_hist = s :: hist in
+        let rest2 = rest in
+        let rec process_files files queue hist =
+          match files with
+          | [] -> queue, hist
+          | objp :: rest ->
+              let new_queue = if not (List.mem objp rest) && not (List.mem objp new_hist) then
+                 rest @ [objp] 
+              else
+                rest in
+              process_files rest new_queue new_hist
+        in
+        let new_queue, new_hist= process_files symt.files rest2 new_hist in
+        process_queue new_queue new_hist (objq :: obj_paths)
+  in
+  let obj_paths = process_queue queue hist [] in
+  let obj_paths_real = List.map (fun s -> (
+    Printf.eprintf "Compiling %s...\n%!" s;
+    compile_cpp ~verbose ~_input_file:s ~output_file:(Filename.basename s)
+  )) obj_paths in
+  let exe_path = link_file ~verbose:verbose ~obj_files:obj_paths_real ~output_file:output_file in
   exe_path
 
-(* ---------- 子命令: build ---------- *)
+(* ---------- 子命令: init ---------- *)
+let init_name = 
+  let doc = "Name of the project to initialize" in
+  Arg.(required & pos 0 (some string) None & info [] ~doc)
+
+let init_type = 
+  let doc = "Type of project to initialize (e.g., 'bin', 'lib')" in
+  Arg.(required & opt (some string) None & info ["t"; "type"] ~doc)
+
+let init_cmd = 
+  let doc = "Initialize a new MVP project" in
+  let info = Cmd.info "init" ~doc in
+  Cmd.v info Term.(
+    const (fun _verbose init_name init_type () ->
+        if Sys.file_exists "mvp.toml" then (
+          eprintf "Error: Project already initialized in this directory.\n%!";
+          exit 1;
+        ) else (
+          match init_type with
+          | "bin" | "lib" -> (
+            write_file "mvp.toml" (
+              sprintf "[project]\nname = \"%s\"\ntype = \"%s\"\n" init_name init_type
+            );
+            Sys.mkdir "src" 0o755;
+            if init_type == "bin" then 
+              write_file "src/main.mvp" (
+                "// main.mvp \n" ^
+                "// Generated by MVP init\n" ^
+                "module \"main\"\n" ^
+                "main = () => {\n" ^
+                "  println(\"Hello, World\")\n" ^ 
+                "}\n"
+              );
+            printf "Initialized %s project in %s\n%!" init_type init_name
+          )
+          | _ -> (
+            eprintf "Error: Unknown project type: %s\n%!" init_type;
+            exit 1;
+          )
+        )
+      )
+    $ verbose
+    $ init_name
+    $ init_type
+    $ const ()
+  )
+
+(* ---------- 子命令: build/run ---------- *)
+let build_project ~verbose = 
+  if not (Sys.file_exists "mvp.toml") then (
+    eprintf "Error: Project not initialized in this directory.\n%!";
+    exit 1;
+  ) else (
+    let toml = read_file "mvp.toml" in
+    match Toml.Parser.from_string toml with 
+    | `Ok table -> (
+      let project_table = 
+      try 
+        match Toml.Types.Table.find (Toml.Min.key "project") table with 
+        | Toml.Types.TTable t -> (
+          let res = match Toml.Types.Table.find (Toml.Min.key "name") t with 
+          | Toml.Types.TString s -> s
+          | _ -> (
+            eprintf "Error: 'name' in 'project' table in mvp.toml is not a string.\n%!";
+            exit 1;
+          ) in 
+          match Toml.Types.Table.find (Toml.Min.key "type") t with 
+          | Toml.Types.TString s -> (
+            if String.compare s "lib" == 0 then (
+              eprintf "Error: Build a library is not supported in v0.0.2.\n";
+              eprintf "This feature will come in v0.0.3.\n%!";
+              exit 1;
+            ) else (
+              res
+            )
+          )
+          | _ -> (
+            eprintf "Error: 'type' in 'project' table in mvp.toml is not a string.\n%!";
+            exit 1;
+          )
+        ) 
+        | _ -> (
+          eprintf "Error: 'project' table in mvp.toml is not a table.\n%!";
+          exit 1;
+        )
+      with  
+      | _ -> (
+        eprintf "Error: Failed to find 'project' table or 'name' in 'project' table in mvp.toml.\n%!";
+        exit 1;
+      ) in
+      let input_file = "src/main.mvp" in
+      let output_file = project_table in
+      let exe_path = compile_program ~verbose ~input_file ~output_file in
+      printf "Compiled successfully: %s\n%!" exe_path;
+      exe_path
+    )
+    | _ -> (
+      eprintf "Error: Failed to parse mvp.toml.\n%!";
+      exit 1;
+    )
+  )
+let build_new_cmd = 
+  let doc = "Compile the MVP project to an executable or a library." in
+  let info = Cmd.info "build" ~doc in
+  Cmd.v info Term.(
+    const (fun verbose () ->
+      let _res = build_project ~verbose in
+      ()
+    )
+    $ verbose
+    $ const ()
+  )
+let run_new_cmd = 
+  let doc = "Compile and Run the MVP project." in
+  let info = Cmd.info "run" ~doc in
+  Cmd.v info Term.(
+    const (fun verbose () ->
+      let exe_path = build_project ~verbose in
+      let run_status = Sys.command exe_path in
+      if run_status <> 0 then (
+        eprintf "Error: Failed to run the executable.\n";
+        eprintf "Exited with status %d.\n%!" run_status;
+        eprintf "You can run it by ./%s\n%!" exe_path;
+        exit 1;
+      )
+    )
+    $ verbose
+    $ const ()
+  )
+(* ---------- 子命令: clean ---------- *)
+let clean_cmd = 
+  let doc = "Clean the build artifacts in a MVP project." in
+  let info = Cmd.info "clean" ~doc in
+  Cmd.v info Term.(
+    const (fun _verbose () ->
+      if Sys.file_exists "mvp.toml" then (
+        Sys.command "rm -rf build/" |> ignore;
+        printf "Cleaned build artifacts.\n%!"
+      ) else (
+        eprintf "Error: Project not initialized in this directory.\n%!";
+        exit 1;
+      )
+    )
+    $ verbose
+    $ const ()
+  )
+(* ---------- 子命令: sin-build ---------- *)
 let build_input_file =
   let doc = "MVP source file to compile" in
   Arg.(required & pos 0 (some string) None & info [] ~doc)
@@ -129,7 +390,7 @@ let build_output_file =
 
 let build_cmd =
   let doc = "Compile an MVP source file to an executable." in
-  let info = Cmd.info "build" ~doc in
+  let info = Cmd.info "sin-build" ~doc in
   Cmd.v info Term.(
     const (fun verbose input out_opt () ->
         let output = match out_opt with
@@ -145,14 +406,14 @@ let build_cmd =
     $ const ()
   )
 
-(* ---------- 子命令: run ---------- *)
+(* ---------- 子命令: sin-run ---------- *)
 let run_input_file =
   let doc = "MVP source file to run" in
   Arg.(required & pos 0 (some string) None & info [] ~doc)
 
 let run_cmd =
   let doc = "Compile and run an MVP program." in
-  let info = Cmd.info "run" ~doc in
+  let info = Cmd.info "sin-run" ~doc in
   Cmd.v info Term.(
     const (fun verbose input () ->
         let output = Filename.basename (Filename.remove_extension input) in
@@ -177,7 +438,14 @@ let default_cmd =
     `P "MVP is a systems programming language focused on explicitness, safety, and predictability.";
   ] in
   let info = Cmd.info "mvp" ~version:"0.1.0" ~doc ~man in
-  Cmd.group info [build_cmd; run_cmd]
+  Cmd.group info [
+    build_cmd; 
+    run_cmd; 
+    init_cmd; 
+    build_new_cmd; 
+    run_new_cmd;
+    clean_cmd;
+  ]
 
 let () =
   exit @@ Cmd.eval default_cmd

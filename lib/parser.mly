@@ -14,7 +14,7 @@
 %token INT BOOL FLOAT32 FLOAT64 CHAR STRING
 %token EOF
 %token OWN THEN COLON
-%token CHOOSE WHEN OTHERWISE
+%token CHOOSE WHEN OTHERWISE MODULE EXPORT IMPORT
 
 %left PLUS MINUS          /* 最低优先级，左结合 */
 %left STAR                /* 中等优先级，左结合 */
@@ -39,6 +39,9 @@ def:
     { DFunc (name, params, Some ret_typ, body) }
   | name = IDENT EQ params = func_params DARROW body = expr
     { DFunc (name, params, None, body) }
+  | MODULE name = STRING_LIT { DModule name }
+  | EXPORT symbol = IDENT { SExport symbol }
+  | IMPORT symbol = STRING_LIT { SImport symbol }
 
 func_params:
   | LPAREN RPAREN { [] }

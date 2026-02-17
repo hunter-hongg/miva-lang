@@ -1,6 +1,6 @@
 Point = struct { x: int, y: int }
 
-foo = (pt: Point, ): int => {
+foo = (pt: Point): int => {
   3
 }
 

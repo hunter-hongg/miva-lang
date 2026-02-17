@@ -47,6 +47,9 @@ rule token = parse
   | "choose"            { CHOOSE }
   | "when"              { WHEN }
   | "otherwise"         { OTHERWISE }
+  | "module"            { MODULE }
+  | "export"            { EXPORT }
+  | "import"            { IMPORT }
   | digits as num       { INT_LIT (Int64.of_string num) }
   | digits '.' digits? as f
                         { FLOAT_LIT (float_of_string f) }

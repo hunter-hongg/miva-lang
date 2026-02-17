@@ -1,0 +1,3 @@
+module "std.term"
+
+color_null = (): string => "\x1b[0;0m"

@@ -155,6 +155,33 @@ let rec check_expr ctx e =
   | _ -> ()
 
 let check_program defs =
+  (* 检查模块声明位置和重复性 *)
+  let module_decls = ref [] in
+  let has_non_module_decl = ref false in
+  let has_module_decl = ref false in
+  
+  (* 第一遍：检查模块声明位置和重复性 *)
+  List.iter (function
+      | DModule name ->
+          (* 检查是否已经有非模块声明 *)
+          if !has_non_module_decl then
+            failwith ("Module declaration 'module " ^ name ^ "' must be at the top of the file, before any other declarations");
+          
+          (* 检查模块是否重复声明 *)
+          if List.mem name !module_decls then
+            failwith ("Duplicate module declaration: 'module " ^ name ^ "'");
+          
+          module_decls := name :: !module_decls;
+          has_module_decl := true
+      | _ ->
+          (* 遇到非模块声明，标记为已存在非模块声明 *)
+          has_non_module_decl := true
+    ) defs;
+  
+  if not !has_module_decl then
+    failwith "Program must have one module declaration";
+  
+  (* 第二遍：进行原有的语义检查 *)
   let types = List.fold_left (fun acc -> function
       | DStruct (name, fields) -> Env.add name fields acc
       | _ -> acc
@@ -170,4 +197,6 @@ let check_program defs =
           let ctx = { types; vars } in
           check_expr ctx body
       | DStruct (_, _) -> ()
+      | DModule _ -> ()  (* 模块声明已经在第一遍检查过 *)
+      | _ -> ()
     ) defs

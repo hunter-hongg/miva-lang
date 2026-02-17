@@ -42,3 +42,6 @@ and stmt =
 and def =
   | DStruct of string * (string * typ) list
   | DFunc of string * param list * typ option * expr
+  | DModule of string
+  | SExport of string
+  | SImport of string

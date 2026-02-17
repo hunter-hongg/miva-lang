@@ -16,6 +16,7 @@ main = () => {
   } else {
     println("Wrong")
   }
-  printlns(c)
+  z := 2
+  printlns(move z)
   0
 }
