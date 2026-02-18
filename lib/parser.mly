@@ -56,7 +56,7 @@ field_decl:
   | name = IDENT COLON t = typ { (name, t) }
 
 expr:
-  | e = atomic_expr { e }
+  | e = call_expr { e }
   | e1 = expr PLUS e2 = expr { EBinOp (Add, e1, e2) }
   | e1 = expr MINUS e2 = expr { EBinOp (Sub, e1, e2) }
   | e1 = expr STAR e2 = expr { EBinOp (Mul, e1, e2) }
@@ -78,11 +78,40 @@ atomic_expr:
   | MOVE x = IDENT { EMove x }
   | CLONE x = IDENT { EClone x }
   | PRINT LPAREN s = STRING_LIT RPAREN { ECall ("print", [EString s]) }
-  | name = IDENT LPAREN args = separated_list(COMMA, expr) RPAREN { ECall (name, args) }
   | LPAREN e = expr RPAREN { e }
   | e = struct_init_expr { e }
-  | e = atomic_expr DOT field = IDENT { EFieldAccess (e, field) }
   | e = atomic_expr AS t = typ { ECast (e, t) }
+
+field_access_expr:
+  | e = atomic_expr { e }
+  | e = field_access_expr DOT field = IDENT { EFieldAccess (e, field) }
+
+call_expr:
+  | e = field_access_expr { e }
+  | e = field_access_expr LPAREN args = separated_list(COMMA, expr) RPAREN { 
+      (* 处理 a.b.c.foo(...) 形式的调用 *)
+      let rec extract_call_path expr = 
+        match expr with
+        | EFieldAccess (e, field) ->
+            let path = extract_call_path e in
+            path ^ "." ^ field
+        | EVar name -> name
+        | _ -> failwith "Invalid call path"
+      in
+      let call_path = extract_call_path e in
+      (* 处理特殊前缀，如std -> mvp_std *)
+      let processed_path = 
+        match String.split_on_char '.' call_path with
+        | "std" :: rest -> 
+            "mvp_std" :: rest
+        | other :: rest -> 
+            other :: rest
+        | [] -> []
+      in
+      let final_path = String.concat "." processed_path in
+      ECall (final_path, args)
+    }
+  | name = IDENT LPAREN args = separated_list(COMMA, expr) RPAREN { ECall (name, args) }
 
 stmt:
   | IDENT COLONEQ expr { SLet (false, $1, $3) }
@@ -94,7 +123,7 @@ stmt:
   | expr { SExpr $1 }
 
 struct_init_expr:
-  | name = IDENT LBRACE inits = struct_inits RBRACE { EStructLit (name, inits) }
+  | STRUCT name = type_path LBRACE inits = struct_inits RBRACE { EStructLit (name, inits) }
 
 stmt_list:
   | /* empty */ { [] }
@@ -128,4 +157,8 @@ typ:
   | FLOAT64 { TFloat64 }
   | CHAR { TChar }
   | STRING { TString }
-  | name = IDENT { TStruct (name, []) }
+  | t = type_path { TStruct (t, []) }
+
+type_path:
+  | name = IDENT { name }
+  | name = type_path DOT field = IDENT { name ^ "::" ^ field }

@@ -115,7 +115,9 @@ and cxx_expr_of_expr indent_level ctx expr =
         | "string_concat" -> "mvp_string_concat"
         | "string_parse" -> "mvp_string_parse"
         | "string_length" -> "mvp_string_length"
-        | _ -> name
+        | _ -> 
+            (* 将a.b.c.foo转换为a::b::c::foo *)
+            String.concat "::" (String.split_on_char '.' name)
       in
       call_name ^ "(" ^ String.concat ", " args_str ^ ")"
   | ECast (expr, typ) -> 
@@ -173,7 +175,7 @@ let cxx_deal_module name =
     if String.compare name "main" == 0 then 
         "mvp_main"
     else if String.starts_with ~prefix:"std" name then 
-        String.concat "::" (List.tl (String.split_on_char '.' name))
+        "mvp_std" ^ (if String.length name > 3 && String.get name 3 == '.' then "::" ^ String.concat "::" (List.tl (String.split_on_char '.' name)) else "")
     else
         String.concat "::" (String.split_on_char '.' name)
 
@@ -349,20 +351,31 @@ let generate_header defs =
     | def :: rest ->
         match def with
         | DModule module_name ->
-            (* 进入新模块 *)
+            (* 进入新模块，生成嵌套的namespace *)
             let new_modules = current_modules @ [module_name] in
-            let module_name_str = cxx_deal_module module_name in
-            let module_start = "namespace " ^ module_name_str ^ " {\n\n" in
+            let module_parts = String.split_on_char '.' module_name in
+            let module_parts = if get_head module_parts = "std" then
+              "mvp_std" :: (module_parts |> List.tl)
+            else if get_head module_parts = "main" then
+              let res = "mvp_main" :: (module_parts |> List.tl) in
+              res
+            else
+              module_parts in
+            let module_start = List.fold_left (fun acc part -> acc ^ "namespace " ^ part ^ " {\n\n") "" module_parts in
             let inner_content = collect_exported_decls rest new_modules in
-            let module_end = "}\n\n" in
+            let module_end = List.fold_left (fun acc _ -> acc ^ "}\n\n") "" module_parts in
             module_start ^ inner_content ^ module_end
         | SExport name ->
             (* 先检查是否是结构体 *)
             let struct_info = List.find_opt (fun (sname, _) -> sname = name) symbol_table.structs in
             let decl = match struct_info with
-              | Some (sname, _) ->
-                  (* 生成结构体前向声明 *)
-                  "struct " ^ sname ^ ";\n"
+              | Some (sname, fields) ->
+                  (* 生成结构体完整定义，包括所有字段 *)
+                  "struct " ^ sname ^ " {\n" ^
+                  List.fold_left (fun acc (fname, ftyp) ->
+                      acc ^ "  " ^ cxx_type_of_typ ftyp ^ " " ^ fname ^ ";\n"
+                    ) "" fields ^
+                  "};\n\n"
               | None ->
                   (* 不是结构体，检查是否是函数 *)
                   let func_info = List.find_opt (fun (fname, _, _) -> fname = name) symbol_table.functions in
@@ -403,17 +416,25 @@ let build_ir _fpath defs =
   let ctx = { types = Env.empty; vars = Env.empty } in
   
   (* Helper function to process definitions with module scope handling *)
-  let rec generate_with_scope ctx current_module main_functions defs_str defs = 
+  let rec generate_with_scope ctx current_module main_functions includes defs_str defs = 
     match defs with
-    | [] -> (defs_str, main_functions)
+    | [] -> (includes, defs_str, main_functions)
     | def :: rest -> 
         match def with
         | DModule module_name ->
-            (* Start a new module scope *)
-            let module_start = "namespace " ^ cxx_deal_module module_name ^ " {\n\n" in
-            let inner_content, new_main_functions = generate_with_scope ctx (Some module_name) main_functions "" rest in
-            let module_end = "}\n\n" in
-            (defs_str ^ module_start ^ inner_content ^ module_end, new_main_functions)
+            (* Start nested module scopes *)
+            let module_parts = String.split_on_char '.' module_name in
+            let module_parts = if get_head module_parts = "std" then
+              "mvp_std" :: (module_parts |> List.tl)
+            else if get_head module_parts = "main" then
+              let res = "mvp_main" :: (module_parts |> List.tl) in
+              res
+            else
+              module_parts in
+            let module_start = List.fold_left (fun acc part -> acc ^ "namespace " ^ part ^ " {\n\n") "" module_parts in
+            let inner_includes, inner_content, new_main_functions = generate_with_scope ctx (Some module_name) main_functions "" "" rest in
+            let module_end = List.fold_left (fun acc _ -> acc ^ "}\n\n") "" module_parts in
+            (includes ^ inner_includes, defs_str ^ module_start ^ inner_content ^ module_end, new_main_functions)
         | DFunc ("main", params, _, body) ->
             (* 处理main函数：生成mvp_main在模块内，main函数在全局 *)
             let mvp_main_def = DFunc ("main", params, None, body) in
@@ -436,13 +457,17 @@ let build_ir _fpath defs =
             in
             
             (* 将mvp_main放在当前模块内，main函数放在全局 *)
-            generate_with_scope ctx current_module (main_functions ^ global_main) (defs_str ^ mvp_main_str) rest
+            generate_with_scope ctx current_module (main_functions ^ global_main) includes (defs_str ^ mvp_main_str) rest
+        | SImport _ ->
+            (* 处理导入语句：将其添加到includes中，而不是当前模块的命名空间内 *)
+            let import_str = cxx_def_of_def 0 ctx def in
+            generate_with_scope ctx current_module main_functions (includes ^ import_str) defs_str rest
         | _ ->
             (* Generate definition in current module scope *)
             let def_str = cxx_def_of_def 0 ctx def in
-            generate_with_scope ctx current_module main_functions (defs_str ^ def_str) rest
+            generate_with_scope ctx current_module main_functions includes (defs_str ^ def_str) rest
   in
   
-  let module_content, main_functions = generate_with_scope ctx None "" "" defs in
-  let program = header ^ module_content ^ main_functions ^ "\n" in
+  let includes, module_content, main_functions = generate_with_scope ctx None "" "" "" defs in
+  let program = header ^ includes ^ module_content ^ main_functions ^ "\n" in
   [program;header_content]

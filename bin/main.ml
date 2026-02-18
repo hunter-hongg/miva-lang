@@ -25,6 +25,9 @@ let remove_prefix (a : string) (b : string) : string =
   (* 从索引 len_a 开始，截取 len_b - len_a 个字符 *)
   String.sub b len_a (len_b - len_a)
 
+let clean_line () =
+  Printf.eprintf "%s" ("\r" ^ (String.make 100 ' '))
+
 (* ---------- 全局选项 ---------- *)
 let verbose =
   let doc = "Enable verbose output." in
@@ -197,9 +200,9 @@ let compile_program ~verbose ~input_file ~output_file =
     match queue with
     | [] -> obj_paths
     | s :: rest ->
-        (* 核心逻辑：编译文件 *)
-        if verbose then eprintf "Compiling %s...\n%!" s;
-        eprintf "found %s\n" s;
+        let snw = String.concat "/" (List.filter (fun s -> s <> "") (String.split_on_char '/' s)) in
+        clean_line ();
+        eprintf "\rCompiling %s to cpp file ...%!" snw;
         let symt = SymbolTable.build_symbol_table (parse_input_file s) in
         let stdp = get_std_include_dir () in
         let objq = if String.starts_with ~prefix:stdp s then (
@@ -227,7 +230,9 @@ let compile_program ~verbose ~input_file ~output_file =
   in
   let obj_paths = process_queue queue hist [] in
   let obj_paths_real = List.map (fun s -> (
-    Printf.eprintf "Compiling %s...\n%!" s;
+    let snw = String.concat "/" (List.filter (fun s -> s <> "") (String.split_on_char '/' s)) in
+    clean_line ();
+    Printf.eprintf "\r%!Compiling %s to bin...%!" snw;
     compile_cpp ~verbose ~_input_file:s ~output_file:(Filename.basename s)
   )) obj_paths in
   let exe_path = link_file ~verbose:verbose ~obj_files:obj_paths_real ~output_file:output_file in
@@ -326,7 +331,9 @@ let build_project ~verbose =
       let input_file = "src/main.mvp" in
       let output_file = project_table in
       let exe_path = compile_program ~verbose ~input_file ~output_file in
-      printf "Compiled successfully: %s\n%!" exe_path;
+      printf "\n%s%!" (String.make 30 '-');
+      printf "\nCompiled successfully: %s\n%!" exe_path;
+      printf "%s\n%!" (String.make 30 '-');
       exe_path
     )
     | _ -> (
