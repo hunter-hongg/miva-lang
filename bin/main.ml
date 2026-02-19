@@ -65,6 +65,12 @@ let check_symbol_table ast =
     eprintf "Symbol table error: %s\n%!" msg;
     exit 1
 
+let check_circular_dependencies file_paths =
+  try SymbolTable.check_circular_dependencies file_paths
+  with Failure msg ->
+    eprintf "\nCircular dependency error: %s\n%!" msg;
+    exit 1
+
 let generate_cpp_code inp ast =
   try Codegen.build_ir inp ast
   with Failure msg ->
@@ -162,6 +168,9 @@ let compile_program_obj ~verbose ~input_file ~output_file =
   check_semantics ast;
   if verbose then eprintf "Checking symbol table...\n%!";
   check_symbol_table ast;
+  if verbose then eprintf "Checking circular dependencies...\n%!";
+  let symbol_table = SymbolTable.build_symbol_table ast in
+  check_circular_dependencies (input_file :: symbol_table.files);
   if verbose then eprintf "Generating C++ code...\n%!";
   let cpp_code = generate_cpp_code input_file ast in
   let cache_dir = get_cache_dir () in

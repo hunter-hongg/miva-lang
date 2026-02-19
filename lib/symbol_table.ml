@@ -1,5 +1,14 @@
 open Ast
 
+(* 辅助函数：查找元素在列表中的索引 *)
+let find_index elem list =
+  let rec find_index_helper elem list index =
+    match list with
+    | [] -> None
+    | h :: t -> if h = elem then Some index else find_index_helper elem t (index + 1)
+  in
+  find_index_helper elem list 0
+
 (* 符号表类型定义 *)
 type symbol_table = {
   functions: (string * param list * typ option) list; (* 函数名 -> 参数列表和返回类型 *)
@@ -24,6 +33,14 @@ let get_head list =
   match list with
   | h :: _ -> h
   | [] -> ""
+
+(* 辅助函数：丢弃列表前n个元素 *)
+let rec drop n list =
+  if n <= 0 then list
+  else
+    match list with
+    | [] -> []
+    | _ :: t -> drop (n - 1) t
 
 (* 检查函数是否重复定义 *)
 let check_function_duplicate name params _return_typ symbol_table =
@@ -106,6 +123,41 @@ let process_definition def symbol_table =
 (* 构建整个程序的符号表 *)
 let build_symbol_table defs =
   List.fold_left (fun sym_table def -> process_definition def sym_table) empty_symbol_table defs
+
+(* 检查循环依赖 *)
+let check_circular_dependencies file_paths =
+  let rec visit file visited stack =
+    if List.mem file stack then
+      (match find_index file stack with
+      | Some cycle_start ->
+          let _ = drop cycle_start stack @ [file] in
+          failwith ("\nCircular dependency detected")
+      | None -> ()
+      )
+    else if List.mem file visited then
+      ()
+    else
+      let new_visited = file :: visited in
+      let new_stack = file :: stack in
+      try
+        let file_content = read_file file in
+        let lexbuf = Lexing.from_string file_content in
+        let ast = Parser.program Lexer.token lexbuf in
+        let symbol_table = build_symbol_table ast in
+        List.iter (fun dep_file ->
+          visit dep_file new_visited new_stack
+        ) symbol_table.files
+      with
+      | Parsing.Parse_error | Lexer.SyntaxError _ ->
+          (* 如果解析失败，跳过这个文件的依赖检查 *)
+          ()
+  in
+  let visited = ref [] in
+  let stack = ref [] in
+  List.iter (fun file ->
+    if not (List.mem file !visited) then
+      visit file !visited !stack
+  ) file_paths
 
 (* 检查程序中的符号重复定义 *)
 let check_symbols defs =
