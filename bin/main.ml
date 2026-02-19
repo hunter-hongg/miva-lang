@@ -56,7 +56,7 @@ let parse_input_file filename =
 let check_semantics ast =
   try Semantic.check_program ast
   with Failure msg ->
-    eprintf "Semantic error: %s\n%!" msg;
+    eprintf "\nSemantic error: %s\n%!" msg;
     exit 1
 
 let check_symbol_table ast =
@@ -116,7 +116,7 @@ let compile_cpp ~verbose ~_input_file ~output_file =
       let cmd_verbose =
         cmd
       in
-      eprintf "Compilation failed. Running: %s\n%!" cmd_verbose;
+      eprintf "\nCompilation failed. Running: %s\n%!" cmd_verbose;
       ignore (Sys.command cmd_verbose)
     );
     eprintf "C++ code saved to %s\n%!" cpp_file;
@@ -128,7 +128,7 @@ let compile_cpp ~verbose ~_input_file ~output_file =
     ignore (Sys.command (sprintf "rm -f %s" cpp_file));
   );
   
-  if verbose then eprintf "Compiled successfully: %s\n%!" obj_file;
+  if verbose then eprintf "\nCompiled successfully: %s\n%!" obj_file;
   obj_file
 
 let link_file ~verbose ~obj_files ~output_file =

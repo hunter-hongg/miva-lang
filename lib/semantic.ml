@@ -6,6 +6,7 @@ type var_info = {
   typ: typ;
   mutable state: [`Valid | `Moved];
   is_mutable: bool;
+  is_ref_param: bool;
 }
 
 type context = {
@@ -29,6 +30,7 @@ let rec check_expr ctx e =
     if Env.mem name ctx.vars then (
       let info = Env.find name ctx.vars in
       if info.state = `Moved then err ("Use of moved value: " ^ name);
+      if info.is_ref_param then err ("Cannot move ref parameter: " ^ name);
       let new_vars = Env.add name {info with state = `Moved} ctx.vars in
       ctx.vars <- new_vars
     )
@@ -95,14 +97,51 @@ let rec check_expr ctx e =
       (* 检查变量表达式 *)
       check_expr ctx var_expr;
       
-      (* 检查所有when分支 *)
-      List.iter (fun (when_val, when_body) ->
+      (* 悲观合并：保存分支前的变量状态 *)
+      let vars_before = ctx.vars in
+      
+      (* 检查所有when分支并收集每个分支后的变量状态 *)
+      let branch_vars = List.map (fun (when_val, when_body) ->
+          (* 恢复到分支前的状态 *)
+          ctx.vars <- vars_before;
+          (* 检查when条件表达式 *)
           check_expr ctx when_val;
-          check_expr ctx when_body
-        ) when_branches;
+          (* 检查when分支体 *)
+          check_expr ctx when_body;
+          (* 保存分支后的状态 *)
+          ctx.vars
+        ) when_branches in
       
       (* 检查otherwise分支 *)
-      Option.iter (check_expr ctx) otherwise_opt
+      ctx.vars <- vars_before;
+      let otherwise_vars = match otherwise_opt with
+        | Some otherwise_body ->
+            check_expr ctx otherwise_body;
+            ctx.vars
+        | None -> vars_before
+      in
+      
+      (* 将otherwise分支的状态也加入到分支状态列表中 *)
+      let all_branch_vars = branch_vars @ [otherwise_vars] in
+      
+      (* 悲观合并：如果变量在任一分支中被移动，则合并后状态为移动 *)
+      let merged_vars = List.fold_left (fun acc_vars branch_vars ->
+          Env.merge (fun _ var_info_opt branch_var_info_opt ->
+              match var_info_opt, branch_var_info_opt with
+              | Some info1, Some info2 -> 
+                  (* 如果任一分支中变量状态为移动，则合并后为移动 *)
+                  if info1.state = `Moved || info2.state = `Moved then
+                    Some {info1 with state = `Moved}
+                  else
+                    Some info1
+              | Some info, None | None, Some info ->
+                  (* 变量只在一个分支中存在，保持其状态 *)
+                  Some info
+              | None, None -> None
+            ) acc_vars branch_vars
+        ) vars_before all_branch_vars in
+      
+      ctx.vars <- merged_vars
   | EBlock (stmts, expr_opt) ->
       (* 保存当前变量环境，用于块结束后恢复 *)
       let saved_vars = ctx.vars in
@@ -114,7 +153,7 @@ let rec check_expr ctx e =
               (* 为变量分配一个默认类型，实际应用中应该进行类型推导 *)
               let var_type = TInt (* 临时默认类型，后续需要类型推导 *) in
               (* 将新变量添加到环境中 *)
-              ctx.vars <- Env.add name { typ = var_type; state = `Valid; is_mutable } ctx.vars
+              ctx.vars <- Env.add name { typ = var_type; state = `Valid; is_mutable; is_ref_param = false } ctx.vars
           | SAssign (name, e) ->
               (* 检查变量是否可变 *)
               if Env.mem name ctx.vars then (
@@ -190,9 +229,11 @@ let check_program defs =
   List.iter (function
       | DFunc (_, params, _, body) ->
           let vars = List.fold_left (fun vars p ->
-              let (pname, pty) = match p with
-                | PRef (n, t) | POwn (n, t) -> (n, t) in
-              Env.add pname { typ = pty; state = `Valid; is_mutable = false } vars
+              match p with
+              | PRef (n, t) -> 
+                  Env.add n { typ = t; state = `Valid; is_mutable = false; is_ref_param = true } vars
+              | POwn (n, t) -> 
+                  Env.add n { typ = t; state = `Valid; is_mutable = false; is_ref_param = false } vars
             ) Env.empty params in
           let ctx = { types; vars } in
           check_expr ctx body
