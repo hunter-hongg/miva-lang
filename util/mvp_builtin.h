@@ -58,41 +58,6 @@ inline mvp_builtin_unit mvp_panic(mvp_builtin_string const &str) {
   std::abort();
 }
 
-inline mvp_builtin_string mvp_string_concat(mvp_builtin_string const &str1,
-                                            mvp_builtin_string const &str2) {
-  return str1 + str2;
-}
-inline mvp_builtin_int mvp_string_length(mvp_builtin_string const &str) {
-  return str.length();
-}
-inline mvp_builtin_int mvp_string_parse(mvp_builtin_string const &str) {
-  if (str.empty()) {
-    mvp_panic("string_parse: empty string");
-  }
-
-  int result = 0; // ← 初始化为 0！
-
-  for (char c : str) {
-    if (c < '0' || c > '9') {
-      mvp_panic("string_parse: invalid digit in string");
-    }
-
-    // 检查乘法溢出：result * 10
-    if (result > INT_MAX / 10) {
-      mvp_panic("string_parse: integer overflow");
-    }
-    result *= 10;
-
-    int digit = c - '0';
-    if (result > INT_MAX - digit) {
-      mvp_panic("string_parse: integer overflow");
-    }
-    result += digit;
-  }
-
-  return result;
-}
-
 inline mvp_builtin_unit mvp_print(mvp_builtin_string const &str) {
   printf("%s", str.c_str());
   return mvp_builtin_void;
@@ -120,6 +85,32 @@ template<typename... Args>
 inline mvp_builtin_unit mvp_printlns(Args&&... args) {
   mvp_prints(args...);
   std::fputc('\n', stdout);
+  return mvp_builtin_void;
+}
+
+inline mvp_builtin_unit mvp_error(mvp_builtin_string const &str) {
+  std::fwrite(str.c_str(), 1, str.size(), stderr);
+  return mvp_builtin_void;
+}
+
+inline mvp_builtin_unit mvp_errorln(mvp_builtin_string const &str) {
+  std::fwrite(str.c_str(), 1, str.size(), stderr);
+  std::fputc('\n', stderr);
+  return mvp_builtin_void;
+}
+
+template <typename... Args>
+inline mvp_builtin_unit mvp_errors(Args const &... args) {
+  mvp_builtin_string output;
+  output.reserve(128); // 预分配，避免多次 realloc
+  ((output += mvp_to_string(args)), ...);
+  return mvp_error(output);
+}
+
+template <typename... Args>
+inline mvp_builtin_unit mvp_errorlns(Args const &... args) {
+  mvp_errors(args...);
+  std::fputc('\n', stderr);
   return mvp_builtin_void;
 }
 

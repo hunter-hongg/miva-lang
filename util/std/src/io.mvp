@@ -1,0 +1,25 @@
+module "std.io"
+import "std/term"
+
+cprint = (ref x: string, ref color: string) => {
+  prints(color, x, std.term.color_null())
+}
+
+cprintln = (ref x: string, ref color: string) => {
+  cprint(x, color)
+  println("")
+}
+
+eprint = (ref x: string, ref color: string) => {
+  errors(color, x, std.term.color_null())
+}
+
+eprintln = (ref x: string, ref color: string) => {
+  eprint(x, color)
+  println("")
+}
+
+export cprint
+export cprintln
+export eprint
+export eprintln

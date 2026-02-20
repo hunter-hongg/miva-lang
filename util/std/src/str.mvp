@@ -1,0 +1,50 @@
+module "std.str"
+
+c unsafe _concat = (ref a: string, ref b: string): string => """
+  return a + b;
+"""
+
+// Concat two strings is safe
+trusted concat = (ref a: string, ref b: string): string => _concat(a, b)
+
+c unsafe _parse_int = (ref str: string): int => """
+  if (str.empty()) {
+    mvp_panic("string_parse: empty string");
+  }
+
+  int result = 0; // ← 初始化为 0！
+
+  for (char c : str) {
+    if (c < '0' || c > '9') {
+      mvp_panic("string_parse: invalid digit in string");
+    }
+
+    // 检查乘法溢出：result * 10
+    if (result > INT_MAX / 10) {
+      mvp_panic("string_parse: integer overflow");
+    }
+    result *= 10;
+
+    int digit = c - '0';
+    if (result > INT_MAX - digit) {
+      mvp_panic("string_parse: integer overflow");
+    }
+    result += digit;
+  }
+
+  return result;
+"""
+
+// Parse an integer from a string is safe
+trusted parse_int = (ref str: string): int => _parse_int(str)
+
+c unsafe _len = (ref str: string): int => """
+  return str.length();
+"""
+
+// Get the length of a string is safe 
+trusted len = (ref str: string): int => _len(str)
+
+export concat 
+export parse_int
+export len

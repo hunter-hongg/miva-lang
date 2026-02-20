@@ -1,5 +1,21 @@
 module "std.term"
 
 color_null = (): string => "\x1b[0;0m"
+color_black = (): string => "\x1b[0;30m"
+color_red = (): string => "\x1b[0;31m"
+color_green = (): string => "\x1b[0;32m"
+color_yellow = (): string => "\x1b[0;33m"
+color_blue = (): string => "\x1b[0;34m"
+color_magenta = (): string => "\x1b[0;35m"
+color_cyan = (): string => "\x1b[0;36m"
+color_white = (): string => "\x1b[0;37m"
 
 export color_null
+export color_black
+export color_red
+export color_green
+export color_yellow
+export color_blue
+export color_magenta
+export color_cyan
+export color_white

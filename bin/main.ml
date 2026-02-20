@@ -1,4 +1,5 @@
 [@@@ocaml.warning "-21"]
+[@@@ocaml.warning "-26"]
 open Printf
 open Cmdliner
 
@@ -228,11 +229,12 @@ let compile_program ~verbose ~input_file ~output_file =
           match files with
           | [] -> queue, hist
           | objp :: rest ->
-              let new_queue = if not (List.mem objp rest) && not (List.mem objp new_hist) then
-                 rest @ [objp] 
-              else
-                rest in
-              process_files rest new_queue new_hist
+              let new_queue = if not (List.mem objp queue) && not (List.mem objp hist) then (
+                 queue @ [objp] 
+              )else (
+                queue
+              ) in
+              process_files rest new_queue hist
         in
         let new_queue, new_hist= process_files symt.files rest2 new_hist in
         process_queue new_queue new_hist (objq :: obj_paths)
