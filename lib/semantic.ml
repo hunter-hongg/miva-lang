@@ -1,3 +1,4 @@
+[@@@ocaml.warning "-27"]
 open Ast
 
 module Env = Map.Make(String)
@@ -24,7 +25,7 @@ let rec is_copy_type types t =
         List.for_all (fun (_, ft) -> is_copy_type types ft) fields
       with Not_found -> false
 
-let rec check_expr ctx e =
+let rec check_expr ctx symbol_table e =
   let err msg = failwith msg in
   let mark_moved name =
     if Env.mem name ctx.vars then (
@@ -49,25 +50,38 @@ let rec check_expr ctx e =
           err ("Cannot clone non-Copy type: " ^ name);
         if info.state = `Moved then err ("Use of moved value: " ^ name)
       )
-  | ECall (_, args) -> List.iter (check_expr ctx) args
-  | EStructLit (_, inits) -> List.iter (fun (_, e) -> check_expr ctx e) inits
-  | EFieldAccess (e, _) -> check_expr ctx e
-  | EBinOp (_, e1, e2) -> check_expr ctx e1; check_expr ctx e2
+  | ECall (name, args) -> 
+      (* 检查函数调用的安全性 *)
+      (match Symbol_table.get_function_safety name symbol_table with
+      | Some Symbol_table.Unsafe ->
+          failwith ("Cannot call unsafe function '" ^ name ^ "' from safe function")
+      | Some Symbol_table.Trusted ->
+          ()  (* 可以调用trusted函数 *)
+      | Some Symbol_table.Safe ->
+          ()  (* 可以调用safe函数 *)
+      | None ->
+          ()  (* 函数未找到，可能是内置函数或其他情况，暂不处理 *)
+      );
+      List.iter (check_expr ctx symbol_table) args
+  | EStructLit (_, inits) -> List.iter (fun (_, e) -> check_expr ctx symbol_table e) inits
+  | EArrayLit elems -> List.iter (check_expr ctx symbol_table) elems
+  | EFieldAccess (e, _) -> check_expr ctx symbol_table e
+  | EBinOp (_, e1, e2) -> check_expr ctx symbol_table e1; check_expr ctx symbol_table e2
   | EIf (cond, t, eopt) ->
-      check_expr ctx cond;
+      check_expr ctx symbol_table cond;
       
       (* 悲观合并：保存分支前的变量状态 *)
       let vars_before = ctx.vars in
       
       (* 检查then分支 *)
-      check_expr ctx t;
+      check_expr ctx symbol_table t;
       let vars_after_then = ctx.vars in
       
       (* 恢复变量状态，检查else分支（如果有） *)
       ctx.vars <- vars_before;
       let vars_after_else = match eopt with
         | Some e -> 
-            check_expr ctx e;
+            check_expr ctx symbol_table e;
             ctx.vars
         | None -> vars_before
       in
@@ -88,14 +102,14 @@ let rec check_expr ctx e =
         ) vars_after_then vars_after_else in
       
       ctx.vars <- merged_vars
-  | ECast (e, _) -> check_expr ctx e
+  | ECast (e, _) -> check_expr ctx symbol_table e
   | EChoose (var_expr, when_branches, otherwise_opt) ->
       (* 检查choose表达式：otherwise分支不可省略 *)
       if otherwise_opt = None then
         err "choose expression must have an otherwise branch";
       
       (* 检查变量表达式 *)
-      check_expr ctx var_expr;
+      check_expr ctx symbol_table var_expr;
       
       (* 悲观合并：保存分支前的变量状态 *)
       let vars_before = ctx.vars in
@@ -105,9 +119,9 @@ let rec check_expr ctx e =
           (* 恢复到分支前的状态 *)
           ctx.vars <- vars_before;
           (* 检查when条件表达式 *)
-          check_expr ctx when_val;
+          check_expr ctx symbol_table when_val;
           (* 检查when分支体 *)
-          check_expr ctx when_body;
+          check_expr ctx symbol_table when_body;
           (* 保存分支后的状态 *)
           ctx.vars
         ) when_branches in
@@ -116,7 +130,7 @@ let rec check_expr ctx e =
       ctx.vars <- vars_before;
       let otherwise_vars = match otherwise_opt with
         | Some otherwise_body ->
-            check_expr ctx otherwise_body;
+            check_expr ctx symbol_table otherwise_body;
             ctx.vars
         | None -> vars_before
       in
@@ -149,7 +163,7 @@ let rec check_expr ctx e =
       List.iter (fun stmt -> match stmt with
           | SLet (is_mutable, name, e) ->
               (* 首先检查右侧表达式 *)
-              check_expr ctx e;
+              check_expr ctx symbol_table e;
               (* 为变量分配一个默认类型，实际应用中应该进行类型推导 *)
               let var_type = TInt (* 临时默认类型，后续需要类型推导 *) in
               (* 将新变量添加到环境中 *)
@@ -161,15 +175,15 @@ let rec check_expr ctx e =
                 if not var_info.is_mutable then err ("Cannot assign to immutable variable: " ^ name);
                 if var_info.state = `Moved then err ("Use of moved value: " ^ name);
                 (* 检查右侧表达式 *)
-                check_expr ctx e;
+                check_expr ctx symbol_table e;
                 (* 更新变量状态 *)
                 ctx.vars <- Env.add name {var_info with state = `Valid} ctx.vars
               )
-          | SReturn e -> check_expr ctx e
-          | SExpr e -> check_expr ctx e
+          | SReturn e -> check_expr ctx symbol_table e
+          | SExpr e -> check_expr ctx symbol_table e
         ) stmts;
       (* 检查块中的最后表达式 *)
-      Option.iter (check_expr ctx) expr_opt;
+      Option.iter (check_expr ctx symbol_table) expr_opt;
       
       (* 悲观合并：传播对外层变量的移动操作 *)
       (* 只保留外层作用域中存在的变量，并更新它们的状态 *)
@@ -194,6 +208,9 @@ let rec check_expr ctx e =
   | _ -> ()
 
 let check_program defs =
+  (* 构建符号表，用于函数安全属性查询 *)
+  let symbol_table = Symbol_table.build_symbol_table defs in
+  
   (* 检查模块声明位置和重复性 *)
   let module_decls = ref [] in
   let has_non_module_decl = ref false in
@@ -220,7 +237,7 @@ let check_program defs =
   if not !has_module_decl then
     failwith "Program must have one module declaration";
   
-  (* 第二遍：进行原有的语义检查 *)
+  (* 第二遍：进行语义检查 *)
   let types = List.fold_left (fun acc -> function
       | DStruct (name, fields) -> Env.add name fields acc
       | _ -> acc
@@ -236,7 +253,16 @@ let check_program defs =
                   Env.add n { typ = t; state = `Valid; is_mutable = false; is_ref_param = false } vars
             ) Env.empty params in
           let ctx = { types; vars } in
-          check_expr ctx body
+          check_expr ctx symbol_table body
+      | DFuncUnsafe (_, params, _, body) ->
+          (* unsafe函数：跳过所有语义检查 *)
+          ()
+      | DCFuncUnsafe (_, params, _, body) ->
+          (* C unsafe函数：跳过所有语义检查 *)
+          ()
+      | DFuncTrusted (_, params, _, body) ->
+          (* trusted函数：跳过所有语义检查 *)
+          ()
       | DStruct (_, _) -> ()
       | DModule _ -> ()  (* 模块声明已经在第一遍检查过 *)
       | _ -> ()

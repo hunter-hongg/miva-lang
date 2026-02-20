@@ -17,6 +17,8 @@ rule token = parse
   | "=>"                { DARROW }
   | '('                 { LPAREN }
   | ')'                 { RPAREN }
+  | '['                 { LBRACKET }
+  | ']'                 { RBRACKET }
   | '{'                 { LBRACE }
   | '}'                 { RBRACE }
   | ','                 { COMMA }
@@ -38,6 +40,9 @@ rule token = parse
   | "else"              { ELSE }
   | "mut"               { MUT }
   | "return"            { RETURN }
+  | "unsafe"            { UNSAFE }
+  | "trusted"           { TRUSTED }
+  | "c"                 { C_KEYWORD }
   | "int"               { INT }
   | "bool"              { BOOL }
   | "float32"           { FLOAT32 }
@@ -73,11 +78,17 @@ rule token = parse
                           in
                           STRING_LIT (parse 0)
                         }
+  | "\"\"\"" { multi_string "" lexbuf }
   | "true"              { BOOL_LIT true }
   | "false"             { BOOL_LIT false }
   | ident as id         { IDENT id }
   | eof                 { EOF }
   | _ as c              { raise (SyntaxError ("Unexpected char: " ^ String.make 1 c)) }
+
+and multi_string acc = parse
+  | "\"\"\"" { STRING_LIT acc }
+  | '\n' { Lexing.new_line lexbuf; multi_string (acc ^ "\n") lexbuf }
+  | _ as c { multi_string (acc ^ String.make 1 c) lexbuf }
 
 and comment = parse
   | "*/"                { () }

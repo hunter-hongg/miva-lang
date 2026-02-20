@@ -25,6 +25,7 @@ type expr =
   | ECall of string * expr list
   | ECast of expr * typ
   | EBlock of stmt list * expr option  (* 块级表达式：语句列表 + 可选的返回表达式 *)
+  | EArrayLit of expr list  (* 数组字面量：[]{expr1, expr2, ...} *)
 
 and binop =
   | Add | Sub | Mul | Eq | Neq
@@ -42,6 +43,9 @@ and stmt =
 and def =
   | DStruct of string * (string * typ) list
   | DFunc of string * param list * typ option * expr
+  | DFuncUnsafe of string * param list * typ option * expr
+  | DFuncTrusted of string * param list * typ option * expr
+  | DCFuncUnsafe of string * param list * typ option * string  (* C unsafe function with embedded C code *)
   | DModule of string
   | SExport of string
   | SImport of string

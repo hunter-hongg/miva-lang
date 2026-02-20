@@ -169,7 +169,10 @@ and cxx_expr_of_expr indent_level ctx expr =
             ind ^ "else { " ^ body_str ^ " }"
         | None -> "" in
       
-      "([&]() {\n" ^ cases_str ^ otherwise_str ^ "\n" ^ ind ^ "}())"
+      "([&]() {\n" ^ cases_str ^ otherwise_str ^ "\n" ^ ind ^ "\n}())"
+  | EArrayLit elems ->
+      let elem_strs = List.map (cxx_expr_of_expr indent_level ctx) elems in
+      "std::vector{" ^ String.concat ", " elem_strs ^ "}"
 
 let cxx_deal_module name = 
     if String.compare name "main" == 0 then 
@@ -207,6 +210,152 @@ let cxx_def_of_def indent_level ctx def =
         | _ -> 
             (* 单表达式函数：直接返回表达式 *)
             ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
+      in
+      body_str
+  | DCFuncUnsafe (name, params, ret_typ_opt, body) -> 
+      let param_strs = List.map (fun param -> 
+          match param with
+          | PRef (pname, ptyp) -> 
+              cxx_type_of_typ ptyp ^ " const& " ^ pname
+          | POwn (pname, ptyp) -> 
+              cxx_type_of_typ ptyp ^ " " ^ pname
+        ) params in
+      let ret_type = match ret_typ_opt with
+        | Some typ -> cxx_type_of_typ typ
+        | None -> "mvp_builtin_unit" in
+      let func_signature = ret_type ^ " " ^ name ^ "(" ^ String.concat ", " param_strs ^ ")" in
+      
+      ind ^ func_signature ^ " {\n" ^ 
+      body ^ "\n" ^ 
+      ind ^ "}\n\n"
+  | DFuncUnsafe (name, params, ret_typ_opt, body) -> 
+      (* unsafe函数生成与普通函数相同，只是语义检查阶段跳过 *)
+      let param_strs = List.map (fun param -> 
+          match param with
+          | PRef (pname, ptyp) -> 
+              cxx_type_of_typ ptyp ^ " const& " ^ pname
+          | POwn (pname, ptyp) -> 
+              cxx_type_of_typ ptyp ^ " " ^ pname
+        ) params in
+      let ret_type = match ret_typ_opt with
+        | Some typ -> cxx_type_of_typ typ
+        | None -> "mvp_builtin_unit" in
+      let func_signature = ret_type ^ " " ^ name ^ "(" ^ String.concat ", " param_strs ^ ")" in
+      
+      (* Create a local context with function parameters *)
+      let local_ctx = List.fold_left (fun ctx param -> 
+          match param with
+          | PRef (pname, ptyp) | POwn (pname, ptyp) -> 
+              { ctx with vars = Env.add pname { typ = ptyp; state = `Valid; is_mutable = false } ctx.vars }
+        ) ctx params in
+
+      let body_str = match body with
+        | EBlock (stmts, expr_opt) ->
+            let stmt_strs, expr_str = 
+              match ret_type with
+              | "mvp_builtin_unit" ->
+                  let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts in
+                  let expr_str = match expr_opt with
+                    | Some expr -> 
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                    | None ->
+                        ind_inner ^ "return mvp_builtin_void;\n"
+                  in
+                  (stmt_strs, expr_str)
+              | _ ->
+                  let stmt_strs, last_expr = 
+                    match List.rev stmts with
+                    | SExpr expr :: rest ->
+                        let rev_stmts = List.rev rest in
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) rev_stmts, Some expr)
+                    | _ ->
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts, None)
+                  in
+                  let expr_str = match expr_opt with
+                    | Some expr -> 
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                    | None ->
+                        match last_expr with
+                        | Some expr ->
+                            ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                        | None -> ""
+                  in
+                  (stmt_strs, expr_str)
+            in
+            ind ^ func_signature ^ " {\n" ^ 
+            String.concat "" stmt_strs ^ expr_str ^ 
+            ind ^ "}\n\n"
+        | _ -> 
+            match ret_type with
+            | "mvp_builtin_unit" ->
+                ind ^ func_signature ^ " { return mvp_builtin_void; }\n\n"
+            | _ ->
+                ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
+      in
+      body_str
+  | DFuncTrusted (name, params, ret_typ_opt, body) -> 
+      (* trusted函数生成与unsafe函数相同，语义检查阶段跳过 *)
+      let param_strs = List.map (fun param -> 
+          match param with
+          | PRef (pname, ptyp) -> 
+              cxx_type_of_typ ptyp ^ " const& " ^ pname
+          | POwn (pname, ptyp) -> 
+              cxx_type_of_typ ptyp ^ " " ^ pname
+        ) params in
+      let ret_type = match ret_typ_opt with
+        | Some typ -> cxx_type_of_typ typ
+        | None -> "mvp_builtin_unit" in
+      let func_signature = ret_type ^ " " ^ name ^ "(" ^ String.concat ", " param_strs ^ ")" in
+      
+      (* Create a local context with function parameters *)
+      let local_ctx = List.fold_left (fun ctx param -> 
+          match param with
+          | PRef (pname, ptyp) | POwn (pname, ptyp) -> 
+              { ctx with vars = Env.add pname { typ = ptyp; state = `Valid; is_mutable = false } ctx.vars }
+        ) ctx params in
+
+      let body_str = match body with
+        | EBlock (stmts, expr_opt) ->
+            let stmt_strs, expr_str = 
+              match ret_type with
+              | "mvp_builtin_unit" ->
+                  let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts in
+                  let expr_str = match expr_opt with
+                    | Some expr -> 
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                    | None ->
+                        ind_inner ^ "return mvp_builtin_void;\n"
+                  in
+                  (stmt_strs, expr_str)
+              | _ ->
+                  let stmt_strs, last_expr = 
+                    match List.rev stmts with
+                    | SExpr expr :: rest ->
+                        let rev_stmts = List.rev rest in
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) rev_stmts, Some expr)
+                    | _ ->
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts, None)
+                  in
+                  let expr_str = match expr_opt with
+                    | Some expr -> 
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                    | None ->
+                        match last_expr with
+                        | Some expr ->
+                            ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                        | None -> ""
+                  in
+                  (stmt_strs, expr_str)
+            in
+            ind ^ func_signature ^ " {\n" ^ 
+            String.concat "" stmt_strs ^ expr_str ^ 
+            ind ^ "}\n\n"
+        | _ -> 
+            match ret_type with
+            | "mvp_builtin_unit" ->
+                ind ^ func_signature ^ " { return mvp_builtin_void; }\n\n"
+            | _ ->
+                ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
       in
       body_str 
   | DFunc (name, params, ret_typ_opt, body) -> 
@@ -378,9 +527,9 @@ let generate_header defs =
                   "};\n\n"
               | None ->
                   (* 不是结构体，检查是否是函数 *)
-                  let func_info = List.find_opt (fun (fname, _, _) -> fname = name) symbol_table.functions in
+                  let func_info = List.find_opt (fun (fname, _, _, _) -> fname = name) symbol_table.functions in
                   match func_info with
-                  | Some (fname, params, ret_typ_opt) ->
+                  | Some (fname, params, ret_typ_opt, _) ->
                       cxx_func_declaration fname params ret_typ_opt
                   | None ->
                       (* 如果符号表中找不到，发出警告但继续处理 *)

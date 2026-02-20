@@ -11,10 +11,16 @@ let find_index elem list =
 
 (* 符号表类型定义 *)
 type symbol_table = {
-  functions: (string * param list * typ option) list; (* 函数名 -> 参数列表和返回类型 *)
+  functions: (string * param list * typ option * function_safety) list; (* 函数名 -> 参数列表和返回类型和安全属性 *)
   structs: (string * (string * typ) list) list;      (* 结构体名 -> 字段列表 *)
   files: string list
 }
+
+(* 函数安全属性 *)
+and function_safety = 
+  | Safe
+  | Unsafe 
+  | Trusted
 
 (* 空符号表 *)
 let empty_symbol_table = {
@@ -44,9 +50,9 @@ let rec drop n list =
 
 (* 检查函数是否重复定义 *)
 let check_function_duplicate name params _return_typ symbol_table =
-  let existing_funcs = List.filter (fun (n, _, _) -> n = name) symbol_table.functions in
+  let existing_funcs = List.filter (fun (n, _, _, _) -> n = name) symbol_table.functions in
   if List.length existing_funcs > 0 then
-    let existing_params = List.map (fun (_, p, _) -> p) existing_funcs in
+    let existing_params = List.map (fun (_, p, _, _) -> p) existing_funcs in
     (* 检查参数列表是否相同 - 不允许函数重载 *)
     if List.exists (fun p -> p = params) existing_params then
       failwith ("Function '" ^ name ^ "' is already defined")
@@ -54,7 +60,7 @@ let check_function_duplicate name params _return_typ symbol_table =
       (* 即使参数不同也不允许重载 *)
       failwith ("Function '" ^ name ^ "' is already defined (function overloading is not allowed)")
   else
-    ()
+      ()
 
 (* 检查结构体是否重复定义 *)
 let check_struct_duplicate name symbol_table =
@@ -65,10 +71,10 @@ let check_struct_duplicate name symbol_table =
     ()
 
 (* 添加函数到符号表 *)
-let add_function name params return_typ symbol_table =
+let add_function name params return_typ safety symbol_table =
   check_function_duplicate name params return_typ symbol_table;
   { symbol_table with 
-    functions = (name, params, return_typ) :: symbol_table.functions 
+    functions = (name, params, return_typ, safety) :: symbol_table.functions 
   }
 
 (* 添加结构体到符号表 *)
@@ -84,7 +90,13 @@ let process_definition def symbol_table =
   | DStruct (name, fields) ->
       add_struct name fields symbol_table
   | DFunc (name, params, return_typ, _) ->
-      add_function name params return_typ symbol_table
+      add_function name params return_typ Safe symbol_table
+  | DFuncUnsafe (name, params, return_typ, _) ->
+      add_function name params return_typ Unsafe symbol_table
+  | DFuncTrusted (name, params, return_typ, _) ->
+      add_function name params return_typ Trusted symbol_table
+  | DCFuncUnsafe (name, params, return_typ, _) ->
+      add_function name params return_typ Unsafe symbol_table
   | DModule _ -> (
     symbol_table
   )
@@ -158,6 +170,14 @@ let check_circular_dependencies file_paths =
     if not (List.mem file !visited) then
       visit file !visited !stack
   ) file_paths
+
+(* 获取函数的安全属性 *)
+let get_function_safety name symbol_table =
+  let funcs = List.filter (fun (n, _, _, _) -> n = name) symbol_table.functions in
+  match funcs with
+  | [(_, _, _, safety)] -> Some safety
+  | [] -> None
+  | _ -> failwith ("Multiple definitions of function: " ^ name)
 
 (* 检查程序中的符号重复定义 *)
 let check_symbols defs =

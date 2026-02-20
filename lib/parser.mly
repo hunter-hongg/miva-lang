@@ -8,13 +8,15 @@
 %token <string> STRING_LIT
 %token <bool> BOOL_LIT
 %token <string> IDENT
-%token EQ COLONEQ DARROW LPAREN RPAREN LBRACE RBRACE COMMA DOT SEMI
+
+%token EQ COLONEQ DARROW LPAREN RPAREN LBRACE RBRACE COMMA DOT  LBRACKET RBRACKET
 %token PLUS MINUS STAR EQEQ NEQ AS
 %token STRUCT REF MOVE CLONE PRINT IF ELSE MUT RETURN
 %token INT BOOL FLOAT32 FLOAT64 CHAR STRING
 %token EOF
-%token OWN THEN COLON
+%token OWN COLON
 %token CHOOSE WHEN OTHERWISE MODULE EXPORT IMPORT
+%token UNSAFE TRUSTED C_KEYWORD 
 
 %left PLUS MINUS          /* 最低优先级，左结合 */
 %left STAR                /* 中等优先级，左结合 */
@@ -39,9 +41,22 @@ def:
     { DFunc (name, params, Some ret_typ, body) }
   | name = IDENT EQ params = func_params DARROW body = expr
     { DFunc (name, params, None, body) }
+  | UNSAFE name = IDENT EQ params = func_params COLON ret_typ = typ DARROW body = expr
+    { DFuncUnsafe (name, params, Some ret_typ, body) }
+  | UNSAFE name = IDENT EQ params = func_params DARROW body = expr
+    { DFuncUnsafe (name, params, None, body) }
+  | TRUSTED name = IDENT EQ params = func_params COLON ret_typ = typ DARROW body = expr
+    { DFuncTrusted (name, params, Some ret_typ, body) }
+  | TRUSTED name = IDENT EQ params = func_params DARROW body = expr
+    { DFuncTrusted (name, params, None, body) }
+  | C_KEYWORD UNSAFE name = IDENT EQ params = func_params COLON ret_typ = typ DARROW c_code = STRING_LIT
+    { DCFuncUnsafe (name, params, Some ret_typ, c_code) }
+  | C_KEYWORD UNSAFE name = IDENT EQ params = func_params DARROW c_code = STRING_LIT
+    { DCFuncUnsafe (name, params, None, c_code) }
   | MODULE name = STRING_LIT { DModule name }
   | EXPORT symbol = IDENT { SExport symbol }
   | IMPORT symbol = STRING_LIT { SImport symbol }
+
 
 func_params:
   | LPAREN RPAREN { [] }
@@ -80,7 +95,11 @@ atomic_expr:
   | PRINT LPAREN s = STRING_LIT RPAREN { ECall ("print", [EString s]) }
   | LPAREN e = expr RPAREN { e }
   | e = struct_init_expr { e }
+  | e = array_literal { e }
   | e = atomic_expr AS t = typ { ECast (e, t) }
+
+array_literal:
+  | LBRACKET RBRACKET LBRACE elems = separated_list(COMMA, expr) RBRACE { EArrayLit elems }
 
 field_access_expr:
   | e = atomic_expr { e }
@@ -126,7 +145,6 @@ struct_init_expr:
   | STRUCT name = type_path LBRACE inits = struct_inits RBRACE { EStructLit (name, inits) }
 
 stmt_list:
-  | /* empty */ { [] }
   | stmts = list(stmt) { stmts }
 
 struct_inits:
