@@ -121,7 +121,10 @@ and cxx_expr_of_expr indent_level ctx expr =
         | "string_length" -> "mvp_string_length"
         | _ -> 
             (* 将a.b.c.foo转换为a::b::c::foo *)
-            String.concat "::" (String.split_on_char '.' name)
+            let lst = (String.split_on_char '.' name) in
+            match lst with 
+            | "ffi" :: rest -> (String.concat "::" rest)
+            | _ -> String.concat "::" lst
       in
       call_name ^ "(" ^ String.concat ", " args_str ^ ")"
   | ECast (expr, typ) -> 
@@ -447,31 +450,38 @@ let cxx_def_of_def indent_level ctx def =
   | SExport _ ->
       ""
   | SImport import -> (
-    let toml = read_file "mvp.toml" in
-    match Toml.Parser.from_string toml with 
-    | `Ok table -> (
-      try 
-        match Toml.Types.Table.find (Toml.Min.key "project") table with 
-        | Toml.Types.TTable t -> (
-          match Toml.Types.Table.find (Toml.Min.key "name") t with 
-          | Toml.Types.TString s -> (
-            if String.starts_with ~prefix:s import then
-              let res = "#include <src/" ^
-                (String.concat "/" ((String.split_on_char '/' import) |> List.tl))
-                ^ ".h>\n" in
-              res
-            else
-              let pstk = String.split_on_char '/' import in
-              let res = "#include <" ^ get_head pstk ^ "/src/" ^ (String.concat "/" (List.tl pstk)) ^ ".h>\n" in
-              res
-          )
-          | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+    if String.starts_with ~prefix:"c:" import then 
+        let import_str = String.sub import 2 (String.length import - 2) in
+        "#include <" ^ import_str ^ ">\n"
+    else (
+        let toml = read_file "mvp.toml" in
+        match Toml.Parser.from_string toml with 
+        | `Ok table -> (
+        try 
+            match Toml.Types.Table.find (Toml.Min.key "project") table with 
+            | Toml.Types.TTable t -> (
+            match Toml.Types.Table.find (Toml.Min.key "name") t with 
+            | Toml.Types.TString s -> (
+                if String.starts_with ~prefix:s import then
+                let res = "#include <src/" ^
+                    (String.concat "/" ((String.split_on_char '/' import) |> List.tl))
+                    ^ ".h>\n" in
+                res
+                else
+                let pstk = String.split_on_char '/' import in
+                let res = "#include <" ^ 
+                    get_head pstk ^ "/src/" ^ 
+                    (String.concat "/" (List.tl pstk)) ^ ".h>\n" in
+                res
+            )
+            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+            )
+            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+        with 
+            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
         )
-        | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
-      with 
-        | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
-      )
-    | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
+        | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
+    )
   )
 
 

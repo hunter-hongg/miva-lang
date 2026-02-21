@@ -1,3 +1,4 @@
+[@@@ocaml.warning "-11"]
 open Ast
 
 (* 辅助函数：查找元素在列表中的索引 *)
@@ -11,8 +12,10 @@ let find_index elem list =
 
 (* 符号表类型定义 *)
 type symbol_table = {
+  module_name: string;                              (* 模块名 *)
   functions: (string * param list * typ option * function_safety) list; (* 函数名 -> 参数列表和返回类型和安全属性 *)
   structs: (string * (string * typ) list) list;      (* 结构体名 -> 字段列表 *)
+  exported_functions: (string * param list * typ option * function_safety) list;                  (* 导出的函数名列表 *)
   files: string list
 }
 
@@ -24,8 +27,10 @@ and function_safety =
 
 (* 空符号表 *)
 let empty_symbol_table = {
+  module_name = "";
   functions = [];
   structs = [];
+  exported_functions = [];
   files = [];
 }
 
@@ -97,10 +102,13 @@ let process_definition def symbol_table =
       add_function name params return_typ Trusted symbol_table
   | DCFuncUnsafe (name, params, return_typ, _) ->
       add_function name params return_typ Unsafe symbol_table
-  | DModule _ -> (
-    symbol_table
+  | DModule name -> (
+    { symbol_table with module_name = name }
   )
   | SImport import -> (
+    if String.starts_with ~prefix:"c:" import then 
+      symbol_table
+    else
     let toml = read_file "mvp.toml" in
     let file = match Toml.Parser.from_string toml with 
     | `Ok table -> (
@@ -123,11 +131,20 @@ let process_definition def symbol_table =
         | _ -> ""
       with 
         | _ -> ""
-      );
+    );
     | _ -> "" in
     if file <> "" then
       { symbol_table with files = file :: symbol_table.files }
     else 
+      symbol_table
+  )
+  | SExport name -> (
+    (* 检查是否是函数，如果是则添加到导出函数列表 *)
+    let is_function = List.exists (fun (fname, _, _, _) -> fname = name) symbol_table.functions in
+    if is_function then
+      let func = List.find (fun (fname, _, _, _) -> fname = name) symbol_table.functions in
+      { symbol_table with exported_functions = func :: symbol_table.exported_functions }
+    else
       symbol_table
   )
   | _ -> symbol_table

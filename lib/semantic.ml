@@ -1,7 +1,30 @@
 [@@@ocaml.warning "-27"]
 open Ast
+open Printf
 
 module Env = Map.Make(String)
+
+let parse_input_file filename =
+  let ic = open_in filename in
+  let lexbuf = Lexing.from_channel ic in
+  Lexing.set_filename lexbuf filename;
+  try
+    let ast = Parser.program Lexer.token lexbuf in
+    close_in ic;
+    ast
+  with
+  | Parsing.Parse_error ->
+      let pos = Lexing.lexeme_start_p lexbuf in
+      let line = pos.Lexing.pos_lnum in
+      let col = pos.Lexing.pos_cnum - pos.Lexing.pos_bol + 1 in
+      eprintf "Syntax error at %s:%d:%d\n%!" filename line col;
+      exit 1
+  | Lexer.SyntaxError msg ->
+      eprintf "Lexer error: %s\n%!" msg;
+      exit 1
+  | _ ->
+      eprintf "Parsing error\n%!";
+      exit 1
 
 type var_info = {
   typ: typ;
@@ -60,7 +83,10 @@ let rec check_expr ctx symbol_table e =
       | Some Symbol_table.Safe ->
           ()  (* 可以调用safe函数 *)
       | None ->
-          ()  (* 函数未找到，可能是内置函数或其他情况，暂不处理 *)
+          if String.starts_with ~prefix:"ffi." name then 
+            failwith ("Cannot call unsafe ffi function '" ^ name ^ "' from safe function")
+          else
+            failwith ("Unknown function: " ^ name)
       );
       List.iter (check_expr ctx symbol_table) args
   | EStructLit (_, inits) -> List.iter (fun (_, e) -> check_expr ctx symbol_table e) inits
@@ -210,6 +236,26 @@ let rec check_expr ctx symbol_table e =
 let check_program defs =
   (* 构建符号表，用于函数安全属性查询 *)
   let symbol_table = Symbol_table.build_symbol_table defs in
+  let funct = ref (symbol_table.functions) in
+  let _ = List.iter (fun def -> (
+    funct := !funct @ [(def, [], None, Safe)];
+    ()
+  )) Global.builtin_functions in
+  let _ = List.iter (fun file -> (
+    let defsn = parse_input_file file in 
+    let symbt = Symbol_table.build_symbol_table defsn in
+    List.iter (fun fn -> (
+      match fn with 
+      | (name, params, return_typ, safety) -> (
+        let nmod = if String.starts_with ~prefix:"std" symbt.module_name then 
+          "mvp_std." ^ (String.concat "." ((String.split_on_char '.' symbt.module_name) |> List.tl))
+        else symbt.module_name in
+        let nfn = (nmod ^ "." ^ name, params, return_typ, safety) in
+        funct := !funct @ [nfn]
+       )
+    )) symbt.exported_functions
+  )) symbol_table.files in
+  let symbol_table = {symbol_table with functions = !funct} in
   
   (* 检查模块声明位置和重复性 *)
   let module_decls = ref [] in

@@ -53,6 +53,9 @@ let parse_input_file filename =
   | Lexer.SyntaxError msg ->
       eprintf "Lexer error: %s\n%!" msg;
       exit 1
+  | _ ->
+      eprintf "Parsing error\n%!";
+      exit 1
 
 let check_semantics ast =
   try Semantic.check_program ast
@@ -88,6 +91,12 @@ let get_cache_dir () =
 let get_std_include_dir () =
   try Sys.getenv "MVP_STD" with Not_found -> "util"
 
+let get_include_flag () = 
+  try Sys.getenv "MVP_INC_FLAGS" with Not_found -> ""
+
+let get_link_flag () = 
+  try Sys.getenv "MVP_LINK_FLAGS" with Not_found -> ""
+
 let ensure_dir_for_file file_path =
   let dir = Filename.dirname file_path in
   if not (Sys.file_exists dir) then
@@ -111,10 +120,11 @@ let compile_cpp ~verbose ~_input_file ~output_file =
   ensure_dir_for_file header_file;
   ensure_dir_for_file exe_file;
   
+  let incf = get_include_flag () in
   (* 编译命令 *)
   let cmd =
-    sprintf "g++ -O2 %s -o %s -I%s -I%s -I%s -std=c++20 %s -c"
-      cpp_file obj_file cache_dir std_include build_dir (if verbose then "" else "2>/dev/null")
+    sprintf "g++ -O2 %s -o %s -I%s -I%s -I%s -std=c++20 %s -c %s"
+      cpp_file obj_file cache_dir std_include build_dir (if verbose then "" else "2>/dev/null") incf
   in
   
   if Sys.command cmd <> 0 then (
@@ -141,9 +151,10 @@ let compile_cpp ~verbose ~_input_file ~output_file =
 let link_file ~verbose ~obj_files ~output_file =
   let build_dir = get_build_dir () in
   let exe_file = build_dir ^ "/" ^ output_file in
+  let lnkf = get_link_flag () in
   let cmd =
-    sprintf "g++ -O2 %s -o %s -std=c++20"
-      (String.concat " " obj_files) exe_file
+    sprintf "g++ -O2 %s -o %s -std=c++20 %s"
+      (String.concat " " obj_files) exe_file lnkf
   in
   if Sys.command cmd <> 0 then (
     if not verbose then (
