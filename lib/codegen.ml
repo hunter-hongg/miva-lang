@@ -481,8 +481,8 @@ let cxx_def_of_def indent_level ctx def =
             | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
         )
         | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
-    )
-  )
+    ))
+  | DTest(_, _) -> ""
 
 
 (* 生成函数声明（用于头文件） *)
@@ -498,6 +498,74 @@ let cxx_func_declaration func_name params ret_typ_opt =
     | Some typ -> cxx_type_of_typ typ
     | None -> "mvp_builtin_unit" in
   ret_type ^ " " ^ func_name ^ "(" ^ String.concat ", " param_strs ^ ");\n"
+
+let generate_test indent_level defs = 
+    let ind = indent indent_level in
+    let ind_inner = indent (indent_level + 1) in
+    let local_ctx = { vars = Env.empty; types = Env.empty} in
+    let header = "#include <mvp_builtin.h>\n" in
+    let body = ref "" in 
+    let found = ref false in
+    List.iter (fun def ->
+      match def with
+      | DTest (name, expr) ->
+      let param_strs = ["";] in
+      let ret_type = "mvp_builtin_int" in
+      let func_signature = ret_type ^ " " ^ name ^ "(" ^ String.concat ", " param_strs ^ ")" in
+      let body_str = match expr with
+        | EBlock (stmts, expr_opt) ->
+            let stmt_strs, expr_str = 
+                let stmt_strs, last_expr = 
+                match List.rev stmts with
+                | SExpr expr :: rest ->
+                    let rev_stmts = List.rev rest in
+                    (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) rev_stmts, Some expr)
+                | _ ->
+                    (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts, None)
+                in
+                let expr_str = match expr_opt with
+                | Some expr -> 
+                    ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                | None ->
+                    match last_expr with
+                    | Some expr ->
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                    | None -> ""
+                in
+                (stmt_strs, expr_str)
+            in
+            found := true;
+            ind ^ func_signature ^ " {\n" ^ 
+            String.concat "" stmt_strs ^ expr_str ^ 
+            ind ^ "}\n\n"
+        | _ -> 
+            ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx expr ^ "; }\n\n"
+      in
+      body := ((!body) ^ body_str)
+      | _ -> ()
+    ) defs;
+    if not (!found) then "" else
+    header ^ !body ^ "int main() {\n" ^
+      "mvp_builtin_int passed = 0, failed = 0;\n" ^
+      String.concat "" (List.map( fun def -> (
+        match def with
+        | DTest (name, _) -> (
+            "try {\n" ^
+            "auto res = " ^
+            name ^ "();\n" ^
+            "if (res != 0) {\n" ^ 
+            "throw std::runtime_error(\"Test failed: " ^ name ^ " returns none-zero.\");\n" ^
+            "}\n" ^ 
+            "passed++;\n" ^
+            "} catch (const std::exception& e) {\n" ^
+            " mvp_errorlns(\"Error testing " ^ name ^ " : panic: \", e.what()); failed++;\n" ^
+            "}\n"  
+        )
+        | _ -> ""
+      )) defs) ^
+      "if (failed == 0) {mvp_println(\"All tests passed.\");return 0;}\n" ^
+      "else {mvp_printlns(\"Test failed. Failed: \", failed, \" Passed: \", passed);return 1;}" ^
+    "}"
 
 (* 生成头文件内容 *)
 let generate_header defs =
@@ -608,7 +676,11 @@ let build_ir _fpath defs =
               | Some module_name ->
                   "int main(int argc, char** argv)\n" ^
                   "{\n" ^
+                  "  try {\n" ^
                   "  " ^ cxx_deal_module module_name ^ "::mvp_own_main(argc);\n" ^
+                  "  } catch (std::exception& e) {\n" ^
+                  "     mvp_errorlns(\"panic: \", e.what());" ^
+                  "  }\n" ^
                   "  return 0;\n" ^
                   "}\n\n"
               | None ->
@@ -633,4 +705,5 @@ let build_ir _fpath defs =
   
   let includes, module_content, main_functions = generate_with_scope ctx None "" "" "" defs in
   let program = header ^ includes ^ module_content ^ main_functions ^ "\n" in
-  [program;header_content]
+  let test = generate_test 0 defs in
+  [program;header_content;test]

@@ -11,7 +11,7 @@
 
 %token EQ COLONEQ DARROW LPAREN RPAREN LBRACE RBRACE COMMA DOT  LBRACKET RBRACKET
 %token PLUS MINUS STAR EQEQ NEQ AS
-%token STRUCT REF MOVE CLONE PRINT IF ELSE MUT RETURN
+%token STRUCT REF MOVE CLONE PRINT IF ELSE MUT RETURN TEST
 %token INT BOOL FLOAT32 FLOAT64 CHAR STRING
 %token EOF
 %token OWN COLON
@@ -53,6 +53,8 @@ def:
     { DCFuncUnsafe (name, params, Some ret_typ, c_code) }
   | C_KEYWORD UNSAFE name = IDENT EQ params = func_params DARROW c_code = STRING_LIT
     { DCFuncUnsafe (name, params, None, c_code) }
+  | TEST name = IDENT EQ LPAREN RPAREN COLON INT DARROW body = expr
+    { DTest (name, body) }
   | MODULE name = STRING_LIT { DModule name }
   | EXPORT symbol = IDENT { SExport symbol }
   | IMPORT symbol = STRING_LIT { SImport symbol }

@@ -309,6 +309,10 @@ let check_program defs =
       | DFuncTrusted (_, params, _, body) ->
           (* trusted函数：跳过所有语义检查 *)
           ()
+      | DTest (_, body) ->
+          (* 测试函数：进行语义检查，确保返回int类型 *)
+          let ctx = { types; vars = Env.empty } in
+          check_expr ctx symbol_table body
       | DStruct (_, _) -> ()
       | DModule _ -> ()  (* 模块声明已经在第一遍检查过 *)
       | _ -> ()

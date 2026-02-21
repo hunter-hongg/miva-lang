@@ -1,4 +1,5 @@
 [@@@ocaml.warning "-21"]
+[@@@ocaml.warning "-32"]
 [@@@ocaml.warning "-26"]
 open Printf
 open Cmdliner
@@ -9,7 +10,20 @@ module Parser = Mvp_lib.Parser
 module Semantic = Mvp_lib.Semantic
 module SymbolTable = Mvp_lib.Symbol_table
 module Codegen = Mvp_lib.Codegen
-
+let list_files dir =
+  let dh = Unix.opendir dir in
+  let rec read_files acc =
+    try
+      let entry = Unix.readdir dh in
+      if entry = "." || entry = ".." then
+        read_files acc
+      else
+        read_files (entry :: acc)
+    with End_of_file ->
+      Unix.closedir dh;
+      List.rev acc
+  in
+  read_files []
 let write_file filename content =
   let channel = open_out filename in  (* 打开文件，如果存在则覆盖 *)
   output_string channel content;
@@ -80,6 +94,7 @@ let generate_cpp_code inp ast =
   with Failure msg ->
     eprintf "Codegen error: %s\n%!" msg;
     exit 1
+
 
 (* ---------- 构建目录管理 ---------- *)
 let get_build_dir () =
@@ -189,12 +204,18 @@ let compile_program_obj ~verbose ~input_file ~output_file =
   let base_name = Filename.remove_extension output_file in
   let unique_base = base_name in
   let cpp_file = cache_dir ^ "/" ^ unique_base ^ ".cpp" in
+  let cpp_test_file = cache_dir ^ "/" ^ unique_base ^ ".test.cpp" in
 
   let header_file = cache_dir ^ "/" ^ unique_base ^ ".h" in
+  let header_real = unique_base ^ ".h" in
   ensure_dir_for_file cpp_file;
   ensure_dir_for_file header_file;
-  let cpp_code_, header_code = match cpp_code with
-    | [cpp; header] -> (cpp, header)
+  let cpp_code_, header_code, test_code = match cpp_code with
+    | [cpp; header; test] -> (cpp, header, 
+        (if String.length test > 2 then (
+          "#include <" ^ header_real ^ ">\n" ^ test
+        ) else (""))
+      )
     | _ -> failwith "Unexpected codegen output format"
   in
   
@@ -202,6 +223,14 @@ let compile_program_obj ~verbose ~input_file ~output_file =
   let oc = open_out cpp_file in
   output_string oc cpp_code_;
   close_out oc;
+
+  if String.length test_code > 0 then (
+    let oc = open_out cpp_test_file in
+    output_string oc test_code;
+    close_out oc;
+  ) else (
+    ()
+  );
   
   (* 写入头文件（如果头文件内容不为空） *)
   if header_code <> "" then (
@@ -459,6 +488,70 @@ let run_cmd =
     $ const ()
   )
 
+(* ---------- 子命令: test ---------- *)
+let test_cmd = 
+  let doc = "Run all tests in the MVP project." in
+  let info = Cmd.info "test" ~doc in
+  Cmd.v info Term.(
+    const (fun verbose () ->
+      if not (Sys.file_exists "mvp.toml") then (
+        eprintf "Error: Project not initialized in this directory.\n%!";
+        exit 1;
+      ) else (
+        let _res = build_project ~verbose in
+        let files = list_files (get_cache_dir () ^ "/src") in 
+        let tests = List.filter (fun f -> String.ends_with ~suffix:".test.cpp" f) files in 
+        List.iter (fun f -> (
+          eprintf "Running %s...\n%!" f;
+          let f = (get_cache_dir () ^ "/src/" ^ f) in
+          let l = (String.length (get_cache_dir ())) in
+          let mvpf = (
+            String.sub f (l+1) (String.length f - l - 10)) ^ ".mvp" in
+          let ast = parse_input_file mvpf in
+          let symb = SymbolTable.build_symbol_table ast in
+          let res = List.map (fun s -> (
+            let stdp = get_std_include_dir () in
+            let objq = if String.starts_with ~prefix:stdp s then (
+              (get_cache_dir ()) ^ "/" ^ Filename.remove_extension (remove_prefix stdp s)
+            ) else (
+              (get_cache_dir ()) ^ "/" ^ (Filename.remove_extension s)
+            ) in
+            objq ^ ".o"
+          )) symb.files in
+          let cache_dir = get_cache_dir () in 
+          let std_include = get_std_include_dir () in
+          let build_dir = get_build_dir () in
+          let incf = get_include_flag () in
+          let cmd =
+            sprintf "g++ -O2 %s -o %s -I%s -I%s -I%s -std=c++20 %s -c %s"
+              f ((Filename.remove_extension f) ^ ".o") cache_dir std_include build_dir 
+              (if verbose then "" else "2>/dev/null") incf
+          in
+          let res = res @ [
+            (Filename.remove_extension f) ^ ".o"; 
+            (Filename.remove_extension (Filename.remove_extension f)) ^ ".o";
+          ] in
+          if Sys.command cmd <> 0 then (
+            eprintf "Error compiling %s\n" f;
+            eprintf "Running %s\n%!" cmd;
+            exit 1;
+          );
+          let cmdn = sprintf "g++ %s -o %s %s %s" 
+            (String.concat " " res) (Filename.remove_extension f) 
+            (if verbose then "" else "2>/dev/null") (get_link_flag ()) in
+          if Sys.command cmdn <> 0 then (
+            eprintf "Error linking %s\nRunning %s\n%!" f cmdn;
+            exit 1;
+          );
+          let _ = Sys.command (sprintf "./%s" (Filename.remove_extension f)) in
+          ()
+        )) tests
+      )
+    )
+    $ verbose
+    $ const ()
+  )
+
 (* ---------- 主命令 ---------- *)
 let default_cmd =
   let doc = "The MVP programming language compiler" in
@@ -474,6 +567,7 @@ let default_cmd =
     build_new_cmd; 
     run_new_cmd;
     clean_cmd;
+    test_cmd;
   ]
 
 let () =

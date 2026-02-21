@@ -46,6 +46,7 @@ and def =
   | DFuncUnsafe of string * param list * typ option * expr
   | DFuncTrusted of string * param list * typ option * expr
   | DCFuncUnsafe of string * param list * typ option * string  (* C unsafe function with embedded C code *)
+  | DTest of string * expr  (* 测试函数：名称和主体，固定无参返回int *)
   | DModule of string
   | SExport of string
   | SImport of string

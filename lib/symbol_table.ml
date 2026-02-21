@@ -100,6 +100,9 @@ let process_definition def symbol_table =
       add_function name params return_typ Unsafe symbol_table
   | DFuncTrusted (name, params, return_typ, _) ->
       add_function name params return_typ Trusted symbol_table
+  | DTest (_, _) ->
+      (* 测试函数不计入符号表 *)
+      symbol_table
   | DCFuncUnsafe (name, params, return_typ, _) ->
       add_function name params return_typ Unsafe symbol_table
   | DModule name -> (

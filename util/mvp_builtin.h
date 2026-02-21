@@ -54,8 +54,7 @@ inline mvp_builtin_string mvp_to_string(mvp_builtin_string const &v) {
 }
 
 inline mvp_builtin_unit mvp_panic(mvp_builtin_string const &str) {
-  printf("panic: %s\n", str.c_str());
-  std::abort();
+  throw std::runtime_error(str);
 }
 
 inline mvp_builtin_unit mvp_print(mvp_builtin_string const &str) {

@@ -82,6 +82,7 @@ rule token = parse
   | "return"            { RETURN }
   | "unsafe"            { UNSAFE }
   | "trusted"           { TRUSTED }
+  | "test"              { TEST }
   | "c"                 { C_KEYWORD }
   | "int"               { INT }
   | "bool"              { BOOL }
