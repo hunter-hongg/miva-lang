@@ -112,7 +112,7 @@ let process_definition def symbol_table =
     if String.starts_with ~prefix:"c:" import then 
       symbol_table
     else
-    let toml = read_file "mvp.toml" in
+    let toml = read_file "miva.toml" in
     let file = match Toml.Parser.from_string toml with 
     | `Ok table -> (
       try
@@ -122,12 +122,12 @@ let process_definition def symbol_table =
           | Toml.Types.TString s -> (
             if String.starts_with ~prefix:s import then 
               let res = String.concat "/" ((String.split_on_char '/' import) |> List.tl) in
-              let ret = "src/" ^ res ^ ".mvp" in
+              let ret = "src/" ^ res ^ ".miva" in
               ret
             else 
-              let stdpath = try Sys.getenv "MVP_STD" with _ -> "." in
+              let stdpath = try Sys.getenv "MIVA_STD" with _ -> "." in
               let pstack = String.split_on_char '/' import in
-              stdpath ^ "/" ^ get_head pstack ^ "/src/" ^ (String.concat "/" (List.tl pstack)) ^ ".mvp"
+              stdpath ^ "/" ^ get_head pstack ^ "/src/" ^ (String.concat "/" (List.tl pstack)) ^ ".miva"
           )
           | _ -> ""
         )

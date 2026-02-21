@@ -395,7 +395,7 @@ let cxx_def_of_def indent_level ctx def =
       
       let body_str = match body with
         | EBlock (stmts, expr_opt) ->
-            (* 根据MVP规范：函数自动返回最后一个表达式 *)
+            (* 根据Miva规范：函数自动返回最后一个表达式 *)
             let stmt_strs, expr_str = 
               match ret_type with
               | "mvp_builtin_unit" ->
@@ -454,7 +454,7 @@ let cxx_def_of_def indent_level ctx def =
         let import_str = String.sub import 2 (String.length import - 2) in
         "#include <" ^ import_str ^ ">\n"
     else (
-        let toml = read_file "mvp.toml" in
+        let toml = read_file "miva.toml" in
         match Toml.Parser.from_string toml with 
         | `Ok table -> (
         try 

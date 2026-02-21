@@ -1,7 +1,0 @@
-main = (): int => {
-  x := 0
-  mut y := 0
-  y = 10
-  printf("Hello, World! %d %d\n", x, y)
-  0
-}

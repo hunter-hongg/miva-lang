@@ -1,8 +1,0 @@
-add4 = (a: int, b: int, c: int, d: int): int => {
-  a + b + c + d
-}
-
-main = (): int => {
-  printf("%d\n", add4(1, 2, 3, 4))
-  0
-}

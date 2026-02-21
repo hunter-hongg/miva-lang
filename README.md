@@ -1,15 +1,15 @@
-# The MVP Programming Language
+# The Miva Programming Language
 **Explicit. Safe. Predictable.**
 
 ## 🚀 Introduction
-**MVP** is not just an acronym; it is a triple promise for modern system programming:
+**Miva** is not just an acronym; it is a triple promise for modern system programming:
 1.  **Memory-safe, Verifiable, Predictable**  
     The three pillars of the language. No GC pauses, no undefined behavior.
 2.  **Minimal Viable Product**  
     We start from a minimal viable set, rejecting historical baggage and over-engineering.
 3.  **Most Valuable Programming Language**  
     A trustworthy modern choice: **Simpler than Rust, Safer than Go, Faster than Python.**
-**v0.0.1 is now available!** The compiler is functional and ready for the first wave of pioneers.
+**v0.0.3 is now available!** The compiler is functional and ready for the first wave of pioneers.
 ---
 ## ✨ Features
 ### ✅ Minimalist Ownership System
@@ -30,7 +30,7 @@ Point = struct {
 }
 ```
 ### ✅ Explicit Error Handling
-Errors are values, and they cannot be ignored. MVP forces you to handle reality.
+Errors are values, and they cannot be ignored. Miva forces you to handle reality.
 ```mvp
 // Using 'choose' to destructure Result[T, E]
 res := choose may_fail() {
@@ -74,14 +74,14 @@ process = (data: [int]): int => {
 }
 ```
 ### Safety Model
-MVP introduces a strict safety boundary around FFI and unsafe operations.
+Miva introduces a strict safety boundary around FFI and unsafe operations.
 1.  **`unsafe`**: For FFI and raw operations. Must be called with `unsafe ffi_func()`.
 2.  **`trusted`**: A function that encapsulates `unsafe` code but guarantees memory safety to the caller.
 3.  **Safe functions**: Cannot call `unsafe` functions directly. They can only call `trusted` or other safe functions.
 > This model is more explicit than Rust's `unsafe` blocks, creating clear safety contracts.
 ---
 ## 🚫 What is Explicitly Excluded?
-At MVP, what we **don't** add is as important as what we do.
+At Miva, what we **don't** add is as important as what we do.
 | Feature | Reason |
 | :--- | :--- |
 | **Garbage Collection (GC)** | Introduces unpredictable latency. Violates "Predictable". |
@@ -90,7 +90,7 @@ At MVP, what we **don't** add is as important as what we do.
 | **`goto`** | Destructive to structured programming. |
 | **Mutable References (`mut ref`)** | Introduces aliasing issues and data races. |
 ---
-## ❤️ The Soul of MVP
+## ❤️ The Soul of Miva
 *   **No frowning symbols.**
 *   **No hidden behaviors.**
 *   **No redundant boilerplate.**
