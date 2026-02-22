@@ -65,7 +65,7 @@ and cxx_expr_of_expr indent_level ctx expr =
   | EBool b -> if b then "true" else "false"
   | EFloat f -> string_of_float f
   | EChar c -> "'" ^ Char.escaped c ^ "'"
-  | EString s -> "\"" ^ s ^ "\""
+  | EString s -> "mvp_builtin_string(\"" ^ s ^ "\")"
   | EVar name -> name
   | EMove name -> "std::move(" ^ name ^ ")"
   | EClone name -> name
