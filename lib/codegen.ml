@@ -180,6 +180,7 @@ and cxx_expr_of_expr indent_level ctx expr =
   | EArrayLit elems ->
       let elem_strs = List.map (cxx_expr_of_expr indent_level ctx) elems in
       "std::vector{" ^ String.concat ", " elem_strs ^ "}"
+  | EVoid -> "mvp_builtin_void"
 
 let cxx_deal_module name = 
     if String.compare name "main" == 0 then 

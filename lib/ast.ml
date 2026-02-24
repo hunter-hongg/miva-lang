@@ -26,6 +26,7 @@ type expr =
   | ECast of expr * typ
   | EBlock of stmt list * expr option  (* 块级表达式：语句列表 + 可选的返回表达式 *)
   | EArrayLit of expr list  (* 数组字面量：[]{expr1, expr2, ...} *)
+  | EVoid 
 
 and binop =
   | Add | Sub | Mul | Eq | Neq

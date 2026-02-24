@@ -16,7 +16,7 @@
 %token EOF
 %token OWN COLON
 %token CHOOSE WHEN OTHERWISE MODULE EXPORT IMPORT
-%token UNSAFE TRUSTED C_KEYWORD 
+%token UNSAFE TRUSTED C_KEYWORD VOID
 
 %left PLUS MINUS          /* 最低优先级，左结合 */
 %left STAR                /* 中等优先级，左结合 */
@@ -97,11 +97,7 @@ atomic_expr:
   | PRINT LPAREN s = STRING_LIT RPAREN { ECall ("print", [EString s]) }
   | LPAREN e = expr RPAREN { e }
   | e = struct_init_expr { e }
-  | e = array_literal { e }
   | e = atomic_expr AS t = typ { ECast (e, t) }
-
-array_literal:
-  | LBRACKET RBRACKET LBRACE elems = separated_list(COMMA, expr) RBRACE { EArrayLit elems }
 
 field_access_expr:
   | e = atomic_expr { e }
@@ -139,6 +135,7 @@ stmt:
   | MUT IDENT COLONEQ expr { SLet (true, $2, $4) }
   | IDENT EQ expr { SAssign ($1, $3) }  (* 赋值语句：x = 值 *)
   | RETURN expr { SReturn $2 }
+  | RETURN { SReturn (EVoid) }
   | IF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE { SExpr (EIf (cond, EBlock (t, expr_opt), None)) }
   | IF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE ELSE LBRACE e = stmt_list expr_opt_else = expr_opt RBRACE { SExpr (EIf (cond, EBlock (t, expr_opt), Some (EBlock (e, expr_opt_else)))) }
   | expr { SExpr $1 }
@@ -177,6 +174,7 @@ typ:
   | FLOAT64 { TFloat64 }
   | CHAR { TChar }
   | STRING { TString }
+  | LBRACKET t = typ RBRACKET { TArray t }
   | t = type_path { TStruct (t, []) }
 
 type_path:
