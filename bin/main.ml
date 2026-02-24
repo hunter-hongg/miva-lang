@@ -118,7 +118,7 @@ let ensure_dir_for_file file_path =
   if not (Sys.file_exists dir) then
     ignore (Sys.command (sprintf "mkdir -p %s" dir))
 
-let compile_cpp ~verbose ~_input_file ~output_file =
+let compile_cpp ~verbose ~_input_file ~output_file ~project_type =
   let build_dir = get_build_dir () in
   let cache_dir = get_cache_dir () in
   let std_include = get_std_include_dir () in
@@ -139,8 +139,10 @@ let compile_cpp ~verbose ~_input_file ~output_file =
   let incf = get_include_flag () in
   (* 编译命令 *)
   let cmd =
-    sprintf "g++ -O2 %s -o %s -I%s -I%s -I%s -std=c++20 %s -c %s"
-      cpp_file obj_file cache_dir std_include build_dir (if verbose then "" else "2>/dev/null") incf
+    sprintf "g++ -O2 %s -o %s -I%s -I%s -I%s -std=c++20 %s %s -c %s"
+      cpp_file obj_file cache_dir std_include build_dir 
+      (if verbose then "" else "2>/dev/null") 
+      (if String.compare project_type "lib" == 0 then "-fPIC" else "") incf
   in
   
   if Sys.command cmd <> 0 then (
@@ -164,13 +166,20 @@ let compile_cpp ~verbose ~_input_file ~output_file =
   if verbose then eprintf "\nCompiled successfully: %s\n%!" obj_file;
   obj_file
 
-let link_file ~verbose ~obj_files ~output_file =
+let link_file ~verbose ~obj_files ~output_file ~project_type =
   let build_dir = get_build_dir () in
-  let exe_file = build_dir ^ "/" ^ output_file in
+  let exe_file = build_dir ^ "/" ^ (
+    if String.compare project_type "lib" == 0 then 
+      "lib" ^ output_file
+    else 
+      output_file
+  ) in
   let lnkf = get_link_flag () in
   let cmd =
-    sprintf "g++ -O2 %s -o %s -std=c++20 %s"
-      (String.concat " " obj_files) exe_file lnkf
+    sprintf "g++ -O2 %s -o %s -std=c++20 %s %s"
+      (String.concat " " obj_files) 
+      (if String.compare project_type "lib" == 0 then exe_file ^ ".so" else exe_file) lnkf 
+      (if String.compare project_type "lib" == 0 then "-fPIC -shared" else "")
   in
   if Sys.command cmd <> 0 then (
     if not verbose then (
@@ -184,6 +193,8 @@ let link_file ~verbose ~obj_files ~output_file =
     );
     eprintf "Linking failed: %s\n%!" exe_file;
     exit 1
+  ) else (
+    eprintf "\r Linking files...%!"
   );
   if verbose then eprintf "Linked successfully: %s\n%!" exe_file;
   exe_file
@@ -241,7 +252,7 @@ let compile_program_obj ~verbose ~input_file ~output_file =
     if verbose then eprintf "Generated header file: %s\n%!" header_file;
   );
   cpp_file
-let compile_program ~verbose ~input_file ~output_file =
+let compile_program ~verbose ~input_file ~output_file ~project_type =
   let ast = parse_input_file input_file in
   let symtab = SymbolTable.build_symbol_table ast in
   let queue = input_file :: symtab.files in
@@ -285,9 +296,9 @@ let compile_program ~verbose ~input_file ~output_file =
     let snw = String.concat "/" (List.filter (fun s -> s <> "") (String.split_on_char '/' s)) in
     clean_line ();
     Printf.eprintf "\r%!Compiling %s to bin...%!" snw;
-    compile_cpp ~verbose ~_input_file:s ~output_file:(Filename.basename s)
+    compile_cpp ~verbose ~_input_file:s ~output_file:(Filename.basename s) ~project_type
   )) obj_paths in
-  let exe_path = link_file ~verbose:verbose ~obj_files:obj_paths_real ~output_file:output_file in
+  let exe_path = link_file ~verbose ~obj_files:obj_paths_real ~output_file ~project_type in
   exe_path
 
 (* ---------- 子命令: init ---------- *)
@@ -347,7 +358,7 @@ let build_project ~verbose =
     let toml = read_file "miva.toml" in
     match Toml.Parser.from_string toml with 
     | `Ok table -> (
-      let project_table = 
+      let (project_table, project_type) = 
       try 
         match Toml.Types.Table.find (Toml.Min.key "project") table with 
         | Toml.Types.TTable t -> (
@@ -358,14 +369,8 @@ let build_project ~verbose =
             exit 1;
           ) in 
           match Toml.Types.Table.find (Toml.Min.key "type") t with 
-          | Toml.Types.TString s -> (
-            if String.compare s "lib" == 0 then (
-              eprintf "Error: Build a library is not supported in v0.0.2.\n";
-              eprintf "This feature will come in v0.0.3.\n%!";
-              exit 1;
-            ) else (
-              res
-            )
+          | Toml.Types.TString _s -> (
+            res, _s
           )
           | _ -> (
             eprintf "Error: 'type' in 'project' table in miva.toml is not a string.\n%!";
@@ -381,13 +386,30 @@ let build_project ~verbose =
         eprintf "Error: Failed to find 'project' table or 'name' in 'project' table in miva.toml.\n%!";
         exit 1;
       ) in
-      let input_file = "src/main.miva" in
+      let input_file = (
+        if String.compare project_type "lib" == 0 then 
+          "src/lib.miva" 
+        else 
+          "src/main.miva"
+      ) in
       let output_file = project_table in
-      let exe_path = compile_program ~verbose ~input_file ~output_file in
+      let exe_path = compile_program ~verbose ~input_file ~output_file ~project_type in
       printf "\n%s%!" (String.make 30 '-');
-      printf "\nCompiled successfully: %s\n%!" exe_path;
+      printf "\nCompiled successfully: %s\n%!" (
+        if String.compare project_type "lib" == 0 then 
+          exe_path ^ ".so"
+        else 
+          exe_path
+      );
       printf "%s\n%!" (String.make 30 '-');
-      exe_path
+      if String.compare project_type "lib" == 0 then (
+        let copy_file oldfile newfile = 
+          let str = read_file oldfile in 
+          write_file newfile str
+        in
+        copy_file ((get_cache_dir ()) ^ "/src/lib.h") ((get_build_dir ()) ^ "/" ^ project_table ^ ".h")
+      );
+      (exe_path, String.compare project_type "lib" == 0)
     )
     | _ -> (
       eprintf "Error: Failed to parse miva.toml.\n%!";
@@ -410,7 +432,11 @@ let run_new_cmd =
   let info = Cmd.info "run" ~doc in
   Cmd.v info Term.(
     const (fun verbose () ->
-      let exe_path = build_project ~verbose in
+      let (exe_path, is_lib) = build_project ~verbose in
+      if is_lib then (
+        eprintf "Error: Cannot run a library.\n%!";
+        exit 1;
+      );
       let run_status = Sys.command exe_path in
       if run_status <> 0 then (
         eprintf "Error: Failed to run the executable.\n";
@@ -457,7 +483,7 @@ let build_cmd =
           | Some s -> s
           | None -> Filename.remove_extension input
         in
-        let exe_path = compile_program ~verbose ~input_file:input ~output_file:output in
+        let exe_path = compile_program ~verbose ~input_file:input ~output_file:output ~project_type:"bin" in
         printf "Compiled successfully: %s\n%!" exe_path
       )
     $ verbose
@@ -477,7 +503,7 @@ let run_cmd =
   Cmd.v info Term.(
     const (fun verbose input () ->
         let output = Filename.basename (Filename.remove_extension input) in
-        let exe_path = compile_program ~verbose ~input_file:input ~output_file:output in
+        let exe_path = compile_program ~verbose ~input_file:input ~output_file:output ~project_type:"bin" in
         if verbose then eprintf "Running %s...\n%!" exe_path;
         let run_status = Sys.command exe_path in
         (* 清理可执行文件，除非设置了保留标志 *)
