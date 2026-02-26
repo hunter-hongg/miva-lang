@@ -1,5 +1,9 @@
 [@@@ocaml.warning "-11"]
+[@@@ocaml.warning "-27"]
 open Ast
+
+module StringSet = Set.Make(String)
+
 
 (* 辅助函数：查找元素在列表中的索引 *)
 let find_index elem list =
@@ -92,23 +96,23 @@ let add_struct name fields symbol_table =
 (* 处理单个定义，构建符号表 *)
 let process_definition def symbol_table =
   match def with
-  | DStruct (name, fields) ->
+  | DStruct (_, name, fields) ->
       add_struct name fields symbol_table
-  | DFunc (name, params, return_typ, _) ->
+  | DFunc (_, name, params, return_typ, _) ->
       add_function name params return_typ Safe symbol_table
-  | DFuncUnsafe (name, params, return_typ, _) ->
+  | DFuncUnsafe (_, name, params, return_typ, _) ->
       add_function name params return_typ Unsafe symbol_table
-  | DFuncTrusted (name, params, return_typ, _) ->
+  | DFuncTrusted (_, name, params, return_typ, _) ->
       add_function name params return_typ Trusted symbol_table
-  | DTest (_, _) ->
+  | DTest (_, _, _) ->
       (* 测试函数不计入符号表 *)
       symbol_table
-  | DCFuncUnsafe (name, params, return_typ, _) ->
+  | DCFuncUnsafe (_, name, params, return_typ, _) ->
       add_function name params return_typ Unsafe symbol_table
-  | DModule name -> (
+  | DModule (_, name) -> (
     { symbol_table with module_name = name }
   )
-  | SImport import -> (
+  | SImport (_, import) -> (
     if String.starts_with ~prefix:"c:" import then 
       symbol_table
     else
@@ -141,7 +145,7 @@ let process_definition def symbol_table =
     else 
       symbol_table
   )
-  | SExport name -> (
+  | SExport (_, name) -> (
     (* 检查是否是函数，如果是则添加到导出函数列表 *)
     let is_function = List.exists (fun (fname, _, _, _) -> fname = name) symbol_table.functions in
     if is_function then
@@ -198,6 +202,54 @@ let get_function_safety name symbol_table =
   | [(_, _, _, safety)] -> Some safety
   | [] -> None
   | _ -> failwith ("Multiple definitions of function: " ^ name)
+
+(* 构建完整的依赖图 *)
+let build_dependency_graph filename symbol_table =
+  let graph = Dependency_graph.create () in
+  
+  let parse_input_file filename =
+    let ic = open_in filename in
+    let lexbuf = Lexing.from_channel ic in
+    Lexing.set_filename lexbuf filename;
+    try
+      let ast = Parser.program Lexer.token lexbuf in
+      close_in ic;
+      ast
+    with
+    | Parsing.Parse_error ->
+        let pos = Lexing.lexeme_start_p lexbuf in
+        let line = pos.Lexing.pos_lnum in
+        let col = pos.Lexing.pos_cnum - pos.Lexing.pos_bol + 1 in
+        Printf.eprintf "Syntax error at %s:%d:%d\n%!" filename line col;
+        exit 1
+    | Lexer.SyntaxError msg ->
+        Printf.eprintf "Lexer error: %s\n%!" msg;
+        exit 1
+    | _ ->
+        Printf.eprintf "Parsing error\n%!";
+        exit 1 in
+  
+  let rec add_deps file visited =
+    let visited = StringSet.add file visited in
+    try
+      let ast = parse_input_file file in
+      let dep_table = build_symbol_table ast in
+      (* 添加依赖关系 *)
+      List.fold_left (fun acc dep_file ->
+        Dependency_graph.add_dependency graph file dep_file;
+        add_deps dep_file acc
+      ) visited dep_table.files
+    with
+    | Parsing.Parse_error | Lexer.SyntaxError _ -> (
+        Printf.eprintf "error found\n%!" ;
+        (* 如果解析失败，只返回当前文件 *)
+        visited
+    )
+  in
+  
+  (* 从根文件开始收集所有依赖并添加到图中 *)
+  let _ = add_deps filename StringSet.empty in
+  graph
 
 (* 检查程序中的符号重复定义 *)
 let check_symbols defs =

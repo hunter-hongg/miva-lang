@@ -1,4 +1,6 @@
 {
   "trae.tab.enableRename": false,
-  "trae.tab.enableAutoImport": false
+  "trae.tab.enableAutoImport": false,
+  "Codegeex.RepoIndex": true,
+  "Codegeex.GenerationPreference": "automatic"
 }

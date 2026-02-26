@@ -4,11 +4,13 @@
 open Printf
 open Cmdliner
 
+module StringSet = Set.Make(String)
 module Ast = Mvp_lib.Ast
 module Lexer = Mvp_lib.Lexer
 module Parser = Mvp_lib.Parser
 module Semantic = Mvp_lib.Semantic
 module SymbolTable = Mvp_lib.Symbol_table
+module Dependency_graph = Mvp_lib.Dependency_graph
 module Codegen = Mvp_lib.Codegen
 module Global = Mvp_lib.Global
 let list_files dir =
@@ -40,6 +42,36 @@ let remove_prefix (a : string) (b : string) : string =
   let len_b = String.length b in
   (* 从索引 len_a 开始，截取 len_b - len_a 个字符 *)
   String.sub b len_a (len_b - len_a)
+
+let init_env_var () = 
+  if not (Sys.file_exists "miva.toml") then (
+    eprintf "Error: miva.toml not found.\n";
+    exit 1 
+  );
+  let file = read_file "miva.toml" in
+  let fail () = 
+    eprintf "Error: miva.toml is not a vaild miva project";
+    exit 1;
+  in
+  match Toml.Parser.from_string file with 
+  | `Ok table -> (
+    match Toml.Types.Table.find (Toml.Min.key "env") table with 
+    | Toml.Types.TTable t  -> (
+      Toml.Types.Table.iter (fun k v -> (
+        match v with
+          | Toml.Types.TString s -> (
+            let k = (Toml.Types.Table.Key.to_string k) in
+            let k = String.uppercase_ascii k in
+            Unix.putenv k s
+          )
+          | _ -> ()
+      )) t
+    )
+    | _ -> ()
+  )
+  | _ -> (
+    fail ()
+  )
 
 let clean_line () =
   Printf.eprintf "%s" ("\r" ^ (String.make 100 ' '))
@@ -99,19 +131,19 @@ let generate_cpp_code inp ast =
 
 (* ---------- 构建目录管理 ---------- *)
 let get_build_dir () =
-  try Sys.getenv "MIVA_BUILD" with Not_found -> "build"
+  try Unix.getenv "MIVA_BUILD" with Not_found -> "build"
 
 let get_cache_dir () =
-  try Sys.getenv "MIVA_BUILD_CACHE" with Not_found -> "build/cache"
+  try Unix.getenv "MIVA_BUILD_CACHE" with Not_found -> "build/cache"
 
 let get_std_include_dir () =
-  try Sys.getenv "MIVA_STD" with Not_found -> "util"
+  try Unix.getenv "MIVA_STD" with Not_found -> "util"
 
 let get_include_flag () = 
-  try Sys.getenv "MIVA_INC_FLAGS" with Not_found -> ""
+  try Unix.getenv "MIVA_INC_FLAGS" with Not_found -> ""
 
 let get_link_flag () = 
-  try Sys.getenv "MIVA_LINK_FLAGS" with Not_found -> ""
+  try Unix.getenv "MIVA_LINK_FLAGS" with Not_found -> ""
 
 let ensure_dir_for_file file_path =
   let dir = Filename.dirname file_path in
@@ -194,7 +226,8 @@ let link_file ~verbose ~obj_files ~output_file ~project_type =
     eprintf "Linking failed: %s\n%!" exe_file;
     exit 1
   ) else (
-    eprintf "\r Linking files...%!"
+    clean_line ();
+    eprintf "\rLinking files...%!"
   );
   if verbose then eprintf "Linked successfully: %s\n%!" exe_file;
   exe_file
@@ -351,6 +384,7 @@ let init_cmd =
 
 (* ---------- 子命令: build/run ---------- *)
 let build_project ~verbose = 
+  init_env_var ();
   if not (Sys.file_exists "miva.toml") then (
     eprintf "Error: Project not initialized in this directory.\n%!";
     exit 1;
@@ -454,8 +488,9 @@ let clean_cmd =
   let info = Cmd.info "clean" ~doc in
   Cmd.v info Term.(
     const (fun _verbose () ->
+      init_env_var ();
       if Sys.file_exists "miva.toml" then (
-        Sys.command "rm -rf build/" |> ignore;
+        Sys.command ("rm -rf " ^ (get_build_dir ())) |> ignore;
         printf "Cleaned build artifacts.\n%!"
       ) else (
         eprintf "Error: Project not initialized in this directory.\n%!";
@@ -516,19 +551,140 @@ let run_cmd =
     $ const ()
   )
 
-(* ---------- 子命令: test ---------- *)
-let test_cmd = 
-  let doc = "Run all tests in the Miva project." in
-  let info = Cmd.info "test" ~doc in
+(* ---------- 子命令: dep ---------- *)
+
+(* ASCII树形结构绘制函数 *)
+let print_ascii_tree graph root =
+  (* 记录已访问的节点，避免循环 *)
+  let visited = ref StringSet.empty in
+  
+  (* 递归打印树形结构 *)
+  let rec print_node node prefix is_last =
+    if StringSet.mem node !visited then
+      (* 如果节点已被访问，显示为循环引用 *)
+      printf "%s%s%s\n%!" prefix (if is_last then "└── " else "├── ") node
+    else begin
+      visited := StringSet.add node !visited;
+      (* 获取当前节点的直接依赖 *)
+      let deps = Dependency_graph.get_dependencies graph node in
+      let deps_list = StringSet.elements deps in
+      let sorted_deps = List.sort String.compare deps_list in
+      
+      (* 打印当前节点 *)
+      printf "%s%s%s\n%!" prefix (if is_last then "└── " else "├── ") node;
+      
+      (* 递归打印子节点 *)
+      let rec print_children children prefix =
+        match children with
+        | [] -> ()
+        | [child] ->
+            let new_prefix = prefix ^ (if is_last then "    " else "│   ") in
+            print_node child new_prefix true
+        | child :: rest ->
+            let new_prefix = prefix ^ (if is_last then "    " else "│   ") in
+            print_node child new_prefix false;
+            print_children rest prefix
+      in
+      print_children sorted_deps prefix
+    end
+  in
+  
+  (* 打印根节点 *)
+  printf "%s\n%!" root;
+  let deps = Dependency_graph.get_dependencies graph root in
+  let deps_list = StringSet.elements deps in
+  let sorted_deps = List.sort String.compare deps_list in
+  let rec print_root_children children =
+    match children with
+    | [] -> ()
+    | [child] -> print_node child "" true
+    | child :: rest ->
+        print_node child "" false;
+        print_root_children rest
+  in
+  print_root_children sorted_deps
+
+let dep_cmd =
+  let doc = "Show complete dependency graph starting from main.miva" in
+  let info = Cmd.info "dep" ~doc in
   Cmd.v info Term.(
     const (fun verbose () ->
+      init_env_var ();
+      if not (Sys.file_exists "miva.toml") then (
+        eprintf "Error: Project not initialized in this directory.\n%!";
+        exit 1;
+      ) else (
+        let toml = read_file "miva.toml" in
+        match Toml.Parser.from_string toml with
+        | `Ok table -> (
+          let project_type =
+          try
+            match Toml.Types.Table.find (Toml.Min.key "project") table with
+            | Toml.Types.TTable t -> (
+              match Toml.Types.Table.find (Toml.Min.key "type") t with
+              | Toml.Types.TString s -> s
+              | _ -> (
+                eprintf "Error: 'type' in 'project' table in miva.toml is not a string.\n%!";
+                exit 1;
+              )
+            )
+            | _ -> (
+              eprintf "Error: 'project' table in miva.toml is not a table.\n%!";
+              exit 1;
+            )
+          with
+          | _ -> (
+            eprintf "Error: Failed to find 'project' table in miva.toml.\n%!";
+            exit 1;
+          ) in
+          let input_file = (
+            if String.compare project_type "lib" == 0 then
+              "src/lib.miva"
+            else
+              "src/main.miva"
+          ) in
+          if verbose then eprintf "Parsing %s...\n%!" input_file;
+          let ast = parse_input_file input_file in
+          if verbose then eprintf "Building symbol table...\n%!";
+          let symbol_table = SymbolTable.build_symbol_table ast in
+          if verbose then eprintf "Building dependency graph...\n%!";
+          let graph = SymbolTable.build_dependency_graph input_file symbol_table in
+          printf "\nDependency graph for %s:\n\n%!" input_file;
+          print_ascii_tree graph input_file;
+          printf "\n";
+        )
+        | _ -> (
+          eprintf "Error: Failed to parse miva.toml.\n%!";
+          exit 1;
+        )
+      )
+    )
+    $ verbose
+    $ const ()
+  )
+
+(* ---------- 子命令: test ---------- *)
+let test_files =
+  let doc = "Specific files to test (optional)" in
+  Arg.(value & pos_all string [] & info [] ~doc)
+
+let test_cmd = 
+  let doc = "Run all tests in the Miva project or specific files." in
+  let info = Cmd.info "test" ~doc in
+  Cmd.v info Term.(
+    const (fun verbose test_files ->
+      init_env_var ();
       if not (Sys.file_exists "miva.toml") then (
         eprintf "Error: Project not initialized in this directory.\n%!";
         exit 1;
       ) else (
         let _res = build_project ~verbose in
         let files = list_files (get_cache_dir () ^ "/src") in 
-        let tests = List.filter (fun f -> String.ends_with ~suffix:".test.cpp" f) files in 
+        let all_tests = List.filter (fun f -> String.ends_with ~suffix:".test.cpp" f) files in
+        let tests = if test_files = [] then all_tests else List.map (fun f -> (
+          f ^ ".test.cpp"
+        )) test_files
+        in 
         List.iter (fun f -> (
           eprintf "Running %s...\n%!" f;
           let f = (get_cache_dir () ^ "/src/" ^ f) in
@@ -577,7 +733,7 @@ let test_cmd =
       )
     )
     $ verbose
-    $ const ()
+    $ test_files
   )
 
 (* ---------- 主命令 ---------- *)
@@ -595,6 +751,7 @@ let default_cmd =
     build_new_cmd; 
     run_new_cmd;
     clean_cmd;
+    dep_cmd;
     test_cmd;
   ]
 

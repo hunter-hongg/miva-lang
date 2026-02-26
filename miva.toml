@@ -1,0 +1,6 @@
+[project]
+name = "ttt"
+type = "bin"
+
+[env]
+miva_std = "/home/coding/projects/mvp/util"

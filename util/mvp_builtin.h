@@ -14,6 +14,8 @@
 #include <vector>
 #include <format>
 
+#include "mvp_copyable.h"
+
 extern "C" {
 typedef struct {
   char _;

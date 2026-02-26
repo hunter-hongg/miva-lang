@@ -1,0 +1,4 @@
+module "testdep"
+
+import "std/io"
+import "std/term"

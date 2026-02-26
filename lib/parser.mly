@@ -36,28 +36,28 @@ program:
 
 def:
   | name = IDENT EQ STRUCT LBRACE fields = separated_list(COMMA, field_decl) RBRACE
-    { DStruct (name, fields) }
+    { DStruct ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, fields) }
   | name = IDENT EQ params = func_params COLON ret_typ = typ DARROW body = expr
-    { DFunc (name, params, Some ret_typ, body) }
+    { DFunc ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, params, Some ret_typ, body) }
   | name = IDENT EQ params = func_params DARROW body = expr
-    { DFunc (name, params, None, body) }
+    { DFunc ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, params, None, body) }
   | UNSAFE name = IDENT EQ params = func_params COLON ret_typ = typ DARROW body = expr
-    { DFuncUnsafe (name, params, Some ret_typ, body) }
+    { DFuncUnsafe ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, params, Some ret_typ, body) }
   | UNSAFE name = IDENT EQ params = func_params DARROW body = expr
-    { DFuncUnsafe (name, params, None, body) }
+    { DFuncUnsafe ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, params, None, body) }
   | TRUSTED name = IDENT EQ params = func_params COLON ret_typ = typ DARROW body = expr
-    { DFuncTrusted (name, params, Some ret_typ, body) }
+    { DFuncTrusted ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, params, Some ret_typ, body) }
   | TRUSTED name = IDENT EQ params = func_params DARROW body = expr
-    { DFuncTrusted (name, params, None, body) }
+    { DFuncTrusted ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, params, None, body) }
   | C_KEYWORD UNSAFE name = IDENT EQ params = func_params COLON ret_typ = typ DARROW c_code = STRING_LIT
-    { DCFuncUnsafe (name, params, Some ret_typ, c_code) }
+    { DCFuncUnsafe ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, params, Some ret_typ, c_code) }
   | C_KEYWORD UNSAFE name = IDENT EQ params = func_params DARROW c_code = STRING_LIT
-    { DCFuncUnsafe (name, params, None, c_code) }
+    { DCFuncUnsafe ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, params, None, c_code) }
   | TEST name = IDENT EQ LPAREN RPAREN COLON INT DARROW body = expr
-    { DTest (name, body) }
-  | MODULE name = STRING_LIT { DModule name }
-  | EXPORT symbol = IDENT { SExport symbol }
-  | IMPORT symbol = STRING_LIT { SImport symbol }
+    { DTest ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, body) }
+  | MODULE name = STRING_LIT { DModule ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name) }
+  | EXPORT symbol = IDENT { SExport ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, symbol) }
+  | IMPORT symbol = STRING_LIT { SImport ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, symbol) }
 
 
 func_params:
@@ -74,34 +74,34 @@ field_decl:
 
 expr:
   | e = call_expr { e }
-  | e1 = expr PLUS e2 = expr { EBinOp (Add, e1, e2) }
-  | e1 = expr MINUS e2 = expr { EBinOp (Sub, e1, e2) }
-  | e1 = expr STAR e2 = expr { EBinOp (Mul, e1, e2) }
-  | e1 = expr EQEQ e2 = expr { EBinOp (Eq, e1, e2) }
-  | e1 = expr NEQ e2 = expr { EBinOp (Neq, e1, e2) }
+  | e1 = expr PLUS e2 = expr { EBinOp ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, Add, e1, e2) }
+  | e1 = expr MINUS e2 = expr { EBinOp ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, Sub, e1, e2) }
+  | e1 = expr STAR e2 = expr { EBinOp ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, Mul, e1, e2) }
+  | e1 = expr EQEQ e2 = expr { EBinOp ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, Eq, e1, e2) }
+  | e1 = expr NEQ e2 = expr { EBinOp ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, Neq, e1, e2) }
   | LBRACE stmts = stmt_list expr_opt = expr_opt RBRACE
-    { EBlock (stmts, expr_opt) }
+    { EBlock ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, stmts, expr_opt) }
   | struct_init_expr { $1 }
   | CHOOSE LPAREN var = expr RPAREN LBRACE cases = list(when_case) otherwise = otherwise_opt RBRACE
-    { EChoose (var, cases, otherwise) }
+    { EChoose ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, var, cases, otherwise) }
 
 atomic_expr:
-  | i = INT_LIT { EInt i }
-  | f = FLOAT_LIT { EFloat f }
-  | c = CHAR_LIT { EChar c }
-  | s = STRING_LIT { EString s }
-  | b = BOOL_LIT { EBool b }
-  | x = IDENT { EVar x }
-  | MOVE x = IDENT { EMove x }
-  | CLONE x = IDENT { EClone x }
-  | PRINT LPAREN s = STRING_LIT RPAREN { ECall ("print", [EString s]) }
+  | i = INT_LIT { EInt ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, i) }
+  | f = FLOAT_LIT { EFloat ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, f) }
+  | c = CHAR_LIT { EChar ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, c) }
+  | s = STRING_LIT { EString ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, s) }
+  | b = BOOL_LIT { EBool ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, b) }
+  | x = IDENT { EVar ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, x) }
+  | MOVE x = IDENT { EMove ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, x) }
+  | CLONE x = IDENT { EClone ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, x) }
+  | PRINT LPAREN s = STRING_LIT RPAREN { ECall ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, "print", [EString ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, s)]) }
   | LPAREN e = expr RPAREN { e }
   | e = struct_init_expr { e }
-  | e = atomic_expr AS t = typ { ECast (e, t) }
+  | e = atomic_expr AS t = typ { ECast ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, e, t) }
 
 field_access_expr:
   | e = atomic_expr { e }
-  | e = field_access_expr DOT field = IDENT { EFieldAccess (e, field) }
+  | e = field_access_expr DOT field = IDENT { EFieldAccess ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, e, field) }
 
 call_expr:
   | e = field_access_expr { e }
@@ -109,10 +109,10 @@ call_expr:
       (* 处理 a.b.c.foo(...) 形式的调用 *)
       let rec extract_call_path expr = 
         match expr with
-        | EFieldAccess (e, field) ->
+        | EFieldAccess (_, e, field) ->
             let path = extract_call_path e in
             path ^ "." ^ field
-        | EVar name -> name
+        | EVar (_, name) -> name
         | _ -> failwith "Invalid call path"
       in
       let call_path = extract_call_path e in
@@ -126,22 +126,22 @@ call_expr:
         | [] -> []
       in
       let final_path = String.concat "." processed_path in
-      ECall (final_path, args)
+      ECall ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, final_path, args)
     }
-  | name = IDENT LPAREN args = separated_list(COMMA, expr) RPAREN { ECall (name, args) }
+  | name = IDENT LPAREN args = separated_list(COMMA, expr) RPAREN { ECall ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, args) }
 
 stmt:
-  | IDENT COLONEQ expr { SLet (false, $1, $3) }
-  | MUT IDENT COLONEQ expr { SLet (true, $2, $4) }
-  | IDENT EQ expr { SAssign ($1, $3) }  (* 赋值语句：x = 值 *)
-  | RETURN expr { SReturn $2 }
-  | RETURN { SReturn (EVoid) }
-  | IF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE { SExpr (EIf (cond, EBlock (t, expr_opt), None)) }
-  | IF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE ELSE LBRACE e = stmt_list expr_opt_else = expr_opt RBRACE { SExpr (EIf (cond, EBlock (t, expr_opt), Some (EBlock (e, expr_opt_else)))) }
-  | expr { SExpr $1 }
+  | IDENT COLONEQ expr { SLet ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, false, $1, $3) }
+  | MUT IDENT COLONEQ expr { SLet ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, true, $2, $4) }
+  | IDENT EQ expr { SAssign ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, $1, $3) }  (* 赋值语句：x = 值 *)
+  | RETURN expr { SReturn ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, $2) }
+  | RETURN { let loc = { line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 } in SReturn (loc, EVoid loc) }
+  | IF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE { let loc = { line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 } in SExpr (loc, EIf (loc, cond, EBlock (loc, t, expr_opt), None)) }
+  | IF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE ELSE LBRACE e = stmt_list expr_opt_else = expr_opt RBRACE { let loc = { line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 } in SExpr (loc, EIf (loc, cond, EBlock (loc, t, expr_opt), Some (EBlock (loc, e, expr_opt_else)))) }
+  | expr { SExpr ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, $1) }
 
 struct_init_expr:
-  | STRUCT name = type_path LBRACE inits = struct_inits RBRACE { EStructLit (name, inits) }
+  | STRUCT name = type_path LBRACE inits = struct_inits RBRACE { EStructLit ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name, inits) }
 
 stmt_list:
   | stmts = list(stmt) { stmts }
@@ -154,11 +154,11 @@ struct_init:
   | name = IDENT EQ e = expr { (name, e) }
 
 when_case:
-  | WHEN LPAREN value = expr RPAREN LBRACE stmts = stmt_list expr_opt = expr_opt RBRACE { (value, EBlock (stmts, expr_opt)) }
+  | WHEN LPAREN value = expr RPAREN LBRACE stmts = stmt_list expr_opt = expr_opt RBRACE { (value, EBlock ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, stmts, expr_opt)) }
 
 otherwise_opt:
   | /* empty */ { None }
-  | OTHERWISE LBRACE stmts = stmt_list expr_opt = expr_opt RBRACE { Some (EBlock (stmts, expr_opt)) }
+  | OTHERWISE LBRACE stmts = stmt_list expr_opt = expr_opt RBRACE { Some (EBlock ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, stmts, expr_opt)) }
 
 binop:
   | PLUS { Add }
