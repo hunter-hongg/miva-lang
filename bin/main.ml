@@ -4,6 +4,7 @@
 open Printf
 open Cmdliner
 
+
 module StringSet = Set.Make(String)
 module Ast = Mvp_lib.Ast
 module Lexer = Mvp_lib.Lexer
@@ -13,6 +14,9 @@ module SymbolTable = Mvp_lib.Symbol_table
 module Dependency_graph = Mvp_lib.Dependency_graph
 module Codegen = Mvp_lib.Codegen
 module Global = Mvp_lib.Global
+
+let compute_sha256 filename =
+  Digest.to_hex (Digest.file filename)
 let list_files dir =
   let dh = Unix.opendir dir in
   let rec read_files acc =
@@ -263,6 +267,7 @@ let compile_program_obj ~verbose ~input_file ~output_file =
       )
     | _ -> failwith "Unexpected codegen output format"
   in
+
   
   (* 写入C++源代码 *)
   let oc = open_out cpp_file in
@@ -288,25 +293,63 @@ let compile_program_obj ~verbose ~input_file ~output_file =
 let compile_program ~verbose ~input_file ~output_file ~project_type =
   let ast = parse_input_file input_file in
   let symtab = SymbolTable.build_symbol_table ast in
+  let graph = SymbolTable.build_dependency_graph input_file symtab in
   let queue = input_file :: symtab.files in
   let hist = [] in
+  let need_compile_bin = ref [] in
   (* 实现代码：编译文件*)
   let rec process_queue queue hist obj_paths = 
     match queue with
     | [] -> obj_paths
     | s :: rest ->
+        let stdp = get_std_include_dir () in
+        let sssn = if String.starts_with ~prefix:stdp s then (
+          Filename.remove_extension (remove_prefix stdp s)
+        ) else (
+          Filename.remove_extension s
+        ) in
+        let cache_dir = get_cache_dir () in
+        let base_name = Filename.remove_extension sssn in
+        let unique_base = base_name in
+        let md5_file =  cache_dir ^ "/" ^ unique_base ^ ".md5sum" in
+        ensure_dir_for_file md5_file;
+        let md5sum = compute_sha256 s in
         let snw = String.concat "/" (List.filter (fun s -> s <> "") (String.split_on_char '/' s)) in
         clean_line ();
-        eprintf "\rCompiling %s to cpp file ...%!" snw;
         let symt = SymbolTable.build_symbol_table (parse_input_file s) in
-        let stdp = get_std_include_dir () in
-        let objq = if String.starts_with ~prefix:stdp s then (
-          compile_program_obj ~verbose ~input_file:s ~output_file:(
-            Filename.remove_extension (remove_prefix stdp s)
-          )
-        ) else (
-          compile_program_obj ~verbose ~input_file:s ~output_file:(Filename.remove_extension s)
+
+        let old_sum = if (Sys.file_exists md5_file) then ( 
+          read_file md5_file
+        ) else "!!!!" in
+        let objq = if old_sum = md5sum then (
+          cache_dir ^ "/" ^ unique_base ^ ".cpp"
+        )
+        else (
+          write_file md5_file md5sum;
+          eprintf "\rCompiling %s to cpp file ...%!" snw;
+          let objqn = if String.starts_with ~prefix:stdp s then (
+            compile_program_obj ~verbose ~input_file:s ~output_file:(
+              Filename.remove_extension (remove_prefix stdp s)
+            )
+          ) else (
+            compile_program_obj ~verbose ~input_file:s ~output_file:(Filename.remove_extension s)
+          ) in
+          let addfiles = (s :: (StringSet.to_list (Dependency_graph.get_all_dependents graph s))) in
+          List.iter ( fun t -> (
+            let t = if String.starts_with ~prefix:stdp t then (
+              (get_cache_dir ()) ^ "/" 
+              ^ (Filename.remove_extension (remove_prefix stdp t)) ^ ".cpp"
+            ) else (
+              (get_cache_dir ()) ^ "/" 
+              ^ (Filename.remove_extension t) ^ ".cpp"
+            ) in
+            if not (List.mem t !need_compile_bin) then (
+              need_compile_bin := t :: !need_compile_bin
+            )
+          )) addfiles;
+          objqn
         ) in
+
         (* s出队列queue进入历史记录hist，如果queue和hist都没有objp，objp入queue *)
         let new_hist = s :: hist in
         let rest2 = rest in
@@ -326,10 +369,15 @@ let compile_program ~verbose ~input_file ~output_file ~project_type =
   in
   let obj_paths = process_queue queue hist [] in
   let obj_paths_real = List.map (fun s -> (
-    let snw = String.concat "/" (List.filter (fun s -> s <> "") (String.split_on_char '/' s)) in
-    clean_line ();
-    Printf.eprintf "\r%!Compiling %s to bin...%!" snw;
-    compile_cpp ~verbose ~_input_file:s ~output_file:(Filename.basename s) ~project_type
+    if not (List.mem s !need_compile_bin) then (
+      let newp = (Filename.remove_extension s) ^ ".o" in
+      newp
+    ) else (
+      let snw = String.concat "/" (List.filter (fun s -> s <> "") (String.split_on_char '/' s)) in
+      clean_line ();
+      Printf.eprintf "\r%!Compiling %s to bin...%!" snw;
+      compile_cpp ~verbose ~_input_file:s ~output_file:(Filename.basename s) ~project_type
+    )
   )) obj_paths in
   let exe_path = link_file ~verbose ~obj_files:obj_paths_real ~output_file ~project_type in
   exe_path

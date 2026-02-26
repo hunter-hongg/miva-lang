@@ -50,8 +50,6 @@ let rec cxx_stmt_of_stmt indent_level ctx stmt =
       ind ^ mut_str ^ name ^ " = " ^ expr_str ^ ";\n" ^
       (
         match expr with 
-        | EMove (_, _) -> ""
-        | EClone (_, _) -> ""
         | EVar (_, _) -> 
         ind ^ "static_assert(is_copyable_v<decltype(" ^ name 
         ^ ")>, \"A non-Copy type can't be assigned without clone or move\");\n"
