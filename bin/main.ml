@@ -230,8 +230,8 @@ let link_file ~verbose ~obj_files ~output_file ~project_type =
     eprintf "Linking failed: %s\n%!" exe_file;
     exit 1
   ) else (
-    clean_line ();
-    eprintf "\rLinking files...%!"
+    eprintf "\n%s%!" (String.make 30 '-');
+    eprintf "\n\x1b[35mLinking \x1b[0mfiles...\x1b[0m%!"
   );
   if verbose then eprintf "Linked successfully: %s\n%!" exe_file;
   exe_file
@@ -314,8 +314,14 @@ let compile_program ~verbose ~input_file ~output_file ~project_type =
         let md5_file =  cache_dir ^ "/" ^ unique_base ^ ".md5sum" in
         ensure_dir_for_file md5_file;
         let md5sum = compute_sha256 s in
-        let snw = String.concat "/" (List.filter (fun s -> s <> "") (String.split_on_char '/' s)) in
-        clean_line ();
+        let snw =  String.concat "/" (List.filter (fun s -> s <> "") (String.split_on_char '/' s)) in
+        let snw = (
+          if String.starts_with ~prefix:(remove_prefix "/" stdp) snw then (
+            (remove_prefix ((remove_prefix "/" stdp) ^ "/") snw)
+          ) else (
+            snw
+          )
+        ) in
         let symt = SymbolTable.build_symbol_table (parse_input_file s) in
 
         let old_sum = if (Sys.file_exists md5_file) then ( 
@@ -326,7 +332,7 @@ let compile_program ~verbose ~input_file ~output_file ~project_type =
         )
         else (
           write_file md5_file md5sum;
-          eprintf "\rCompiling %s to cpp file ...%!" snw;
+          eprintf "\n\x1b[34mCompiling \x1b[0m%s to cpp file ...\x1b[0m%!" snw;
           let objqn = if String.starts_with ~prefix:stdp s then (
             compile_program_obj ~verbose ~input_file:s ~output_file:(
               Filename.remove_extension (remove_prefix stdp s)
@@ -368,14 +374,15 @@ let compile_program ~verbose ~input_file ~output_file ~project_type =
         process_queue new_queue new_hist (objq :: obj_paths)
   in
   let obj_paths = process_queue queue hist [] in
+  eprintf "\n%s%!" (String.make 30 '-');
   let obj_paths_real = List.map (fun s -> (
     if not (List.mem s !need_compile_bin) then (
       let newp = (Filename.remove_extension s) ^ ".o" in
       newp
     ) else (
       let snw = String.concat "/" (List.filter (fun s -> s <> "") (String.split_on_char '/' s)) in
-      clean_line ();
-      Printf.eprintf "\r%!Compiling %s to bin...%!" snw;
+      let snw = remove_prefix (get_cache_dir () ^ "/") snw in
+      Printf.eprintf "\n\x1b[34mCompiling \x1b[0m%s to bin...\x1b[0m%!" snw;
       compile_cpp ~verbose ~_input_file:s ~output_file:(Filename.basename s) ~project_type
     )
   )) obj_paths in
@@ -477,7 +484,7 @@ let build_project ~verbose =
       let output_file = project_table in
       let exe_path = compile_program ~verbose ~input_file ~output_file ~project_type in
       printf "\n%s%!" (String.make 30 '-');
-      printf "\nCompiled successfully: %s\n%!" (
+      printf ("\n\x1b[32mCompiled successfully: \x1b[0m\n\x1b[36mOutput\x1b[0m %s\n%!") (
         if String.compare project_type "lib" == 0 then 
           exe_path ^ ".so"
         else 
