@@ -1,0 +1,39 @@
+name: Build Miva Compiler
+
+on:
+  schedule:
+    # 格林尼治标准时间0点（北京时间8点）
+    - cron: '0 0 * * *'
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install OCaml
+      uses: ocaml/setup-ocaml@v2
+      with:
+        ocaml-compiler: '4.14'
+
+    - name: Install dependencies
+      run: |
+        opam install dune menhir
+
+    - name: Build compiler
+      run: |
+        dune build
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: miva-compiler-${{ github.sha }}
+        path: |
+          _build/default/**/*.exe
+          _build/default/**/*.bc
+        retention-days: 30
