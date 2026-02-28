@@ -57,3 +57,4 @@ and def =
   | DModule of loc * string
   | SExport of loc * string
   | SImport of loc * string
+  | SImportAs of loc * string * string

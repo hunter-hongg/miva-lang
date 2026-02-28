@@ -1,5 +1,12 @@
 %{
   open Ast
+  
+  (* 辅助函数：构建if-elif-else链 *)
+  let rec build_if_chain loc cond then_branch elifs else_opt =
+    match elifs with
+    | [] -> EIf (loc, cond, then_branch, else_opt)
+    | (elif_cond, elif_branch) :: rest ->
+        EIf (loc, cond, then_branch, Some (build_if_chain loc elif_cond elif_branch rest else_opt))
 %}
 
 %token <int64> INT_LIT
@@ -11,7 +18,7 @@
 
 %token EQ COLONEQ DARROW LPAREN RPAREN LBRACE RBRACE COMMA DOT  LBRACKET RBRACKET
 %token PLUS MINUS STAR EQEQ NEQ AS
-%token STRUCT REF MOVE CLONE PRINT IF ELSE MUT RETURN TEST
+%token STRUCT REF MOVE CLONE PRINT IF ELIF ELSE MUT RETURN TEST
 %token INT BOOL FLOAT32 FLOAT64 CHAR STRING
 %token EOF
 %token OWN COLON
@@ -58,6 +65,12 @@ def:
   | MODULE name = STRING_LIT { DModule ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, name) }
   | EXPORT symbol = IDENT { SExport ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, symbol) }
   | IMPORT symbol = STRING_LIT { SImport ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, symbol) }
+  | IMPORT symbol = STRING_LIT AS alias = separated_nonempty_list(DOT, IDENT) {
+        SImportAs (
+          { line = $startpos.Lexing.pos_lnum; 
+            col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, 
+            symbol, 
+            String.concat "." alias)}
 
 
 func_params:
@@ -136,8 +149,7 @@ stmt:
   | IDENT EQ expr { SAssign ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, $1, $3) }  (* 赋值语句：x = 值 *)
   | RETURN expr { SReturn ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, $2) }
   | RETURN { let loc = { line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 } in SReturn (loc, EVoid loc) }
-  | IF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE { let loc = { line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 } in SExpr (loc, EIf (loc, cond, EBlock (loc, t, expr_opt), None)) }
-  | IF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE ELSE LBRACE e = stmt_list expr_opt_else = expr_opt RBRACE { let loc = { line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 } in SExpr (loc, EIf (loc, cond, EBlock (loc, t, expr_opt), Some (EBlock (loc, e, expr_opt_else)))) }
+  | IF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE elifs = elif_chain else_opt = else_opt { let loc = { line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 } in SExpr (loc, build_if_chain loc cond (EBlock (loc, t, expr_opt)) elifs else_opt) }
   | expr { SExpr ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, $1) }
 
 struct_init_expr:
@@ -159,6 +171,18 @@ when_case:
 otherwise_opt:
   | /* empty */ { None }
   | OTHERWISE LBRACE stmts = stmt_list expr_opt = expr_opt RBRACE { Some (EBlock ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, stmts, expr_opt)) }
+
+elif_chain:
+  | /* empty */ { [] }
+  | elifs = nonempty_elif_chain { elifs }
+
+nonempty_elif_chain:
+  | ELIF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE { [(cond, EBlock ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, t, expr_opt))] }
+  | ELIF LPAREN cond = expr RPAREN LBRACE t = stmt_list expr_opt = expr_opt RBRACE rest = nonempty_elif_chain { (cond, EBlock ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, t, expr_opt)) :: rest }
+
+else_opt:
+  | /* empty */ { None }
+  | ELSE LBRACE e = stmt_list expr_opt_else = expr_opt RBRACE { Some (EBlock ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, e, expr_opt_else)) }
 
 binop:
   | PLUS { Add }

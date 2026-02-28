@@ -138,13 +138,47 @@ let process_definition def symbol_table =
         | _ -> ""
       with 
         | _ -> ""
-    );
-    | _ -> "" in
+    ) 
+    | _ -> "" 
+    in
     if file <> "" then
       { symbol_table with files = file :: symbol_table.files }
     else 
       symbol_table
-  )
+  );
+  | SImportAs (_, import, _) -> (
+    if String.starts_with ~prefix:"c:" import then 
+      symbol_table
+    else
+    let toml = read_file "miva.toml" in
+    let file = match Toml.Parser.from_string toml with 
+    | `Ok table -> (
+      try
+        match Toml.Types.Table.find (Toml.Min.key "project") table with 
+        | Toml.Types.TTable t -> (
+          match Toml.Types.Table.find (Toml.Min.key "name") t with 
+          | Toml.Types.TString s -> (
+            if String.starts_with ~prefix:s import then 
+              let res = String.concat "/" ((String.split_on_char '/' import) |> List.tl) in
+              let ret = "src/" ^ res ^ ".miva" in
+              ret
+            else 
+              let stdpath = try Sys.getenv "MIVA_STD" with _ -> "." in
+              let pstack = String.split_on_char '/' import in
+              stdpath ^ "/" ^ get_head pstack ^ "/src/" ^ (String.concat "/" (List.tl pstack)) ^ ".miva"
+          )
+          | _ -> ""
+        )
+        | _ -> ""
+      with 
+        | _ -> ""
+    )
+    | _ -> "" in
+  if file <> "" then
+    { symbol_table with files = file :: symbol_table.files }
+  else 
+    symbol_table
+  );
   | SExport (_, name) -> (
     (* 检查是否是函数，如果是则添加到导出函数列表 *)
     let is_function = List.exists (fun (fname, _, _, _) -> fname = name) symbol_table.functions in

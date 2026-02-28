@@ -1,8 +1,30 @@
 open Ast
 open Symbol_table
+open Printf
 
 module Env = Map.Make(String)
 
+let parse_input_file filename =
+  let ic = open_in filename in
+  let lexbuf = Lexing.from_channel ic in
+  Lexing.set_filename lexbuf filename;
+  try
+    let ast = Parser.program Lexer.token lexbuf in
+    close_in ic;
+    ast
+  with
+  | Parsing.Parse_error ->
+      let pos = Lexing.lexeme_start_p lexbuf in
+      let line = pos.Lexing.pos_lnum in
+      let col = pos.Lexing.pos_cnum - pos.Lexing.pos_bol + 1 in
+      eprintf "Syntax error at %s:%d:%d\n%!" filename line col;
+      exit 1
+  | Lexer.SyntaxError msg ->
+      eprintf "Lexer error: %s\n%!" msg;
+      exit 1
+  | _ ->
+      eprintf "Parsing error\n%!";
+      exit 1
 type var_info = {
   typ: typ;
   mutable state: [`Valid | `Moved];
@@ -498,6 +520,51 @@ let cxx_def_of_def indent_level ctx def =
         )
         | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
     ))
+  | SImportAs (_, import, alias) -> (
+    if String.starts_with ~prefix:"c:" import then 
+        let import_str = String.sub import 2 (String.length import - 2) in
+        "#include <" ^ import_str ^ ">\n"
+    else (
+        let toml = read_file "miva.toml" in
+        match Toml.Parser.from_string toml with 
+        | `Ok table -> (
+        try 
+            match Toml.Types.Table.find (Toml.Min.key "project") table with 
+            | Toml.Types.TTable t -> (
+            match Toml.Types.Table.find (Toml.Min.key "name") t with 
+            | Toml.Types.TString s -> (
+                let res = if String.starts_with ~prefix:s import then (
+                "#include <src/" ^
+                    (String.concat "/" ((String.split_on_char '/' import) |> List.tl))
+                    ^ ".h>\n" 
+                ) else (
+                let pstk = String.split_on_char '/' import in
+                "#include <" ^ 
+                    get_head pstk ^ "/src/" ^ 
+                    (String.concat "/" (List.tl pstk)) ^ ".h>\n"
+                ) in
+                let raw_module = ( if String.starts_with ~prefix:s import then
+                    ("src/" ^ (String.concat "/" ((String.split_on_char '/' import) |> List.tl))) ^ ".miva"
+                else 
+                    let pstk = String.split_on_char '/' import in
+                    (try Sys.getenv "MIVA_STD" with _ -> ".") ^ "/" ^ (get_head pstk) 
+                    ^ "/src/" ^ (String.concat "/" (List.tl pstk)) ^ ".miva"
+                ) in
+                let raw_module_name = (parse_input_file raw_module) in
+                let raw_module_mod = (Symbol_table.build_symbol_table raw_module_name).module_name in
+                let raw_mod_cxx = cxx_deal_module raw_module_mod in
+                let alias_mod_cxx = cxx_deal_module alias in
+                res ^
+                "namespace " ^ alias_mod_cxx ^ " = " ^ raw_mod_cxx ^ ";\n"
+            )
+            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+            )
+            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+        with 
+            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+        )
+        | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
+    ))
   | DTest(_, _, _) -> ""
 
 
@@ -710,6 +777,10 @@ let build_ir _fpath defs =
             (* 将mvp_main放在当前模块内，main函数放在全局 *)
             generate_with_scope ctx current_module (main_functions ^ global_main) includes (defs_str ^ mvp_main_str) rest
         | SImport (_, _) ->
+            (* 处理导入语句：将其添加到includes中，而不是当前模块的命名空间内 *)
+            let import_str = cxx_def_of_def 0 ctx def in
+            generate_with_scope ctx current_module main_functions (includes ^ import_str) defs_str rest
+        | SImportAs (_, _, _) ->
             (* 处理导入语句：将其添加到includes中，而不是当前模块的命名空间内 *)
             let import_str = cxx_def_of_def 0 ctx def in
             generate_with_scope ctx current_module main_functions (includes ^ import_str) defs_str rest

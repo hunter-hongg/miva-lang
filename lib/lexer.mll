@@ -77,6 +77,7 @@ rule token = parse
   | "clone"             { CLONE }
   | "print"             { PRINT }
   | "if"                { IF }
+  | "elif"              { ELIF }
   | "else"              { ELSE }
   | "mut"               { MUT }
   | "return"            { RETURN }

@@ -191,7 +191,7 @@ let rec check_expr ctx symbol_table e =
               (* 首先检查右侧表达式 *)
               check_expr ctx symbol_table e;
               (* 为变量分配一个默认类型，实际应用中应该进行类型推导 *)
-              let var_type = TInt (* 临时默认类型，后续需要类型推导 *) in
+              let var_type = TInt in
               (* 将新变量添加到环境中 *)
               ctx.vars <- Env.add name { typ = var_type; state = `Valid; is_mutable; is_ref_param = false } ctx.vars
           | SAssign (_, name, e) ->
@@ -236,27 +236,106 @@ let rec check_expr ctx symbol_table e =
 let check_program defs =
   (* 构建符号表，用于函数安全属性查询 *)
   let symbol_table = Symbol_table.build_symbol_table defs in
+  let get_head list = 
+    match list with
+    | h :: _ -> Some h
+    | [] -> None in
+  let alias_module = List.map((fun d -> (
+  let cxx_deal_module name = 
+    let nmod = if String.starts_with ~prefix:"std" name then 
+      "mvp_std." ^ (String.concat "." ((String.split_on_char '.' name) |> List.tl))
+    else name in
+    nmod in
+  let read_file filename =
+    let channel = open_in filename in
+    let content = really_input_string channel (in_channel_length channel) in
+    close_in channel;
+    content in
+  match d with 
+  | SImportAs (_, import, alias) -> (
+    if String.starts_with ~prefix:"c:" import then 
+        []
+    else (
+        let toml = read_file "miva.toml" in
+        match Toml.Parser.from_string toml with 
+        | `Ok table -> (
+        try 
+            match Toml.Types.Table.find (Toml.Min.key "project") table with 
+            | Toml.Types.TTable t -> (
+            match Toml.Types.Table.find (Toml.Min.key "name") t with 
+            | Toml.Types.TString s -> (
+                let raw_module = ( if String.starts_with ~prefix:s import then
+                    ("src/" ^ (String.concat "/" ((String.split_on_char '/' import) |> List.tl)))
+                else 
+                    let pstk = String.split_on_char '/' import in
+                    (try Sys.getenv "MIVA_STD" with _ -> ".") ^ (
+                      match get_head pstk with 
+                      | Some h -> "/" ^ h
+                      | None -> ""
+                    ) 
+                    ^ "/src/" ^ (String.concat "/" (List.tl pstk))
+                ) ^ ".miva" in
+                let raw_module_name = (parse_input_file raw_module) in
+                let raw_module_mod = (Symbol_table.build_symbol_table raw_module_name).module_name in
+                let raw_mod_cxx = cxx_deal_module raw_module_mod in
+                let alias_mod_cxx = cxx_deal_module alias in
+                [raw_mod_cxx; alias_mod_cxx]
+            )
+            | _ -> []
+            )
+            | _ -> []
+        with 
+            | _ -> []
+        )
+        | _ -> [] 
+    ))
+
+  | _ -> []
+  ))) defs in
+  let alias_module = List.filter (fun x -> x <> []) alias_module in
   let funct = ref (symbol_table.functions) in
   let _ = List.iter (fun def -> (
     funct := !funct @ [(def, [], None, Safe)];
     ()
   )) Global.builtin_functions in
-  let _ = List.iter (fun file -> (
+
+
+  List.iter (fun file -> (
     let defsn = parse_input_file file in 
     let symbt = Symbol_table.build_symbol_table defsn in
+  
     List.iter (fun fn -> (
       match fn with 
       | (name, params, return_typ, safety) -> (
         let nmod = if String.starts_with ~prefix:"std" symbt.module_name then 
           "mvp_std." ^ (String.concat "." ((String.split_on_char '.' symbt.module_name) |> List.tl))
         else symbt.module_name in
-        let nfn = (nmod ^ "." ^ name, params, return_typ, safety) in
-        funct := !funct @ [nfn]
+        if (
+          List.filter (fun x -> get_head x = Some nmod) alias_module <> []
+        ) then (
+          let nfn = (nmod ^ "." ^ name, params, return_typ, safety) in
+          let nfn2 = ((
+            let h = (
+              match (List.filter (fun x -> get_head x = Some nmod) alias_module) |> get_head with 
+              | Some h -> h
+              | None -> []
+            ) in 
+            match h with 
+            | [raw; alias] -> (
+              alias
+            )
+            | _ -> ""
+          ) ^ "." ^ name, params, return_typ, safety) in
+          funct := !funct @ [nfn; nfn2]
+        ) else (
+          let nfn = (nmod ^ "." ^ name, params, return_typ, safety) in
+          funct := !funct @ [nfn]
+        ) 
        )
-    )) symbt.exported_functions
-  )) symbol_table.files in
+    )) symbt.exported_functions;
+    ()
+  )) symbol_table.files; 
   let symbol_table = {symbol_table with functions = !funct} in
-  
   (* 检查模块声明位置和重复性 *)
   let module_decls = ref [] in
   let has_non_module_decl = ref false in
