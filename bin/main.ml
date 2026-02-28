@@ -47,6 +47,26 @@ let remove_prefix (a : string) (b : string) : string =
   (* 从索引 len_a 开始，截取 len_b - len_a 个字符 *)
   String.sub b len_a (len_b - len_a)
 
+(* 查找 miva.toml 文件并设置工作目录 *)
+let find_and_set_project_dir () : bool =
+  let rec search_upwards current_dir =
+    let config_path = Filename.concat current_dir "miva.toml" in
+    if Sys.file_exists config_path then (
+      (* 找到 miva.toml，设置工作目录 *)
+      Sys.chdir current_dir;
+      true
+    ) else (
+      let parent_dir = Filename.dirname current_dir in
+      (* 如果到达根目录且未找到，返回 false *)
+      if parent_dir = current_dir then
+        false
+      else
+        search_upwards parent_dir
+    )
+  in
+  let current_dir = Sys.getcwd () in
+  search_upwards current_dir
+
 let init_env_var () = 
   if not (Sys.file_exists "miva.toml") then (
     eprintf "Error: miva.toml not found.\n";
@@ -439,6 +459,10 @@ let init_cmd =
 
 (* ---------- 子命令: build/run ---------- *)
 let build_project ~verbose = 
+  if not (find_and_set_project_dir ()) then (
+    eprintf "Error: Project not initialized in this directory.\n%!";
+    exit 1;
+  );
   init_env_var ();
   if not (Sys.file_exists "miva.toml") then (
     eprintf "Error: Project not initialized in this directory.\n%!";
@@ -543,6 +567,10 @@ let clean_cmd =
   let info = Cmd.info "clean" ~doc in
   Cmd.v info Term.(
     const (fun _verbose () ->
+      if not (find_and_set_project_dir ()) then (
+        eprintf "Error: Project not initialized in this directory.\n%!";
+        exit 1;
+      );
       init_env_var ();
       if Sys.file_exists "miva.toml" then (
         Sys.command ("rm -rf " ^ (get_build_dir ())) |> ignore;
@@ -728,6 +756,10 @@ let test_cmd =
   let info = Cmd.info "test" ~doc in
   Cmd.v info Term.(
     const (fun verbose test_files ->
+      if not (find_and_set_project_dir ()) then (
+        eprintf "Error: Project not initialized in this directory.\n%!";
+        exit 1;
+      );
       init_env_var ();
       if not (Sys.file_exists "miva.toml") then (
         eprintf "Error: Project not initialized in this directory.\n%!";
