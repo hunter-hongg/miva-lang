@@ -13,6 +13,7 @@ type typ =
   | TString
   | TArray of typ
   | TStruct of string * (string * typ) list
+  | TPtr of typ
 
 type expr =
   | EInt of loc * int64
@@ -33,6 +34,8 @@ type expr =
   | EBlock of loc * stmt list * expr option  (* 块级表达式：语句列表 + 可选的返回表达式 *)
   | EArrayLit of loc * expr list  (* 数组字面量：[]{expr1, expr2, ...} *)
   | EVoid of loc 
+  | EAddr of loc * expr
+  | EDeref of loc * expr
 
 and binop =
   | Add | Sub | Mul | Eq | Neq
@@ -58,3 +61,4 @@ and def =
   | SExport of loc * string
   | SImport of loc * string
   | SImportAs of loc * string * string
+  | SImportHere of loc * string

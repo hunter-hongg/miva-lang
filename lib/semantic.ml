@@ -41,7 +41,7 @@ type context = {
 let rec is_copy_type types t =
   match t with
   | TInt | TBool | TFloat32 | TFloat64 | TChar -> true
-  | TString | TArray _ -> false
+  | TString | TArray _ | TPtr _ -> false
   | TStruct (name, _) ->
       try
         let fields = Env.find name types in
@@ -231,9 +231,15 @@ let rec check_expr ctx symbol_table e =
         ) saved_vars ctx.vars in
       
       ctx.vars <- propagated_vars
+  | EDeref (_, e) -> failwith "cannot dereference a ptr in a safe function."
   | _ -> ()
 
 let check_program defs =
+  let read_file filename =
+    let channel = open_in filename in
+    let content = really_input_string channel (in_channel_length channel) in
+    close_in channel;
+    content in
   (* 构建符号表，用于函数安全属性查询 *)
   let symbol_table = Symbol_table.build_symbol_table defs in
   let get_head list = 
@@ -246,11 +252,6 @@ let check_program defs =
       "mvp_std." ^ (String.concat "." ((String.split_on_char '.' name) |> List.tl))
     else name in
     nmod in
-  let read_file filename =
-    let channel = open_in filename in
-    let content = really_input_string channel (in_channel_length channel) in
-    close_in channel;
-    content in
   match d with 
   | SImportAs (_, import, alias) -> (
     if String.starts_with ~prefix:"c:" import then 
@@ -298,7 +299,49 @@ let check_program defs =
     funct := !funct @ [(def, [], None, Safe)];
     ()
   )) Global.builtin_functions in
-
+  let here_module = List.map (fun d -> (
+    match d with 
+    | SImportHere (_, import) -> (
+      if String.starts_with ~prefix:"c:" import then 
+          ""
+      else (
+          let toml = read_file "miva.toml" in
+          match Toml.Parser.from_string toml with 
+          | `Ok table -> (
+          try 
+              match Toml.Types.Table.find (Toml.Min.key "project") table with 
+              | Toml.Types.TTable t -> (
+              match Toml.Types.Table.find (Toml.Min.key "name") t with 
+              | Toml.Types.TString s -> (
+                  let raw_module = ( if String.starts_with ~prefix:s import then
+                      ("src/" ^ (String.concat "/" ((String.split_on_char '/' import) |> List.tl))) ^ ".miva"
+                  else 
+                      let pstk = String.split_on_char '/' import in
+                      (try Sys.getenv "MIVA_STD" with _ -> ".") ^ "/" ^ (
+                        match get_head pstk with 
+                        | Some h -> h
+                        | None -> ""
+                      ) 
+                      ^ "/src/" ^ (String.concat "/" (List.tl pstk)) ^ ".miva"
+                  ) in
+                  let raw_module_name = (parse_input_file raw_module) in
+                  let raw_module_mod = (Symbol_table.build_symbol_table raw_module_name).module_name in
+                  let nmod = if String.starts_with ~prefix:"std" raw_module_mod then 
+                    "mvp_std." ^ (String.concat "." ((String.split_on_char '.' raw_module_mod) |> List.tl))
+                  else raw_module_mod in
+                  nmod
+              )
+              | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+              )
+              | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+          with 
+              | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+          )
+          | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
+      ))
+    | _ -> ""
+  )) defs in
+  let here_module = List.filter (fun x -> x <> "") here_module in
 
   List.iter (fun file -> (
     let defsn = parse_input_file file in 
@@ -328,8 +371,16 @@ let check_program defs =
           ) ^ "." ^ name, params, return_typ, safety) in
           funct := !funct @ [nfn; nfn2]
         ) else (
-          let nfn = (nmod ^ "." ^ name, params, return_typ, safety) in
-          funct := !funct @ [nfn]
+          if (
+            List.filter (fun x -> x = nmod) here_module <> []
+          ) then (
+            let nfn = (nmod ^ "." ^ name, params, return_typ, safety) in
+            let nfn2 = (name, params, return_typ, safety) in
+            funct := !funct @ [nfn; nfn2]
+          ) else (
+            let nfn = (nmod ^ "." ^ name, params, return_typ, safety) in
+            funct := !funct @ [nfn]
+          )
         ) 
        )
     )) symbt.exported_functions;

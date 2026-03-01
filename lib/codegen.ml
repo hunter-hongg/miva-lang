@@ -60,6 +60,7 @@ let rec cxx_type_of_typ = function
   | TString -> "mvp_builtin_string"
   | TArray typ -> "std::vector<" ^ cxx_type_of_typ typ ^ ">"
   | TStruct (name, _) -> name
+  | TPtr typ -> cxx_type_of_typ typ ^ "*"
   | _ -> failwith "The type is not supported in C++ code generation"
 
 let rec cxx_stmt_of_stmt indent_level ctx stmt = 
@@ -218,6 +219,8 @@ and cxx_expr_of_expr indent_level ctx expr =
       let elem_strs = List.map (cxx_expr_of_expr indent_level ctx) elems in
       "std::vector{" ^ String.concat ", " elem_strs ^ "}"
   | EVoid _ -> "mvp_builtin_void"
+  | EAddr (_, expr) -> "&(" ^ cxx_expr_of_expr indent_level ctx expr ^ ")"
+  | EDeref (_, expr) -> "*(" ^ cxx_expr_of_expr indent_level ctx expr ^ ")"
 
 let cxx_deal_module name = 
     if String.compare name "main" == 0 then 
@@ -565,6 +568,50 @@ let cxx_def_of_def indent_level ctx def =
         )
         | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
     ))
+  | SImportHere (_, import) -> (
+    if String.starts_with ~prefix:"c:" import then 
+        let import_str = String.sub import 2 (String.length import - 2) in
+        "#include <" ^ import_str ^ ">\n"
+    else (
+        let toml = read_file "miva.toml" in
+        match Toml.Parser.from_string toml with 
+        | `Ok table -> (
+        try 
+            match Toml.Types.Table.find (Toml.Min.key "project") table with 
+            | Toml.Types.TTable t -> (
+            match Toml.Types.Table.find (Toml.Min.key "name") t with 
+            | Toml.Types.TString s -> (
+                let res = if String.starts_with ~prefix:s import then (
+                "#include <src/" ^
+                    (String.concat "/" ((String.split_on_char '/' import) |> List.tl))
+                    ^ ".h>\n" 
+                ) else (
+                let pstk = String.split_on_char '/' import in
+                "#include <" ^ 
+                    get_head pstk ^ "/src/" ^ 
+                    (String.concat "/" (List.tl pstk)) ^ ".h>\n"
+                ) in
+                let raw_module = ( if String.starts_with ~prefix:s import then
+                    ("src/" ^ (String.concat "/" ((String.split_on_char '/' import) |> List.tl))) ^ ".miva"
+                else 
+                    let pstk = String.split_on_char '/' import in
+                    (try Sys.getenv "MIVA_STD" with _ -> ".") ^ "/" ^ (get_head pstk) 
+                    ^ "/src/" ^ (String.concat "/" (List.tl pstk)) ^ ".miva"
+                ) in
+                let raw_module_name = (parse_input_file raw_module) in
+                let raw_module_mod = (Symbol_table.build_symbol_table raw_module_name).module_name in
+                let raw_mod_cxx = cxx_deal_module raw_module_mod in
+                res ^
+                "using namespace " ^ raw_mod_cxx ^ ";\n"
+            )
+            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+            )
+            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+        with 
+            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
+        )
+        | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
+    ))
   | DTest(_, _, _) -> ""
 
 
@@ -781,6 +828,10 @@ let build_ir _fpath defs =
             let import_str = cxx_def_of_def 0 ctx def in
             generate_with_scope ctx current_module main_functions (includes ^ import_str) defs_str rest
         | SImportAs (_, _, _) ->
+            (* 处理导入语句：将其添加到includes中，而不是当前模块的命名空间内 *)
+            let import_str = cxx_def_of_def 0 ctx def in
+            generate_with_scope ctx current_module main_functions (includes ^ import_str) defs_str rest
+        | SImportHere (_, _) ->
             (* 处理导入语句：将其添加到includes中，而不是当前模块的命名空间内 *)
             let import_str = cxx_def_of_def 0 ctx def in
             generate_with_scope ctx current_module main_functions (includes ^ import_str) defs_str rest

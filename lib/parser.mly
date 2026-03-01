@@ -21,7 +21,7 @@
 %token STRUCT REF MOVE CLONE PRINT IF ELIF ELSE MUT RETURN TEST
 %token INT BOOL FLOAT32 FLOAT64 CHAR STRING
 %token EOF
-%token OWN COLON
+%token OWN COLON LT GT PTR ADDR DEREF
 %token CHOOSE WHEN OTHERWISE MODULE EXPORT IMPORT
 %token UNSAFE TRUSTED C_KEYWORD VOID
 
@@ -71,6 +71,12 @@ def:
             col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, 
             symbol, 
             String.concat "." alias)}
+  | IMPORT symbol = STRING_LIT AS DOT {
+    SImportHere(
+      { line = $startpos.Lexing.pos_lnum; 
+        col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, 
+        symbol)
+  }
 
 
 func_params:
@@ -107,8 +113,9 @@ atomic_expr:
   | x = IDENT { EVar ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, x) }
   | MOVE x = IDENT { EMove ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, x) }
   | CLONE x = IDENT { EClone ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, x) }
-  | PRINT LPAREN s = STRING_LIT RPAREN { ECall ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, "print", [EString ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, s)]) }
   | LPAREN e = expr RPAREN { e }
+  | ADDR e = field_access_expr { EAddr ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, e) }
+  | DEREF e = field_access_expr { EDeref ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, e) }
   | e = struct_init_expr { e }
   | e = atomic_expr AS t = typ { ECast ({ line = $startpos.Lexing.pos_lnum; col = $startpos.Lexing.pos_cnum - $startpos.Lexing.pos_bol + 1 }, e, t) }
 
@@ -199,6 +206,7 @@ typ:
   | CHAR { TChar }
   | STRING { TString }
   | LBRACKET t = typ RBRACKET { TArray t }
+  | PTR LT t = typ GT { TPtr t }
   | t = type_path { TStruct (t, []) }
 
 type_path:
