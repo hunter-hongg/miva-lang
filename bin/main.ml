@@ -15,6 +15,7 @@ module Dependency_graph = Mvp_lib.Dependency_graph
 module Codegen = Mvp_lib.Codegen
 module Global = Mvp_lib.Global
 module Macro_expand = Mvp_lib.Macro_expand
+module Warning = Mvp_lib.Warnings
 
 let compute_sha256 filename =
   Digest.to_hex (Digest.file filename)
@@ -111,7 +112,7 @@ let release =
   Arg.(value & flag & info ["r"; "release"] ~doc)
 
 (* ---------- 公共解析函数 ---------- *)
-let parse_input_file filename =
+let parse_input_file filename =  
   let ic = open_in filename in
   let lexbuf = Lexing.from_channel ic in
   Lexing.set_filename lexbuf filename;
@@ -132,6 +133,36 @@ let parse_input_file filename =
   | _ ->
       eprintf "Parsing error\n%!";
       exit 1
+
+(* 去除重复的import语句 *)
+let remove_duplicate_imports defs = 
+  let import_set = ref StringSet.empty in
+  let filtered_defs = ref [] in
+  
+  List.iter (fun def ->
+    match def with
+    | Ast.SImport (_, import) ->
+        if not (StringSet.mem import !import_set) then (
+          (* eprintf "Hello %s\n" import; *)
+          import_set := StringSet.add import !import_set;
+          filtered_defs := def :: !filtered_defs
+        )
+    | Ast.SImportAs (_, import, alias) ->
+        let key = import ^ " as " ^ alias in
+        if not (StringSet.mem key !import_set) then (
+          import_set := StringSet.add key !import_set;
+          filtered_defs := def :: !filtered_defs
+        )
+    | Ast.SImportHere (_, import) ->
+        if not (StringSet.mem import !import_set) then (
+          import_set := StringSet.add import !import_set;
+          filtered_defs := def :: !filtered_defs
+        )
+    | _ ->
+        filtered_defs := def :: !filtered_defs
+  ) defs;
+  
+  List.rev !filtered_defs
 
 let check_semantics ast =
   Semantic.check_program ast
@@ -271,18 +302,19 @@ let get_build_dir_rel release =
     get_build_dir ()
   )
 (* ---------- 公共编译流程函数 ---------- *)
-let compile_program_obj ~verbose ~input_file ~output_file ~_release =
-  if verbose then eprintf "Parsing %s...\n%!" input_file;
+let compile_program_obj ~verbose ~input_file ~output_file ~_release =  
   let ast = parse_input_file input_file in
-  if verbose then eprintf "Expanding macros...\n%!";
   let ast = Macro_expand.expand_macros ast in
-  if verbose then eprintf "Checking semantics...\n%!";
+  let ast = remove_duplicate_imports ast in
+  let symbol_table = SymbolTable.build_symbol_table ast in
   check_semantics ast;
-  if verbose then eprintf "Checking symbol table...\n%!";
   check_symbol_table ast;
   if verbose then eprintf "Checking circular dependencies...\n%!";
-  let symbol_table = SymbolTable.build_symbol_table ast in
   check_circular_dependencies (input_file :: symbol_table.files);
+  let warnings = Warning.get_warnings ast in
+  eprintf "%s\x1b[33m%s\x1b[0m%!" 
+      (if warnings <> [] then "\n" else "")
+      (String.concat "\n" warnings);
   if verbose then eprintf "Generating C++ code...\n%!";
   let cpp_code = generate_cpp_code input_file ast in
   let cache_dir = get_cache_dir_rel _release in
@@ -330,11 +362,15 @@ let compile_program_obj ~verbose ~input_file ~output_file ~_release =
 
 let get_basic_build_dir () = 
   try Unix.getenv "MIVA_BUILD_BASIC" with Not_found -> "build"
-let compile_program ~verbose ~input_file ~output_file ~project_type ~release =
+let compile_program ~verbose ~input_file ~output_file ~project_type ~release =  
   let ast = parse_input_file input_file in
+  let ast = Macro_expand.expand_macros ast in
+  let ast = remove_duplicate_imports ast in
   let symtab = SymbolTable.build_symbol_table ast in
   let graph = SymbolTable.build_dependency_graph input_file symtab in
-  let queue = input_file :: symtab.files in
+  let queue = ((get_std_include_dir ()) ^ "/std/src/str.miva") :: input_file :: symtab.files  in
+  (* 实现代码：对queue去重 *)
+  let queue = StringSet.elements (StringSet.of_list queue) in
   let hist = [] in
   let need_compile_bin = ref [] in
   (* 实现代码：编译文件*)
@@ -780,6 +816,8 @@ let dep_cmd =
           ) in
           if verbose then eprintf "Parsing %s...\n%!" input_file;
           let ast = parse_input_file input_file in
+          if verbose then eprintf "Removing duplicate imports...\n%!";
+          let ast = remove_duplicate_imports ast in
           if verbose then eprintf "Building symbol table...\n%!";
           let symbol_table = SymbolTable.build_symbol_table ast in
           if verbose then eprintf "Building dependency graph...\n%!";
@@ -831,6 +869,7 @@ let test_cmd =
           let mvpf = (
             String.sub f (l+1) (String.length f - l - 10)) ^ ".miva" in
           let ast = parse_input_file mvpf in
+          let ast = remove_duplicate_imports ast in
           let symb = SymbolTable.build_symbol_table ast in
           let res = List.map (fun s -> (
             let stdp = get_std_include_dir () in

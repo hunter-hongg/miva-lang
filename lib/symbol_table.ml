@@ -20,7 +20,8 @@ type symbol_table = {
   functions: (string * param list * typ option * function_safety) list; (* 函数名 -> 参数列表和返回类型和安全属性 *)
   structs: (string * (string * typ) list) list;      (* 结构体名 -> 字段列表 *)
   exported_functions: (string * param list * typ option * function_safety) list;                  (* 导出的函数名列表 *)
-  files: string list
+  files: string list;
+  imports: string list;
 }
 
 (* 函数安全属性 *)
@@ -36,6 +37,7 @@ let empty_symbol_table = {
   structs = [];
   exported_functions = [];
   files = [];
+  imports = [];
 }
 
 let read_file filename =
@@ -142,9 +144,9 @@ let process_definition def symbol_table =
     | _ -> "" 
     in
     if file <> "" then
-      { symbol_table with files = file :: symbol_table.files }
+      { symbol_table with files = file :: symbol_table.files; imports = import :: symbol_table.imports }
     else 
-      symbol_table
+      { symbol_table with imports = import :: symbol_table.imports }
   );
   | SImportAs (_, import, _) -> (
     if String.starts_with ~prefix:"c:" import then 

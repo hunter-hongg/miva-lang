@@ -9,11 +9,12 @@ let read_file filename =
   content
 
 let expand_macros defs = 
+  let addf = ref [] in
   let rec print_basic_expr loc args = (
     let res = ref [
       SLet(
         loc, true, "s", 
-        ECall(loc, "string_make", [
+        ECall(loc, "mvp_std.str.make", [
           EString(loc, "");
           EInt(loc, 128L)
         ])
@@ -24,9 +25,9 @@ let expand_macros defs =
         res := !res @ [SAssign(
           loc, "s", 
           ECall (
-            loc, "string_concat", [
+            loc, "mvp_std.str.concat", [
               ECall(
-                loc, "string_concat", [ 
+                loc, "mvp_std.str.concat", [ 
                   EVar(loc, "s");
                   ECall (
                     loc, "string_from", [expand_expr e]
@@ -60,10 +61,12 @@ let expand_macros defs =
         | _ -> failwith "include_str! macro expects a single string argument"
       )
       | "prints" -> (
+        addf := SImport(loc, "std/str") :: !addf;
         let res = print_basic_expr loc args in
         EBlock(loc, res, None)
       )
       | "printlns" -> (
+        addf := SImport(loc, "std/str") :: !addf;
         let res = print_basic_expr loc args in
         EBlock(loc, res @ [
           SExpr(
@@ -115,6 +118,10 @@ let expand_macros defs =
     | EArrayLit (loc, es) -> EArrayLit (loc, List.map expand_expr es)
     | EAddr (loc, e) -> EAddr (loc, expand_expr e)
     | EDeref (loc, e) -> EDeref (loc, expand_expr e)
+    | EFor (loc, var, range, body) -> 
+        EFor (loc, var, expand_expr range, expand_expr body)
+    | ELoop (loc, body) -> ELoop (loc, expand_expr body)
+    | EWhile (loc, cond, body) -> EWhile (loc, expand_expr cond, expand_expr body)
     | e -> e  (* 其他所有表达式类型直接返回 *)
   and expand_stmt = function
     | SLet (loc, mut, name, e) -> SLet (loc, mut, name, expand_expr e)
@@ -131,4 +138,9 @@ let expand_macros defs =
     | DTest (loc, name, body) -> DTest (loc, name, expand_expr body)
     | d -> d  (* 其他所有定义类型直接返回 *)
   in
-  List.map expand_def defs
+  let res = List.map expand_def defs in 
+  match res with
+  | first :: rest -> (
+    first :: (!addf @ rest)
+  )
+  | [] -> !addf
