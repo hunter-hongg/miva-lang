@@ -3,7 +3,8 @@
 [@@@ocaml.warning "-26"]
 open Printf
 open Cmdliner
-
+open Env
+open Util
 
 module StringSet = Set.Make(String)
 module Ast = Mvp_lib.Ast
@@ -17,90 +18,8 @@ module Global = Mvp_lib.Global
 module Macro_expand = Mvp_lib.Macro_expand
 module Warning = Mvp_lib.Warnings
 
-let compute_sha256 filename =
-  Digest.to_hex (Digest.file filename)
-let list_files dir =
-  let dh = Unix.opendir dir in
-  let rec read_files acc =
-    try
-      let entry = Unix.readdir dh in
-      if entry = "." || entry = ".." then
-        read_files acc
-      else
-        read_files (entry :: acc)
-    with End_of_file ->
-      Unix.closedir dh;
-      List.rev acc
-  in
-  read_files []
-let write_file filename content =
-  let channel = open_out filename in  (* 打开文件，如果存在则覆盖 *)
-  output_string channel content;
-  close_out channel 
 
-let read_file filename =
-  let channel = open_in filename in
-  let content = really_input_string channel (in_channel_length channel) in
-  close_in channel;
-  content
-let remove_prefix (a : string) (b : string) : string =
-  let len_a = String.length a in
-  let len_b = String.length b in
-  (* 从索引 len_a 开始，截取 len_b - len_a 个字符 *)
-  String.sub b len_a (len_b - len_a)
 
-(* 查找 miva.toml 文件并设置工作目录 *)
-let find_and_set_project_dir () : bool =
-  let rec search_upwards current_dir =
-    let config_path = Filename.concat current_dir "miva.toml" in
-    if Sys.file_exists config_path then (
-      (* 找到 miva.toml，设置工作目录 *)
-      Sys.chdir current_dir;
-      true
-    ) else (
-      let parent_dir = Filename.dirname current_dir in
-      (* 如果到达根目录且未找到，返回 false *)
-      if parent_dir = current_dir then
-        false
-      else
-        search_upwards parent_dir
-    )
-  in
-  let current_dir = Sys.getcwd () in
-  search_upwards current_dir
-
-let init_env_var () = 
-  if not (Sys.file_exists "miva.toml") then (
-    eprintf "Error: miva.toml not found.\n";
-    exit 1 
-  );
-  let file = read_file "miva.toml" in
-  let fail () = 
-    eprintf "Error: miva.toml is not a vaild miva project";
-    exit 1;
-  in
-  match Toml.Parser.from_string file with 
-  | `Ok table -> (
-    match Toml.Types.Table.find (Toml.Min.key "env") table with 
-    | Toml.Types.TTable t  -> (
-      Toml.Types.Table.iter (fun k v -> (
-        match v with
-          | Toml.Types.TString s -> (
-            let k = (Toml.Types.Table.Key.to_string k) in
-            let k = String.uppercase_ascii k in
-            Unix.putenv k s
-          )
-          | _ -> ()
-      )) t
-    )
-    | _ -> ()
-  )
-  | _ -> (
-    fail ()
-  )
-
-let clean_line () =
-  Printf.eprintf "%s" ("\r" ^ (String.make 100 ' '))
 
 (* ---------- 全局选项 ---------- *)
 let verbose =
@@ -187,20 +106,6 @@ let generate_cpp_code inp ast =
 
 
 (* ---------- 构建目录管理 ---------- *)
-let get_build_dir () =
-  try Unix.getenv "MIVA_BUILD" with Not_found -> "build/debug"
-
-let get_cache_dir () =
-  try Unix.getenv "MIVA_BUILD_CACHE" with Not_found -> "build/debug/cache"
-
-let get_std_include_dir () =
-  try Unix.getenv "MIVA_STD" with Not_found -> "util"
-
-let get_include_flag () = 
-  try Unix.getenv "MIVA_INC_FLAGS" with Not_found -> ""
-
-let get_link_flag () = 
-  try Unix.getenv "MIVA_LINK_FLAGS" with Not_found -> ""
 
 let ensure_dir_for_file file_path =
   let dir = Filename.dirname file_path in
@@ -288,19 +193,6 @@ let link_file ~verbose ~obj_files ~output_file ~project_type ~release =
   if verbose then eprintf "Linked successfully: %s\n%!" exe_file;
   exe_file
 
-let get_cache_dir_rel release = 
-  if release then (
-    try Unix.getenv "MIVA_RELEASE_CACHE" with Not_found -> "build/release/cache"
-  ) else (
-    get_cache_dir ()
-  )
-
-let get_build_dir_rel release = 
-  if release then (
-    try Unix.getenv "MIVA_RELEASE_BUILD" with Not_found -> "build/release"
-  ) else (
-    get_build_dir ()
-  )
 (* ---------- 公共编译流程函数 ---------- *)
 let compile_program_obj ~verbose ~input_file ~output_file ~_release =  
   let ast = parse_input_file input_file in
@@ -360,8 +252,6 @@ let compile_program_obj ~verbose ~input_file ~output_file ~_release =
   cpp_file
 
 
-let get_basic_build_dir () = 
-  try Unix.getenv "MIVA_BUILD_BASIC" with Not_found -> "build"
 let compile_program ~verbose ~input_file ~output_file ~project_type ~release =  
   let ast = parse_input_file input_file in
   let ast = Macro_expand.expand_macros ast in
@@ -493,46 +383,7 @@ let init_cmd =
   let info = Cmd.info "init" ~doc in
   Cmd.v info Term.(
     const (fun _verbose init_name init_type () ->
-        if Sys.file_exists "miva.toml" then (
-          eprintf "Error: Project already initialized in this directory.\n%!";
-          exit 1;
-        ) else (
-          match init_type with
-          | "bin" | "lib" -> (
-            write_file "miva.toml" (
-              sprintf "[project]\nname = \"%s\"\ntype = \"%s\"\n" init_name init_type
-            );
-            Sys.mkdir "src" 0o755;
-            if String.compare init_type "bin" == 0 then (
-              write_file "src/main.miva" (
-                "// main.miva \n" ^
-                "// Generated by Miva init\n" ^
-                "module main\n" ^
-                "main = () => {\n" ^
-                "  println(\"Hello, World\")\n" ^ 
-                "}\n"
-              )
-            ) else (
-              write_file "src/lib.miva" (
-                "// lib.miva \n" ^
-                "// Generated by Miva init\n" ^
-                "module " ^ init_name ^ "\n" ^
-                "add = (ref a: int, ref b: int): int => {\n" ^
-                "  return a + b\n" ^ 
-                "}\n" ^
-                "test_add = (): int => {\n" ^
-                "  assert!(add(1, 2) == 3)\n" ^
-                "  0\n" ^
-                "}\n"
-              )
-            );
-            printf "Initialized %s project in %s\n%!" init_type init_name
-          )
-          | _ -> (
-            eprintf "Error: Unknown project type: %s\n%!" init_type;
-            exit 1;
-          )
-        )
+        Init.init_cmd_do init_name init_type
       )
     $ verbose
     $ init_name
@@ -652,18 +503,7 @@ let clean_cmd =
   let info = Cmd.info "clean" ~doc in
   Cmd.v info Term.(
     const (fun _verbose () ->
-      if not (find_and_set_project_dir ()) then (
-        eprintf "Error: Project not initialized in this directory.\n%!";
-        exit 1;
-      );
-      init_env_var ();
-      if Sys.file_exists "miva.toml" then (
-        Sys.command ("rm -rf " ^ (get_basic_build_dir ())) |> ignore;
-        printf "Cleaned build artifacts.\n%!"
-      ) else (
-        eprintf "Error: Project not initialized in this directory.\n%!";
-        exit 1;
-      )
+      Clean.clean_cmd_do ()
     )
     $ verbose
     $ const ()
