@@ -1,7 +1,6 @@
 (library
  (name mvp_lib)
  (libraries str toml unix)
- ; (preprocess (pps ppx_deriving.show ppx_deriving.eq)) ; 如果你用了 ppx，保留；否则删这行
  )
 
 (menhir

@@ -1,57 +1,18 @@
 open Ast
 open Symbol_table
-open Printf
 
 module Env = Map.Make(String)
 
-let parse_input_file filename =
-  let ic = open_in filename in
-  let lexbuf = Lexing.from_channel ic in
-  Lexing.set_filename lexbuf filename;
-  try
-    let ast = Parser.program Lexer.token lexbuf in
-    close_in ic;
-    ast
-  with
-  | Parsing.Parse_error ->
-      let pos = Lexing.lexeme_start_p lexbuf in
-      let line = pos.Lexing.pos_lnum in
-      let col = pos.Lexing.pos_cnum - pos.Lexing.pos_bol + 1 in
-      eprintf "Syntax error at %s:%d:%d\n%!" filename line col;
-      exit 1
-  | Lexer.SyntaxError msg ->
-      eprintf "Lexer error: %s\n%!" msg;
-      exit 1
-  | _ ->
-      eprintf "Parsing error\n%!";
-      exit 1
-type var_info = {
-  typ: typ;
-  mutable state: [`Valid | `Moved];
-  is_mutable: bool;
-}
+let parse_input_file = Wrapper.parse_input_file
 
-type context = {
-  types: (string * typ) list Env.t;  (* struct name -> field list *)
-  mutable vars: var_info Env.t;
-}
 let indent n = String.make (n * 2) ' '
 
-let write_file filename content =
-  let channel = open_out filename in  (* 打开文件，如果存在则覆盖 *)
-  output_string channel content;
-  close_out channel 
+let write_file = Util.write_file
 
-let read_file filename =
-  let channel = open_in filename in
-  let content = really_input_string channel (in_channel_length channel) in
-  close_in channel;
-  content
+let read_file = Util.read_file
 
-let get_head list = 
-  match list with
-  | h :: _ -> h
-  | [] -> ""
+let get_head = Wrapper.get_head
+
 let rec cxx_type_of_typ = function
   | TInt -> "mvp_builtin_int"
   | TBool -> "mvp_builtin_boolean"
@@ -66,7 +27,6 @@ let rec cxx_type_of_typ = function
 
 let rec cxx_stmt_of_stmt indent_level ctx stmt = 
   let ind = indent indent_level in
-  (* let ind_inner = indent (indent_level + 1) in *)
   match stmt with
   | SLet (_, is_mutable, name, expr) -> 
       let expr_str = cxx_expr_of_expr indent_level ctx expr in
@@ -99,11 +59,9 @@ let rec cxx_stmt_of_stmt indent_level ctx stmt =
         ^ ")>, \"A non-Copy type can't be assigned without clone or move\");\n"
       )
 and cxx_expr_of_expr indent_level ctx expr = 
-  (* let ind = indent indent_level in *)
-  (* let ind_inner = indent (indent_level + 1) in *)
   match expr with
   | EInt (_, i) -> "static_cast<mvp_builtin_int>(" ^ Int64.to_string i ^ ")"
-  | EBool (_, b) -> if b then "true" else "false"
+  | EBool (_, b) -> "bool(" ^ (if b then "true" else "false") ^ ")"
   | EFloat (_, f) -> string_of_float f
   | EChar (_, c) -> "'" ^ Char.escaped c ^ "'"
   | EString (_, s) -> "mvp_builtin_string(\"" ^ s ^ "\")"
@@ -114,7 +72,7 @@ and cxx_expr_of_expr indent_level ctx expr =
       if List.length fields = 0 then
         name ^ "{}"
       else
-        let temp_var = "__temp_" ^ string_of_int (Random.int 1000) in
+        let temp_var = "__temp" in
         let init_stmts = List.map (fun (fname, fexpr) -> 
             let field_expr = cxx_expr_of_expr (indent_level + 1) ctx fexpr in
             temp_var ^ "." ^ fname ^ " = " ^ field_expr
@@ -142,20 +100,20 @@ and cxx_expr_of_expr indent_level ctx expr =
             " else " ^ cxx_expr_of_expr (indent_level + 1) ctx else_expr
         | None -> ""
       in
-      "if (" ^ cond_str ^ ") { " ^ then_str ^ " }" ^ else_str
+      "([&]() { if (" ^ cond_str ^ ") { " ^ then_str ^ " }" ^ else_str ^ " }())"
   | EWhile (_, cond, body) -> (
       let cond_str = cxx_expr_of_expr indent_level ctx cond in
       let body_str = cxx_expr_of_expr (indent_level + 1) ctx body in
-      "while (" ^ cond_str ^ ") { " ^ body_str ^ " }"
+      "([&]() { while (" ^ cond_str ^ ") { " ^ body_str ^ " }())"
   )
   | ELoop (_, body) -> (
       let body_str = cxx_expr_of_expr (indent_level + 1) ctx body in
-      "for (;;) { " ^ body_str ^ " }"
+      "([&]() { for (;;) { " ^ body_str ^ " }())"
   )
   | EFor (_, i, range, body) -> (
       let range_str = cxx_expr_of_expr indent_level ctx range in
       let body_str = cxx_expr_of_expr (indent_level + 1) ctx body in
-      "for (auto " ^ i ^ " : " ^ range_str ^ ") { " ^ body_str ^ " }"
+      "([&]() { for (auto " ^ i ^ " : " ^ range_str ^ ") { " ^ body_str ^ " }())"
   )
   | ECall (_, name, args) -> 
       let args_str = List.map (cxx_expr_of_expr indent_level ctx) args in
@@ -194,42 +152,35 @@ and cxx_expr_of_expr indent_level ctx expr =
       let ind = indent indent_level in
       let ind_inner = indent (indent_level + 1) in
       
-      (* 创建一个新的变量环境，继承自当前环境 *)
-      let local_ctx = { ctx with vars = ctx.vars } in
-      
       (* 处理块内的所有语句，包括变量声明 *)
       let stmt_strs = List.fold_left (fun acc stmt -> 
           match stmt with
           | SLet (_, is_mutable, name, expr) ->
               (* 处理变量初始化表达式 *)
-              let expr_str = cxx_expr_of_expr (indent_level + 1) local_ctx expr in
+              let expr_str = cxx_expr_of_expr (indent_level + 1) ctx expr in
               
               (* 生成变量声明的C++代码 *)
               let mut_str = if is_mutable then "auto " else "const auto " in
               acc ^ ind_inner ^ mut_str ^ name ^ " = " ^ expr_str ^ ";\n"
           | _ ->
-              acc ^ cxx_stmt_of_stmt (indent_level + 1) local_ctx stmt
+              acc ^ cxx_stmt_of_stmt (indent_level + 1) ctx stmt
         ) "" stmts in
       
       (* 处理块的最后表达式 *)
       let expr_str = match expr_opt with
-        | Some expr -> ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+        | Some expr -> ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
         | None -> "" in
       
-      "{\n" ^ stmt_strs ^ expr_str ^ ind ^ "}"
+      "([&]() {\n" ^ stmt_strs ^ expr_str ^ ind ^ "}()));"
   | EChoose (_, var_expr, cases, otherwise_opt) ->
       let var_str = cxx_expr_of_expr indent_level ctx var_expr in
       let ind = indent indent_level in
-      (* let ind_inner = indent (indent_level + 1) in *)
-      
-      (* 生成每个when分支 *)
       let cases_str = List.fold_left (fun acc (value_expr, body_expr) ->
           let value_str = cxx_expr_of_expr indent_level ctx value_expr in
           let body_str = cxx_expr_of_expr (indent_level + 1) ctx body_expr in
           acc ^ ind ^ "if (" ^ var_str ^ " == " ^ value_str ^ ") { " ^ body_str ^ " }\n"
         ) "" cases in
       
-      (* 生成otherwise分支 *)
       let otherwise_str = match otherwise_opt with
         | Some otherwise_expr ->
             let body_str = cxx_expr_of_expr (indent_level + 1) ctx otherwise_expr in
@@ -246,12 +197,12 @@ and cxx_expr_of_expr indent_level ctx expr =
   | EMacro (_, _, _) -> ""
 
 let cxx_deal_module name = 
-    if String.compare name "main" == 0 then 
-        "mvp_main"
-    else if String.starts_with ~prefix:"std" name then 
-        "mvp_std" ^ (if String.length name > 3 && String.get name 3 == '.' then "::" ^ String.concat "::" (List.tl (String.split_on_char '.' name)) else "")
-    else
-        String.concat "::" (String.split_on_char '.' name)
+  if String.compare name "main" == 0 then 
+    "mvp_main"
+  else if String.starts_with ~prefix:"std" name then 
+    "mvp_std" ^ (if String.length name > 3 && String.get name 3 == '.' then "::" ^ String.concat "::" (List.tl (String.split_on_char '.' name)) else "")
+  else
+    String.concat "::" (String.split_on_char '.' name)
 
 let cxx_def_of_def indent_level ctx def = 
   let ind = indent indent_level in
@@ -264,23 +215,17 @@ let cxx_def_of_def indent_level ctx def =
       ind ^ "struct " ^ name ^ " {\n" ^ 
       String.concat "" field_strs ^ 
       ind ^ "};\n\n"
-  | DFunc (_, "main", params, _, body) -> 
-      let local_ctx = List.fold_left (fun ctx param -> 
-          match param with
-          | PRef (pname, ptyp) | POwn (pname, ptyp) -> 
-              { ctx with vars = Env.add pname { typ = ptyp; state = `Valid; is_mutable = false } ctx.vars }
-        ) ctx params in
+  | DFunc (_, "main", _, _, body) -> 
       let func_signature = "mvp_builtin_unit mvp_own_main(mvp_builtin_int argc)" in
       let body_str = match body with
         | EBlock (_, stmts, _) ->
-            let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts in
+            let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) stmts in
             ind ^ func_signature ^ " {\n" ^ 
             String.concat "" stmt_strs ^ 
             ind_inner ^ "return mvp_builtin_void;\n" ^
             ind ^ "}\n\n"
         | _ -> 
-            (* 单表达式函数：直接返回表达式 *)
-            ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
+            ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level ctx body ^ "; }\n\n"
       in
       body_str
   | DCFuncUnsafe (_, name, params, ret_typ_opt, body) -> 
@@ -300,7 +245,6 @@ let cxx_def_of_def indent_level ctx def =
       body ^ "\n" ^ 
       ind ^ "}\n\n"
   | DFuncUnsafe (_, name, params, ret_typ_opt, body) -> 
-      (* unsafe函数生成与普通函数相同，只是语义检查阶段跳过 *)
       let param_strs = List.map (fun param -> 
           match param with
           | PRef (pname, ptyp) -> 
@@ -313,22 +257,15 @@ let cxx_def_of_def indent_level ctx def =
         | None -> "mvp_builtin_unit" in
       let func_signature = ret_type ^ " " ^ name ^ "(" ^ String.concat ", " param_strs ^ ")" in
       
-      (* Create a local context with function parameters *)
-      let local_ctx = List.fold_left (fun ctx param -> 
-          match param with
-          | PRef (pname, ptyp) | POwn (pname, ptyp) -> 
-              { ctx with vars = Env.add pname { typ = ptyp; state = `Valid; is_mutable = false } ctx.vars }
-        ) ctx params in
-
       let body_str = match body with
         | EBlock (_, stmts, expr_opt) ->
             let stmt_strs, expr_str = 
               match ret_type with
               | "mvp_builtin_unit" ->
-                  let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts in
+                  let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) stmts in
                   let expr_str = match expr_opt with
                     | Some expr -> 
-                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
                     | None ->
                         ind_inner ^ "return mvp_builtin_void;\n"
                   in
@@ -338,17 +275,17 @@ let cxx_def_of_def indent_level ctx def =
                     match List.rev stmts with
                     | SExpr (_, expr) :: rest ->
                         let rev_stmts = List.rev rest in
-                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) rev_stmts, Some expr)
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) rev_stmts, Some expr)
                     | _ ->
-                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts, None)
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) stmts, None)
                   in
                   let expr_str = match expr_opt with
                     | Some expr -> 
-                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
                     | None ->
                         match last_expr with
                         | Some expr ->
-                            ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                            ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
                         | None -> ""
                   in
                   (stmt_strs, expr_str)
@@ -361,7 +298,7 @@ let cxx_def_of_def indent_level ctx def =
             | "mvp_builtin_unit" ->
                 ind ^ func_signature ^ " { return mvp_builtin_void; }\n\n"
             | _ ->
-                ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
+                ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level ctx body ^ "; }\n\n"
       in
       body_str
   | DFuncTrusted (_, name, params, ret_typ_opt, body) -> 
@@ -378,22 +315,15 @@ let cxx_def_of_def indent_level ctx def =
         | None -> "mvp_builtin_unit" in
       let func_signature = ret_type ^ " " ^ name ^ "(" ^ String.concat ", " param_strs ^ ")" in
       
-      (* Create a local context with function parameters *)
-      let local_ctx = List.fold_left (fun ctx param -> 
-          match param with
-          | PRef (pname, ptyp) | POwn (pname, ptyp) -> 
-              { ctx with vars = Env.add pname { typ = ptyp; state = `Valid; is_mutable = false } ctx.vars }
-        ) ctx params in
-
       let body_str = match body with
         | EBlock (_, stmts, expr_opt) ->
             let stmt_strs, expr_str = 
               match ret_type with
               | "mvp_builtin_unit" ->
-                  let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts in
+                  let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) stmts in
                   let expr_str = match expr_opt with
                     | Some expr -> 
-                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
                     | None ->
                         ind_inner ^ "return mvp_builtin_void;\n"
                   in
@@ -403,17 +333,17 @@ let cxx_def_of_def indent_level ctx def =
                     match List.rev stmts with
                     | SExpr (_, expr) :: rest ->
                         let rev_stmts = List.rev rest in
-                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) rev_stmts, Some expr)
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) rev_stmts, Some expr)
                     | _ ->
-                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts, None)
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) stmts, None)
                   in
                   let expr_str = match expr_opt with
                     | Some expr -> 
-                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
                     | None ->
                         match last_expr with
                         | Some expr ->
-                            ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                            ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
                         | None -> ""
                   in
                   (stmt_strs, expr_str)
@@ -426,7 +356,7 @@ let cxx_def_of_def indent_level ctx def =
             | "mvp_builtin_unit" ->
                 ind ^ func_signature ^ " { return mvp_builtin_void; }\n\n"
             | _ ->
-                ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
+                ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level ctx body ^ "; }\n\n"
       in
       body_str 
   | DFunc (_, name, params, ret_typ_opt, body) -> 
@@ -441,56 +371,36 @@ let cxx_def_of_def indent_level ctx def =
         | Some typ -> cxx_type_of_typ typ
         | None -> "mvp_builtin_unit" in
       let func_signature = ret_type ^ " " ^ name ^ "(" ^ String.concat ", " param_strs ^ ")" in
-      
-      (* Create a local context with function parameters *)
-      let local_ctx = List.fold_left (fun ctx param -> 
-          match param with
-          | PRef (pname, ptyp) | POwn (pname, ptyp) -> 
-              { ctx with vars = Env.add pname { typ = ptyp; state = `Valid; is_mutable = false } ctx.vars }
-        ) ctx params in
 
-      (* Helper function to extract the last expression from statements for auto-return *)
-      (* let extract_last_expr stmts =
-        match List.rev stmts with
-        | SExpr expr :: _ -> Some expr
-        | SReturn expr :: _ -> Some expr
-        | _ -> None
-      in *)
-      
       let body_str = match body with
         | EBlock (_, stmts, expr_opt) ->
-            (* 根据Miva规范：函数自动返回最后一个表达式 *)
             let stmt_strs, expr_str = 
               match ret_type with
               | "mvp_builtin_unit" ->
-                  (* unit类型：所有语句都执行，最后插入return mvp_builtin_void; *)
-                  let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts in
+                  let stmt_strs = List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) stmts in
                   let expr_str = match expr_opt with
                     | Some expr -> 
-                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
                     | None ->
                         ind_inner ^ "return mvp_builtin_void;\n"
                   in
                   (stmt_strs, expr_str)
               | _ ->
-                  (* 非unit类型：最后一个表达式语句只作为返回值，不作为普通语句 *)
                   let stmt_strs, last_expr = 
                     match List.rev stmts with
                     | SExpr (_, expr) :: rest ->
-                        (* 最后一个语句是表达式，不将其作为普通语句生成，只作为返回值 *)
                         let rev_stmts = List.rev rest in
-                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) rev_stmts, Some expr)
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) rev_stmts, Some expr)
                     | _ ->
-                        (* 最后一个语句不是表达式，或者没有语句 *)
-                        (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts, None)
+                        (List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) stmts, None)
                   in
                   let expr_str = match expr_opt with
                     | Some expr -> 
-                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
                     | None ->
                         match last_expr with
                         | Some expr ->
-                            ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                            ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
                         | None -> ""
                   in
                   (stmt_strs, expr_str)
@@ -499,13 +409,11 @@ let cxx_def_of_def indent_level ctx def =
             String.concat "" stmt_strs ^ expr_str ^ 
             ind ^ "}\n\n"
         | _ -> 
-            (* 单表达式函数：直接返回表达式 *)
             match ret_type with
             | "mvp_builtin_unit" ->
-                (* 返回类型是unit，直接返回mvp_builtin_void *)
                 ind ^ func_signature ^ " { return mvp_builtin_void; }\n\n"
             | _ ->
-                ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx body ^ "; }\n\n"
+                ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level ctx body ^ "; }\n\n"
       in
       body_str
   | DModule (_, s) -> (
@@ -513,132 +421,12 @@ let cxx_def_of_def indent_level ctx def =
   )
   | SExport (_, _) ->
       ""
-  | SImport (_, import) -> (
-    if String.starts_with ~prefix:"c:" import then 
-        let import_str = String.sub import 2 (String.length import - 2) in
-        "#include <" ^ import_str ^ ">\n"
-    else (
-        let toml = read_file "miva.toml" in
-        match Toml.Parser.from_string toml with 
-        | `Ok table -> (
-        try 
-            match Toml.Types.Table.find (Toml.Min.key "project") table with 
-            | Toml.Types.TTable t -> (
-            match Toml.Types.Table.find (Toml.Min.key "name") t with 
-            | Toml.Types.TString s -> (
-                if String.starts_with ~prefix:s import then
-                let res = "#include <src/" ^
-                    (String.concat "/" ((String.split_on_char '/' import) |> List.tl))
-                    ^ ".h>\n" in
-                res
-                else
-                let pstk = String.split_on_char '/' import in
-                let res = "#include <" ^ 
-                    get_head pstk ^ "/src/" ^ 
-                    (String.concat "/" (List.tl pstk)) ^ ".h>\n" in
-                res
-            )
-            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
-            )
-            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
-        with 
-            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
-        )
-        | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
-    ))
-  | SImportAs (_, import, alias) -> (
-    if String.starts_with ~prefix:"c:" import then 
-        let import_str = String.sub import 2 (String.length import - 2) in
-        "#include <" ^ import_str ^ ">\n"
-    else (
-        let toml = read_file "miva.toml" in
-        match Toml.Parser.from_string toml with 
-        | `Ok table -> (
-        try 
-            match Toml.Types.Table.find (Toml.Min.key "project") table with 
-            | Toml.Types.TTable t -> (
-            match Toml.Types.Table.find (Toml.Min.key "name") t with 
-            | Toml.Types.TString s -> (
-                let res = if String.starts_with ~prefix:s import then (
-                "#include <src/" ^
-                    (String.concat "/" ((String.split_on_char '/' import) |> List.tl))
-                    ^ ".h>\n" 
-                ) else (
-                let pstk = String.split_on_char '/' import in
-                "#include <" ^ 
-                    get_head pstk ^ "/src/" ^ 
-                    (String.concat "/" (List.tl pstk)) ^ ".h>\n"
-                ) in
-                let raw_module = ( if String.starts_with ~prefix:s import then
-                    ("src/" ^ (String.concat "/" ((String.split_on_char '/' import) |> List.tl))) ^ ".miva"
-                else 
-                    let pstk = String.split_on_char '/' import in
-                    (try Sys.getenv "MIVA_STD" with _ -> ".") ^ "/" ^ (get_head pstk) 
-                    ^ "/src/" ^ (String.concat "/" (List.tl pstk)) ^ ".miva"
-                ) in
-                let raw_module_name = (parse_input_file raw_module) in
-                let raw_module_mod = (Symbol_table.build_symbol_table raw_module_name).module_name in
-                let raw_mod_cxx = cxx_deal_module raw_module_mod in
-                let alias_mod_cxx = cxx_deal_module alias in
-                res ^
-                "namespace " ^ alias_mod_cxx ^ " = " ^ raw_mod_cxx ^ ";\n"
-            )
-            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
-            )
-            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
-        with 
-            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
-        )
-        | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
-    ))
-  | SImportHere (_, import) -> (
-    if String.starts_with ~prefix:"c:" import then 
-        let import_str = String.sub import 2 (String.length import - 2) in
-        "#include <" ^ import_str ^ ">\n"
-    else (
-        let toml = read_file "miva.toml" in
-        match Toml.Parser.from_string toml with 
-        | `Ok table -> (
-        try 
-            match Toml.Types.Table.find (Toml.Min.key "project") table with 
-            | Toml.Types.TTable t -> (
-            match Toml.Types.Table.find (Toml.Min.key "name") t with 
-            | Toml.Types.TString s -> (
-                let res = if String.starts_with ~prefix:s import then (
-                "#include <src/" ^
-                    (String.concat "/" ((String.split_on_char '/' import) |> List.tl))
-                    ^ ".h>\n" 
-                ) else (
-                let pstk = String.split_on_char '/' import in
-                "#include <" ^ 
-                    get_head pstk ^ "/src/" ^ 
-                    (String.concat "/" (List.tl pstk)) ^ ".h>\n"
-                ) in
-                let raw_module = ( if String.starts_with ~prefix:s import then
-                    ("src/" ^ (String.concat "/" ((String.split_on_char '/' import) |> List.tl))) ^ ".miva"
-                else 
-                    let pstk = String.split_on_char '/' import in
-                    (try Sys.getenv "MIVA_STD" with _ -> ".") ^ "/" ^ (get_head pstk) 
-                    ^ "/src/" ^ (String.concat "/" (List.tl pstk)) ^ ".miva"
-                ) in
-                let raw_module_name = (parse_input_file raw_module) in
-                let raw_module_mod = (Symbol_table.build_symbol_table raw_module_name).module_name in
-                let raw_mod_cxx = cxx_deal_module raw_module_mod in
-                res ^
-                "using namespace " ^ raw_mod_cxx ^ ";\n"
-            )
-            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
-            )
-            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
-        with 
-            | _ -> Printf.eprintf "Warning: import failed\n%!"; ""
-        )
-        | _ -> Printf.eprintf "Warning: import failed\n%!"; "" 
-    ))
+  | SImport (_, import) -> Wrapper.toml_get_codegen_import import
+  | SImportAs (_, import, alias) -> Wrapper.toml_get_codegen_importas import alias
+  | SImportHere (_, import) -> Wrapper.toml_get_codegen_importhere import
   | DTest(_, _, _) -> ""
 
 
-(* 生成函数声明（用于头文件） *)
 let cxx_func_declaration func_name params ret_typ_opt =
   let param_strs = List.map (fun param -> 
       match param with
@@ -652,10 +440,9 @@ let cxx_func_declaration func_name params ret_typ_opt =
     | None -> "mvp_builtin_unit" in
   ret_type ^ " " ^ func_name ^ "(" ^ String.concat ", " param_strs ^ ");\n"
 
-let generate_test indent_level defs = 
+let generate_test indent_level defs ctx = 
     let ind = indent indent_level in
     let ind_inner = indent (indent_level + 1) in
-    let local_ctx = { vars = Env.empty; types = Env.empty} in
     let header = "#include <mvp_builtin.h>\n" in
     let body = ref "" in 
     let found = ref false in
@@ -672,17 +459,17 @@ let generate_test indent_level defs =
                 match List.rev stmts with
                 | SExpr (_, expr) :: rest ->
                     let rev_stmts = List.rev rest in
-                    (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) rev_stmts, Some expr)
+                    (List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) rev_stmts, Some expr)
                 | _ ->
-                    (List.map (cxx_stmt_of_stmt (indent_level + 1) local_ctx) stmts, None)
+                    (List.map (cxx_stmt_of_stmt (indent_level + 1) ctx) stmts, None)
                 in
                 let expr_str = match expr_opt with
                 | Some expr -> 
-                    ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                    ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
                 | None ->
                     match last_expr with
                     | Some expr ->
-                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) local_ctx expr ^ ";\n"
+                        ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
                     | None -> ""
                 in
                 (stmt_strs, expr_str)
@@ -692,7 +479,7 @@ let generate_test indent_level defs =
             String.concat "" stmt_strs ^ expr_str ^ 
             ind ^ "}\n\n"
         | _ -> 
-            ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level local_ctx expr ^ "; }\n\n"
+            ind ^ func_signature ^ " { return " ^ cxx_expr_of_expr indent_level ctx expr ^ "; }\n\n"
       in
       body := ((!body) ^ body_str)
       | _ -> ()
@@ -720,27 +507,22 @@ let generate_test indent_level defs =
       "else {mvp_printlns(\"Test failed. Failed: \", failed, \" Passed: \", passed);return 1;}" ^
     "}"
 
-(* 生成头文件内容 *)
 let generate_header defs =
   let symbol_table = build_symbol_table defs in
-  
   let header_guard = "#pragma once\n\n" in
-  
   let includes = "#include <mvp_builtin.h>\n\n" in
   
-  (* 收集所有导出的函数声明和结构体声明，考虑模块结构 *)
   let rec collect_exported_decls defs current_modules = 
     match defs with
     | [] -> ""
     | def :: rest ->
         match def with
         | DModule (_, module_name) ->
-            (* 进入新模块，生成嵌套的namespace *)
             let new_modules = current_modules @ [module_name] in
             let module_parts = String.split_on_char '.' module_name in
-            let module_parts = if get_head module_parts = "std" then
+            let module_parts = if get_head module_parts = Some "std" then
               "mvp_std" :: (module_parts |> List.tl)
-            else if get_head module_parts = "main" then
+            else if get_head module_parts = Some "main" then
               let res = "mvp_main" :: (module_parts |> List.tl) in
               res
             else
@@ -750,24 +532,20 @@ let generate_header defs =
             let module_end = List.fold_left (fun acc _ -> acc ^ "}\n\n") "" module_parts in
             module_start ^ inner_content ^ module_end
         | SExport (_, name) ->
-            (* 先检查是否是结构体 *)
             let struct_info = List.find_opt (fun (sname, _) -> sname = name) symbol_table.structs in
             let decl = match struct_info with
               | Some (sname, fields) ->
-                  (* 生成结构体完整定义，包括所有字段 *)
                   "struct " ^ sname ^ " {\n" ^
                   List.fold_left (fun acc (fname, ftyp) ->
                       acc ^ "  " ^ cxx_type_of_typ ftyp ^ " " ^ fname ^ ";\n"
                     ) "" fields ^
                   "};\n\n"
               | None ->
-                  (* 不是结构体，检查是否是函数 *)
                   let func_info = List.find_opt (fun (fname, _, _, _) -> fname = name) symbol_table.functions in
                   match func_info with
                   | Some (fname, params, ret_typ_opt, _) ->
                       cxx_func_declaration fname params ret_typ_opt
                   | None ->
-                      (* 如果符号表中找不到，发出警告但继续处理 *)
                       Printf.eprintf "Warning: '%s' not found in symbol table, skipping export\n" name;
                       ""
             in
@@ -775,19 +553,17 @@ let generate_header defs =
         | _ ->
             collect_exported_decls rest current_modules
   in
+
   let exported_decls = collect_exported_decls defs [] in
-  
   let footer = "\n" in
-  
   if exported_decls = "" then
-    "" (* 没有导出的函数，不生成头文件 *)
+    "" 
   else
     header_guard ^ includes ^ exported_decls ^ footer
 
 let build_ir _fpath defs = 
-  (* 生成头文件 *)
   let header_content = generate_header defs in
-  
+  let ctx = () in
   let header = "#include <iostream>\n" ^
   "#include <string>\n" ^
   "#include <vector>\n" ^
@@ -796,10 +572,6 @@ let build_ir _fpath defs =
   "\n" ^
   "\nusing namespace std;\n\n" in
   
-  (* Create a minimal context with empty types and vars *)
-  let ctx = { types = Env.empty; vars = Env.empty } in
-  
-  (* Helper function to process definitions with module scope handling *)
   let rec generate_with_scope ctx current_module main_functions includes defs_str defs = 
     match defs with
     | [] -> (includes, defs_str, main_functions)
@@ -808,9 +580,9 @@ let build_ir _fpath defs =
         | DModule (_, module_name) ->
             (* Start nested module scopes *)
             let module_parts = String.split_on_char '.' module_name in
-            let module_parts = if get_head module_parts = "std" then
+            let module_parts = if get_head module_parts = Some "std" then
               "mvp_std" :: (module_parts |> List.tl)
-            else if get_head module_parts = "main" then
+            else if get_head module_parts = Some "main" then
               let res = "mvp_main" :: (module_parts |> List.tl) in
               res
             else
@@ -820,11 +592,9 @@ let build_ir _fpath defs =
             let module_end = List.fold_left (fun acc _ -> acc ^ "}\n\n") "" module_parts in
             (includes ^ inner_includes, defs_str ^ module_start ^ inner_content ^ module_end, new_main_functions)
         | DFunc (loc, "main", params, _, body) ->
-            (* 处理main函数：生成mvp_main在模块内，main函数在全局 *)
             let mvp_main_def = DFunc (loc, "main", params, None, body) in
             let mvp_main_str = cxx_def_of_def 0 ctx mvp_main_def in
             
-            (* 生成全局的main函数，调用模块中的mvp_main *)
             let global_main = match current_module with
               | Some module_name ->
                   "int main(int argc, char** argv)\n" ^
@@ -844,27 +614,22 @@ let build_ir _fpath defs =
                   "}\n\n"
             in
             
-            (* 将mvp_main放在当前模块内，main函数放在全局 *)
             generate_with_scope ctx current_module (main_functions ^ global_main) includes (defs_str ^ mvp_main_str) rest
         | SImport (_, _) ->
-            (* 处理导入语句：将其添加到includes中，而不是当前模块的命名空间内 *)
             let import_str = cxx_def_of_def 0 ctx def in
             generate_with_scope ctx current_module main_functions (includes ^ import_str) defs_str rest
         | SImportAs (_, _, _) ->
-            (* 处理导入语句：将其添加到includes中，而不是当前模块的命名空间内 *)
             let import_str = cxx_def_of_def 0 ctx def in
             generate_with_scope ctx current_module main_functions (includes ^ import_str) defs_str rest
         | SImportHere (_, _) ->
-            (* 处理导入语句：将其添加到includes中，而不是当前模块的命名空间内 *)
             let import_str = cxx_def_of_def 0 ctx def in
             generate_with_scope ctx current_module main_functions (includes ^ import_str) defs_str rest
         | _ ->
-            (* Generate definition in current module scope *)
             let def_str = cxx_def_of_def 0 ctx def in
             generate_with_scope ctx current_module main_functions includes (defs_str ^ def_str) rest
   in
   
   let includes, module_content, main_functions = generate_with_scope ctx None "" "" "" defs in
   let program = header ^ includes ^ module_content ^ main_functions ^ "\n" in
-  let test = generate_test 0 defs in
+  let test = generate_test 0 defs ctx in
   [program;header_content;test]

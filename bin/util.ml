@@ -1,5 +1,8 @@
 open Printf
 
+module StringSet = Set.Make(String)
+module Ast = Mvp_lib.Ast
+
 let compute_sha256 filename =
   Digest.to_hex (Digest.file filename)
 
@@ -20,16 +23,8 @@ let list_files dir =
   in
   read_files []
 
-let write_file filename content =
-  let channel = open_out filename in  (* 打开文件，如果存在则覆盖 *)
-  output_string channel content;
-  close_out channel 
-
-let read_file filename =
-  let channel = open_in filename in
-  let content = really_input_string channel (in_channel_length channel) in
-  close_in channel;
-  content
+let write_file = Mvp_lib.Util.write_file
+let read_file = Mvp_lib.Util.read_file
 
 let ensure_dir_for_file file_path =
   let dir = Filename.dirname file_path in
@@ -95,6 +90,35 @@ let init_env_var () =
   | _ -> (
     fail ()
   )
+
+let remove_duplicate_imports defs = 
+  let import_set = ref StringSet.empty in
+  let filtered_defs = ref [] in
+  
+  List.iter (fun def ->
+    match def with
+    | Ast.SImport (_, import) ->
+        if not (StringSet.mem import !import_set) then (
+          (* eprintf "Hello %s\n" import; *)
+          import_set := StringSet.add import !import_set;
+          filtered_defs := def :: !filtered_defs
+        )
+    | Ast.SImportAs (_, import, alias) ->
+        let key = import ^ " as " ^ alias in
+        if not (StringSet.mem key !import_set) then (
+          import_set := StringSet.add key !import_set;
+          filtered_defs := def :: !filtered_defs
+        )
+    | Ast.SImportHere (_, import) ->
+        if not (StringSet.mem import !import_set) then (
+          import_set := StringSet.add import !import_set;
+          filtered_defs := def :: !filtered_defs
+        )
+    | _ ->
+        filtered_defs := def :: !filtered_defs
+  ) defs;
+  
+  List.rev !filtered_defs
 
 (* ------------------------------------------------------- *)
 

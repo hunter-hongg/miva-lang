@@ -4,6 +4,7 @@
 open Printf
 open Cmdliner
 open Util
+open Buildrun
 
 module StringSet = Set.Make(String)
 module Ast = Mvp_lib.Ast
@@ -17,7 +18,9 @@ module Global = Mvp_lib.Global
 module Macro_expand = Mvp_lib.Macro_expand
 module Warning = Mvp_lib.Warnings
 module Env = Mvp_lib.Env
+module Wrapper = Mvp_lib.Wrapper
 open Env
+open Wrapper
 
 (* ---------- 全局选项 ---------- *)
 let verbose =
@@ -27,333 +30,6 @@ let verbose =
 let release = 
   let doc = "Release mode." in
   Arg.(value & flag & info ["r"; "release"] ~doc)
-
-(* ---------- 公共解析函数 ---------- *)
-let parse_input_file =  
-  Mvp_lib.Wrapper.parse_input_file
-
-(* 去除重复的import语句 *)
-let remove_duplicate_imports defs = 
-  let import_set = ref StringSet.empty in
-  let filtered_defs = ref [] in
-  
-  List.iter (fun def ->
-    match def with
-    | Ast.SImport (_, import) ->
-        if not (StringSet.mem import !import_set) then (
-          (* eprintf "Hello %s\n" import; *)
-          import_set := StringSet.add import !import_set;
-          filtered_defs := def :: !filtered_defs
-        )
-    | Ast.SImportAs (_, import, alias) ->
-        let key = import ^ " as " ^ alias in
-        if not (StringSet.mem key !import_set) then (
-          import_set := StringSet.add key !import_set;
-          filtered_defs := def :: !filtered_defs
-        )
-    | Ast.SImportHere (_, import) ->
-        if not (StringSet.mem import !import_set) then (
-          import_set := StringSet.add import !import_set;
-          filtered_defs := def :: !filtered_defs
-        )
-    | _ ->
-        filtered_defs := def :: !filtered_defs
-  ) defs;
-  
-  List.rev !filtered_defs
-
-let check_symbol_table ast =
-  try SymbolTable.check_symbols ast
-  with Failure msg ->
-    eprintf "Symbol table error: %s\n%!" msg;
-    exit 1
-
-let check_circular_dependencies file_paths =
-  try SymbolTable.check_circular_dependencies file_paths
-  with Failure msg ->
-    eprintf "\nCircular dependency error: %s\n%!" msg;
-    exit 1
-
-let generate_cpp_code inp ast =
-  try Codegen.build_ir inp ast
-  with Failure msg ->
-    eprintf "Codegen error: %s\n%!" msg;
-    exit 1
-
-
-(* ---------- 构建目录管理 ---------- *)
-
-
-let compile_cpp ~verbose ~_input_file ~output_file ~project_type ~release =
-  let build_dir = get_build_dir () in
-  let cache_dir = get_cache_dir () in
-  let std_include = get_std_include_dir () in
-  
-  let base_name = Filename.remove_extension _input_file in
-  let unique_base = base_name in
-  
-  let cpp_file = unique_base ^ ".cpp" in
-  let header_file = unique_base ^ ".h" in
-  let obj_file = unique_base ^ ".o" in
-  let exe_file = output_file in
-  
-  (* 确保文件路径的目录存在 *)
-  ensure_dir_for_file cpp_file;
-  ensure_dir_for_file header_file;
-  ensure_dir_for_file exe_file;
-  
-  let incf = get_include_flag () in
-  (* 编译命令 *)
-  let cmd =
-    sprintf "g++ %s %s -o %s -I%s -I%s -I%s -std=c++20 %s %s -c %s"
-      (if release then "-O2" else "-g")
-      cpp_file obj_file cache_dir std_include build_dir 
-      (if verbose then "" else "2>/dev/null") 
-      (if String.compare project_type "lib" == 0 then "-fPIC" else "") incf
-  in
-  
-  if Sys.command cmd <> 0 then (
-    if not verbose then (
-      (* 重试并显示详细输出 *)
-      let cmd_verbose =
-        cmd
-      in
-      failwith (sprintf "\nCompilation failed. Running: %s\n%!" cmd_verbose)
-    );
-  );
-  
-  (* 清理中间文件，除非设置了保留标志 *)
-  if not (try Sys.getenv "MIVA_KEEP_CPP" <> "" with Not_found -> false) then (
-    ignore (Sys.command (sprintf "rm -f %s" cpp_file));
-  );
-  
-  if verbose then eprintf "\nCompiled successfully: %s\n%!" obj_file;
-  obj_file
-
-let link_file ~verbose ~obj_files ~output_file ~project_type ~release =
-  let build_dir = get_build_dir () in
-  let exe_file = build_dir ^ "/" ^ (
-    if String.compare project_type "lib" == 0 then 
-      "lib" ^ output_file
-    else 
-      output_file
-  ) in
-  let lnkf = get_link_flag () in
-  let cmd =
-    sprintf "g++ -O2 %s -o %s -std=c++20 %s %s"
-      (String.concat " " obj_files) 
-      (if String.compare project_type "lib" == 0 then exe_file ^ ".so" else exe_file) lnkf 
-      (if String.compare project_type "lib" == 0 then "-fPIC -shared" else "")
-  in
-  if Sys.command cmd <> 0 then (
-    if not verbose then (
-      (* 重试并显示详细输出 *)
-      let cmd_verbose =
-        sprintf "g++ %s %s -o %s -std=c++20"
-          (if release then "-O2" else "-g")
-          (String.concat " " obj_files) exe_file
-      in
-      eprintf "Linking failed. Running: %s\n%!" cmd_verbose;
-      ignore (Sys.command cmd_verbose)
-    );
-    eprintf "Linking failed: %s\n%!" exe_file;
-    exit 1
-  ) else (
-    eprintf "\n%s%!" (String.make 30 '-');
-    eprintf "\n\x1b[35mLinking \x1b[0mfiles...\x1b[0m%!"
-  );
-  if verbose then eprintf "Linked successfully: %s\n%!" exe_file;
-  exe_file
-
-let check_semantics_safe ast =
-  let errs = Semantic.check_program ast in 
-  let err_flag = ref false in
-  List.iter (fun err -> (
-    eprintf "\nError:%s%!" err;
-    err_flag := true;
-  )) errs;
-  !err_flag
-
-(* ---------- 公共编译流程函数 ---------- *)
-let compile_program_obj ~verbose ~input_file ~output_file ~_release =  
-  let ast = parse_input_file input_file in
-  let ast = Macro_expand.expand_macros ast in
-  let ast = remove_duplicate_imports ast in
-  let symbol_table = SymbolTable.build_symbol_table ast in
-  check_symbol_table ast;
-  let err_flag = check_semantics_safe ast in
-  if verbose then eprintf "Checking circular dependencies...\n%!";
-  check_circular_dependencies (input_file :: symbol_table.files);
-  let warnings = Warning.get_warnings ast in
-  eprintf "%s\x1b[33m%s\x1b[0m%!" 
-      (if warnings <> [] then "\n" else "")
-      (String.concat "\n" warnings);
-  if verbose then eprintf "Generating C++ code...\n%!";
-  let cpp_code = generate_cpp_code input_file ast in
-  let cache_dir = get_cache_dir_rel _release in
-  let base_name = Filename.remove_extension output_file in
-  let unique_base = base_name in
-  let cpp_file = cache_dir ^ "/" ^ unique_base ^ ".cpp" in
-  let cpp_test_file = cache_dir ^ "/" ^ unique_base ^ ".test.cpp" in
-
-  let header_file = cache_dir ^ "/" ^ unique_base ^ ".h" in
-  let header_real = unique_base ^ ".h" in
-  ensure_dir_for_file cpp_file;
-  ensure_dir_for_file header_file;
-  let cpp_code_, header_code, test_code = match cpp_code with
-    | [cpp; header; test] -> (cpp, header, 
-        (if String.length test > 2 then (
-          "#include <" ^ header_real ^ ">\n" ^ test
-        ) else (""))
-      )
-    | _ -> failwith "Unexpected codegen output format"
-  in
-
-  
-  (* 写入C++源代码 *)
-  let oc = open_out cpp_file in
-  output_string oc cpp_code_;
-  close_out oc;
-
-  if String.length test_code > 0 then (
-    let oc = open_out cpp_test_file in
-    output_string oc test_code;
-    close_out oc;
-  ) else (
-    ()
-  );
-  
-  (* 写入头文件（如果头文件内容不为空） *)
-  if header_code <> "" then (
-    let oc_header = open_out header_file in
-    output_string oc_header header_code;
-    close_out oc_header;
-    if verbose then eprintf "Generated header file: %s\n%!" header_file;
-  );
-  cpp_file, err_flag
-
-
-let compile_program ~verbose ~input_file ~output_file ~project_type ~release =  
-  let ast = parse_input_file input_file in
-  let ast = Macro_expand.expand_macros ast in
-  let ast = remove_duplicate_imports ast in
-  let symtab = SymbolTable.build_symbol_table ast in
-  let graph = SymbolTable.build_dependency_graph input_file symtab in
-  let queue = ((get_std_include_dir ()) ^ "/std/src/str.miva") :: input_file :: symtab.files  in
-  (* 实现代码：对queue去重 *)
-  let queue = StringSet.elements (StringSet.of_list queue) in
-  let hist = [] in
-  let need_compile_bin = ref [] in
-  (* 实现代码：编译文件*)
-  let rec process_queue queue hist obj_paths = 
-    match queue with
-    | [] -> obj_paths
-    | s :: rest ->
-        let stdp = get_std_include_dir () in
-        let sssn = if String.starts_with ~prefix:stdp s then (
-          Filename.remove_extension (remove_prefix stdp s)
-        ) else (
-          Filename.remove_extension s
-        ) in
-        let cache_dir = get_cache_dir_rel release in
-        let base_name = Filename.remove_extension sssn in
-        let unique_base = base_name in
-        let md5_file =  cache_dir ^ "/" ^ unique_base ^ ".md5sum" in
-        ensure_dir_for_file md5_file;
-        let md5sum = compute_sha256 s in
-        let snw =  String.concat "/" (List.filter (fun s -> s <> "") (String.split_on_char '/' s)) in
-        let snw = (
-          if String.starts_with ~prefix:(remove_prefix "/" stdp) snw then (
-            (remove_prefix ((remove_prefix "/" stdp) ^ "/") snw)
-          ) else (
-            snw
-          )
-        ) in
-        let symt = SymbolTable.build_symbol_table (parse_input_file s) in
-
-        let old_sum = if (Sys.file_exists md5_file) then ( 
-          read_file md5_file
-        ) else "!!!!" in
-        let objq = if old_sum = md5sum then (
-          cache_dir ^ "/" ^ unique_base ^ ".cpp"
-        )
-        else (
-          write_file md5_file md5sum;
-          eprintf "\n\x1b[34mCompiling \x1b[0m%s to cpp file ...\x1b[0m%!" snw;
-          try 
-            let objqn, err_flag = if String.starts_with ~prefix:stdp s then (
-              compile_program_obj ~verbose ~input_file:s ~output_file:(
-                Filename.remove_extension (remove_prefix stdp s)
-              ) ~_release:release
-            ) else (
-              compile_program_obj ~verbose ~input_file:s 
-                ~output_file:(Filename.remove_extension s) ~_release:release
-            ) in
-            if err_flag then (
-              Sys.remove md5_file;
-              eprintf "\n";
-              exit 1;
-            );
-          let addfiles = (s :: (StringSet.to_list (Dependency_graph.get_all_dependents graph s))) in
-            List.iter ( fun t -> (
-              let t = if String.starts_with ~prefix:stdp t then (
-                (get_cache_dir_rel release) ^ "/" 
-                ^ (Filename.remove_extension (remove_prefix stdp t)) ^ ".cpp"
-              ) else (
-                (get_cache_dir_rel release) ^ "/" 
-                ^ (Filename.remove_extension t) ^ ".cpp"
-              ) in
-              if not (List.mem t !need_compile_bin) then (
-                need_compile_bin := t :: !need_compile_bin
-              )
-            )) addfiles;
-            objqn
-          with Failure msg -> (
-            eprintf "\n\x1b[31mError: %s\x1b[0m%!" msg;
-            Sys.remove md5_file;
-            exit 1;
-          )
-        ) in
-
-        (* s出队列queue进入历史记录hist，如果queue和hist都没有objp，objp入queue *)
-        let new_hist = s :: hist in
-        let rest2 = rest in
-        let rec process_files files queue hist =
-          match files with
-          | [] -> queue, hist
-          | objp :: rest ->
-              let new_queue = if not (List.mem objp queue) && not (List.mem objp hist) then (
-                 queue @ [objp] 
-              )else (
-                queue
-              ) in
-              process_files rest new_queue hist
-        in
-        let new_queue, new_hist= process_files symt.files rest2 new_hist in
-        process_queue new_queue new_hist (objq :: obj_paths)
-  in
-  let obj_paths = process_queue queue hist [] in
-  eprintf "\n%s%!" (String.make 30 '-');
-  let obj_paths_real = List.map (fun s -> (
-    if not (List.mem s !need_compile_bin) then (
-      let newp = (Filename.remove_extension s) ^ ".o" in
-      newp
-    ) else (
-      let snw = String.concat "/" (List.filter (fun s -> s <> "") (String.split_on_char '/' s)) in
-      let snw = remove_prefix ((get_cache_dir_rel release) ^ "/") snw in
-      Printf.eprintf "\n\x1b[34mCompiling \x1b[0m%s to bin...\x1b[0m%!" snw;
-      try 
-        compile_cpp ~verbose ~_input_file:s ~output_file:(Filename.basename s) ~project_type ~release
-      with Failure msg -> (
-        let md5_file = (Filename.remove_extension s) ^ ".md5sum" in
-        eprintf "\n\x1b[31mError: %s\x1b[0m%!" msg;
-        Sys.remove md5_file;
-        exit 1;
-      )
-    )
-  )) obj_paths in
-  let exe_path = link_file ~verbose ~obj_files:obj_paths_real ~output_file ~project_type ~release in
-  exe_path
 
 (* ---------- 子命令: init ---------- *)
 let init_name = 
@@ -378,84 +54,12 @@ let init_cmd =
   )
 
 (* ---------- 子命令: build/run ---------- *)
-let build_project ~verbose ~release = 
-  if not (find_and_set_project_dir ()) then (
-    eprintf "Error: Project not initialized in this directory.\n%!";
-    exit 1;
-  );
-  init_env_var ();
-  if not (Sys.file_exists "miva.toml") then (
-    eprintf "Error: Project not initialized in this directory.\n%!";
-    exit 1;
-  ) else (
-    let toml = read_file "miva.toml" in
-    match Toml.Parser.from_string toml with 
-    | `Ok table -> (
-      let (project_table, project_type) = 
-      try 
-        match Toml.Types.Table.find (Toml.Min.key "project") table with 
-        | Toml.Types.TTable t -> (
-          let res = match Toml.Types.Table.find (Toml.Min.key "name") t with 
-          | Toml.Types.TString s -> s
-          | _ -> (
-            eprintf "Error: 'name' in 'project' table in miva.toml is not a string.\n%!";
-            exit 1;
-          ) in 
-          match Toml.Types.Table.find (Toml.Min.key "type") t with 
-          | Toml.Types.TString _s -> (
-            res, _s
-          )
-          | _ -> (
-            eprintf "Error: 'type' in 'project' table in miva.toml is not a string.\n%!";
-            exit 1;
-          )
-        ) 
-        | _ -> (
-          eprintf "Error: 'project' table in miva.toml is not a table.\n%!";
-          exit 1;
-        )
-      with  
-      | _ -> (
-        eprintf "Error: Failed to find 'project' table or 'name' in 'project' table in miva.toml.\n%!";
-        exit 1;
-      ) in
-      let input_file = (
-        if String.compare project_type "lib" == 0 then 
-          "src/lib.miva" 
-        else 
-          "src/main.miva"
-      ) in
-      let output_file = project_table in
-      let exe_path = compile_program ~verbose ~input_file ~output_file ~project_type ~release in
-      printf "\n%s%!" (String.make 30 '-');
-      printf ("\n\x1b[32mCompiled successfully: \x1b[0m\n\x1b[36mOutput\x1b[0m %s\n%!") (
-        if String.compare project_type "lib" == 0 then 
-          exe_path ^ ".so"
-        else 
-          exe_path
-      );
-      printf "%s\n%!" (String.make 30 '-');
-      if String.compare project_type "lib" == 0 then (
-        let copy_file oldfile newfile = 
-          let str = read_file oldfile in 
-          write_file newfile str
-        in
-        copy_file ((get_cache_dir_rel release) ^ "/src/lib.h") ((get_build_dir_rel release) ^ "/" ^ project_table ^ ".h")
-      );
-      (exe_path, String.compare project_type "lib" == 0)
-    )
-    | _ -> (
-      eprintf "Error: Failed to parse miva.toml.\n%!";
-      exit 1;
-    )
-  )
 let build_new_cmd = 
   let doc = "Compile the Miva project to an executable or a library." in
   let info = Cmd.info "build" ~doc in
   Cmd.v info Term.(
     const (fun verbose release () ->
-      let _res = build_project ~verbose ~release in
-      ()
+      build_project ~verbose ~release |> ignore
     )
     $ verbose
     $ release
@@ -468,14 +72,12 @@ let run_new_cmd =
     const (fun verbose release () ->
       let (exe_path, is_lib) = build_project ~verbose ~release in
       if is_lib then (
-        eprintf "Error: Cannot run a library.\n%!";
+        eprintf "\x1b[31mError \x1b[0mcannot run a library.\n%!";
         exit 1;
       );
       let run_status = Sys.command exe_path in
       if run_status <> 0 then (
-        eprintf "Error: Failed to run the executable.\n";
-        eprintf "Exited with status %d.\n%!" run_status;
-        eprintf "You can run it by ./%s\n%!" exe_path;
+        eprintf "\x1b[31mError \x1b[0mfailed to run the executable.\n";
         exit 1;
       )
     )
@@ -495,6 +97,7 @@ let clean_cmd =
     $ const ()
   )
 (* ---------- 子命令: sin-build ---------- *)
+
 let build_input_file =
   let doc = "Miva source file to compile" in
   Arg.(required & pos 0 (some string) None & info [] ~doc)
@@ -507,16 +110,9 @@ let build_cmd =
   let doc = "Compile an Miva source file to an executable." in
   let info = Cmd.info "sin-build" ~doc in
   Cmd.v info Term.(
-    const (fun verbose input out_opt () ->
-        let output = match out_opt with
-          | Some s -> s
-          | None -> Filename.remove_extension input
-        in
-        let exe_path = compile_program
-          ~verbose ~input_file:input ~output_file:output 
-          ~project_type:"bin" ~release:false in
-        printf "Compiled successfully: %s\n%!" exe_path
-      )
+    const (fun _verbose input out_opt () ->
+      Sinbuild.sin_build_do out_opt input
+    )
     $ verbose
     $ build_input_file
     $ build_output_file

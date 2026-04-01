@@ -1,4 +1,25 @@
-open Printf
+open Tomler
+open Parse
+
+let cxx_deal_module name = 
+  let nmod = if String.starts_with ~prefix:"std" name then 
+    "mvp_std." ^ (String.concat "." ((String.split_on_char '.' name) |> List.tl))
+  else name in
+  nmod
+
+let cxx_module_cxx name = 
+  let nmod = cxx_deal_module name in
+  String.concat "::" (String.split_on_char '.' nmod)
+
+let deal_std name = 
+  if String.starts_with ~prefix:"std" name then 
+    "mvp_std." ^ (String.concat "." ((String.split_on_char '.' name) |> List.tl))
+  else name
+
+let write_file filename content =
+  let channel = open_out filename in  (* 打开文件，如果存在则覆盖 *)
+  output_string channel content;
+  close_out channel 
 
 let read_file filename =
   let channel = open_in filename in
@@ -11,74 +32,80 @@ let get_head lst =
   | [] -> None
   | h :: _ -> Some h
 
-let cxx_deal_module name = 
-  let nmod = if String.starts_with ~prefix:"std" name then 
-    "mvp_std." ^ (String.concat "." ((String.split_on_char '.' name) |> List.tl))
-  else name in
-  nmod
+let string_get_head lst = 
+  match get_head lst with
+  | Some h -> h
+  | None -> ""
 
-let parse_input_file filename =
-  let ic = open_in filename in
-  let lexbuf = Lexing.from_channel ic in
-  Lexing.set_filename lexbuf filename;
-  try
-    let ast = Parser.program Lexer.token lexbuf in
-    close_in ic;
-    ast
-  with
-  | Parsing.Parse_error ->
-      let pos = Lexing.lexeme_start_p lexbuf in
-      let line = pos.Lexing.pos_lnum in
-      let col = pos.Lexing.pos_cnum - pos.Lexing.pos_bol + 1 in
-      eprintf "Syntax error at %s:%d:%d\n%!" filename line col;
-      exit 1
-  | Lexer.SyntaxError msg ->
-      eprintf "Lexer error: %s\n%!" msg;
-      exit 1
-  | _ ->
-      eprintf "Parsing error\n%!";
-      exit 1
+let toml_get_codegen_import import = 
+  if String.starts_with ~prefix:"c:" import then 
+    let import_str = String.sub import 2 (String.length import - 2) in
+    "#include <" ^ import_str ^ ">\n"
+  else (
+    match toml_get_project () with 
+    | Some t -> (
+      match toml_find_string t "name" with 
+      | Some s -> (
+        if String.starts_with ~prefix:s import then
+          let res = "#include <src/" ^
+              (String.concat "/" ((String.split_on_char '/' import) |> List.tl))
+              ^ ".h>\n" in
+          res
+        else
+          let pstk = String.split_on_char '/' import in
+          let res = "#include <" ^ 
+            string_get_head pstk ^ "/src/" ^ 
+            (String.concat "/" (List.tl pstk)) ^ ".h>\n" in
+          res
+      )
+      | _ -> ""
+    )
+    | _ -> ""
+  )
+
+let toml_get_codegen_importhere import = 
+  if String.starts_with ~prefix:"c:" import then 
+    toml_get_codegen_import import
+  else (
+    let res = toml_get_codegen_import import in
+    match toml_from_import import with
+    | None -> ""
+    | Some raw_module -> (
+      let raw_module_name = (parse_input_file raw_module) in
+      let raw_module_mod = (Symbol_table.build_symbol_table raw_module_name).module_name in
+      let raw_mod_cxx = cxx_module_cxx raw_module_mod in
+      res ^ "using namespace " ^ raw_mod_cxx ^ ";\n"
+    )
+  )
+
+let toml_get_codegen_importas import alias = 
+  if String.starts_with ~prefix:"c:" import then 
+    toml_get_codegen_import import
+  else (
+    let res = toml_get_codegen_import import in
+    match toml_from_import import with
+    | None -> ""
+    | Some raw_module -> (
+      let raw_module_name = (parse_input_file raw_module) in
+      let raw_module_mod = (Symbol_table.build_symbol_table raw_module_name).module_name in
+      let raw_mod_cxx = cxx_module_cxx raw_module_mod in
+      let alias_mod_cxx = cxx_module_cxx alias in
+      res ^ "namespace " ^ alias_mod_cxx ^ " = " ^ raw_mod_cxx ^ ";\n"
+    )
+  )
 
 let toml_get_mod import = 
   if String.starts_with ~prefix:"c:" import then 
-      None
+    None
   else (
-      let toml = read_file "miva.toml" in
-      match Toml.Parser.from_string toml with 
-      | `Ok table -> (
-      try 
-          match Toml.Types.Table.find (Toml.Min.key "project") table with 
-          | Toml.Types.TTable t -> (
-          match Toml.Types.Table.find (Toml.Min.key "name") t with 
-          | Toml.Types.TString s -> (
-              let raw_module = ( if String.starts_with ~prefix:s import then
-                  ("src/" ^ (String.concat "/" ((String.split_on_char '/' import) |> List.tl))) ^ ".miva"
-              else 
-                  let pstk = String.split_on_char '/' import in
-                  (try Sys.getenv "MIVA_STD" with _ -> ".") ^ "/" ^ (
-                    match get_head pstk with 
-                    | Some h -> h
-                    | None -> ""
-                  ) 
-                  ^ "/src/" ^ (String.concat "/" (List.tl pstk)) ^ ".miva"
-              ) in
-              let raw_module_name = (parse_input_file raw_module) in
-              let raw_module_mod = (Symbol_table.build_symbol_table raw_module_name).module_name in
-              Some raw_module_mod
-          )
-          | _ -> None
-          )
-          | _ -> None
-      with 
-          | _ -> None
-      )
-      | _ -> None
+    match toml_from_import import with
+    | None -> None
+    | Some raw_module -> (
+      let raw_module_name = (parse_input_file raw_module) in
+      let raw_module_mod = (Symbol_table.build_symbol_table raw_module_name).module_name in
+      Some raw_module_mod
+    )
   )
-
-let deal_std name = 
-  if String.starts_with ~prefix:"std" name then 
-    "mvp_std." ^ (String.concat "." ((String.split_on_char '.' name) |> List.tl))
-  else name
 
 let toml_get_mod_std import = 
   match toml_get_mod import with 
@@ -95,3 +122,5 @@ let toml_deal_ias import alias =
     Some [di; ai]
   )
   | None -> None
+
+let parse_input_file = Parse.parse_input_file

@@ -67,3 +67,55 @@ let format_loc loc =
   let line = loc.line in 
   let col = loc.col in
   Printf.sprintf "%d:%d" line col
+
+let check_snake loc name typ = 
+  let has_err = ref false in
+  let err = ref "" in
+  String.iter (fun c -> (
+    if (is_uppercase c) && (not !has_err) then (
+      has_err := true;
+      let warning_msg = Printf.sprintf "Warning:%d:%d:%s%s name '%s'%s" 
+        loc.line loc.col "The " typ name " isn't a snake_case name." in
+      err := warning_msg
+  ))) name;
+  if !has_err then
+    Some !err
+  else 
+    None
+
+let check_all_lower loc name typ = 
+  let has_err = ref false in
+  let err = ref "" in
+  String.iter (fun c -> (
+    if (not (is_lowercase_or_dot c)) && (not !has_err) then (
+      has_err := true;
+      let warning_msg = Printf.sprintf "Warning:%d:%d:%s%s name '%s'%s" 
+        loc.line loc.col "The " typ name " isn't a lowercase name." in
+      err := warning_msg
+    )
+  )) name;
+  if !has_err then
+    Some !err
+  else 
+    None
+
+let write_file filename content =
+  let channel = open_out filename in  (* 打开文件，如果存在则覆盖 *)
+  output_string channel content;
+  close_out channel 
+
+let read_file filename =
+  let channel = open_in filename in
+  let content = really_input_string channel (in_channel_length channel) in
+  close_in channel;
+  content
+
+let get_head lst = 
+  match lst with
+  | [] -> None
+  | h :: _ -> Some h
+
+let string_get_head lst = 
+  match get_head lst with
+  | Some h -> h
+  | None -> ""

@@ -34,3 +34,6 @@ let get_build_dir_rel release =
 
 let get_basic_build_dir () = 
   try Unix.getenv "MIVA_BUILD_BASIC" with Not_found -> "build"
+
+let get_keep_cpp () = 
+  try Sys.getenv "MIVA_KEEP_CPP" <> "" with _ -> false
