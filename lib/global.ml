@@ -1,4 +1,4 @@
-let version = "0.0.3"
+let version = "0.0.7"
 let builtin_functions = [
   "print" ;
   "prints" ;
