@@ -100,20 +100,20 @@ and cxx_expr_of_expr indent_level ctx expr =
             " else " ^ cxx_expr_of_expr (indent_level + 1) ctx else_expr
         | None -> ""
       in
-      "([&]() { if (" ^ cond_str ^ ") { " ^ then_str ^ " }" ^ else_str ^ " }())"
+      "([&]() { if (" ^ cond_str ^ ") { " ^ then_str ^ " ;}" ^ else_str ^ " })()"
   | EWhile (_, cond, body) -> (
       let cond_str = cxx_expr_of_expr indent_level ctx cond in
       let body_str = cxx_expr_of_expr (indent_level + 1) ctx body in
-      "([&]() { while (" ^ cond_str ^ ") { " ^ body_str ^ " }())"
+      "([&]() { while (" ^ cond_str ^ ") { " ^ body_str ^ " ;}})()"
   )
   | ELoop (_, body) -> (
       let body_str = cxx_expr_of_expr (indent_level + 1) ctx body in
-      "([&]() { for (;;) { " ^ body_str ^ " }())"
+      "([&]() { for (;;) { " ^ body_str ^ " ;}})()"
   )
   | EFor (_, i, range, body) -> (
       let range_str = cxx_expr_of_expr indent_level ctx range in
       let body_str = cxx_expr_of_expr (indent_level + 1) ctx body in
-      "([&]() { for (auto " ^ i ^ " : " ^ range_str ^ ") { " ^ body_str ^ " }())"
+      "([&]() { for (auto " ^ i ^ " : " ^ range_str ^ ") { " ^ body_str ^ " ;}})()"
   )
   | ECall (_, name, args) -> 
       let args_str = List.map (cxx_expr_of_expr indent_level ctx) args in
@@ -152,26 +152,22 @@ and cxx_expr_of_expr indent_level ctx expr =
       let ind = indent indent_level in
       let ind_inner = indent (indent_level + 1) in
       
-      (* 处理块内的所有语句，包括变量声明 *)
       let stmt_strs = List.fold_left (fun acc stmt -> 
-          match stmt with
-          | SLet (_, is_mutable, name, expr) ->
-              (* 处理变量初始化表达式 *)
-              let expr_str = cxx_expr_of_expr (indent_level + 1) ctx expr in
-              
-              (* 生成变量声明的C++代码 *)
-              let mut_str = if is_mutable then "auto " else "const auto " in
-              acc ^ ind_inner ^ mut_str ^ name ^ " = " ^ expr_str ^ ";\n"
-          | _ ->
-              acc ^ cxx_stmt_of_stmt (indent_level + 1) ctx stmt
-        ) "" stmts in
+        match stmt with
+        | SLet (_, is_mutable, name, expr) ->
+            let expr_str = cxx_expr_of_expr (indent_level + 1) ctx expr in
+            
+            let mut_str = if is_mutable then "auto " else "const auto " in
+            acc ^ ind_inner ^ mut_str ^ name ^ " = " ^ expr_str ^ ";\n"
+        | _ ->
+            acc ^ cxx_stmt_of_stmt (indent_level + 1) ctx stmt
+      ) "" stmts in
       
-      (* 处理块的最后表达式 *)
       let expr_str = match expr_opt with
         | Some expr -> ind_inner ^ "return " ^ cxx_expr_of_expr (indent_level + 1) ctx expr ^ ";\n"
         | None -> "" in
       
-      "([&]() {\n" ^ stmt_strs ^ expr_str ^ ind ^ "}()));"
+      "([&]() {\n" ^ stmt_strs ^ expr_str ^ ind ^ "})()"
   | EChoose (_, var_expr, cases, otherwise_opt) ->
       let var_str = cxx_expr_of_expr indent_level ctx var_expr in
       let ind = indent indent_level in

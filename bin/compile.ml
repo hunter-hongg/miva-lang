@@ -9,6 +9,7 @@ module Macro_expand = Mvp_lib.Macro_expand
 module SymbolTable = Mvp_lib.Symbol_table
 module Warning = Mvp_lib.Warnings
 module Codegen = Mvp_lib.Codegen
+module Typegen = Mvp_lib.Typegen
 
 let compile_cpp ~verbose ~_input_file ~output_file ~project_type ~release =
   let build_dir = get_build_dir () in
@@ -86,6 +87,8 @@ let compile_program_obj ~input_file ~output_file ~_release ~with_warn =
   )) errs in
   all_err := errs @ !all_err;
   let errs = SymbolTable.check_circular_dependencies (input_file :: symbol_table.files) in
+  all_err := errs @ !all_err;
+  let errs = Typegen.check_defs input_file ast in
   all_err := errs @ !all_err;
   let warnings = Warning.get_warnings ast in
 

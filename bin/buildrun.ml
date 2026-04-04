@@ -176,11 +176,7 @@ let build_project ~verbose ~release =
         exe_path
     );
     if String.compare ptype "lib" == 0 then (
-    let copy_file oldfile newfile = 
-      let str = read_file oldfile in 
-      write_file newfile str
-      in
-      copy_file ((get_cache_dir_rel release) ^ "/src/lib.h") ((get_build_dir_rel release) ^ "/" ^ name ^ ".h")
+      Util.copy_file ((get_cache_dir_rel release) ^ "/src/lib.h") ((get_build_dir_rel release) ^ "/" ^ name ^ ".h")
     );
     (exe_path, String.compare ptype "lib" == 0)
   )

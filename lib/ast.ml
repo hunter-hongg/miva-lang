@@ -15,6 +15,8 @@ type typ =
   | TStruct of string * (string * typ) list
   | TPtr of typ
   | TBox of typ
+  | TNull 
+  | TInvalid
 
 type expr =
   | EInt of loc * int64

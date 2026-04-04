@@ -124,3 +124,7 @@ let remove_duplicate_imports defs =
 
 let clean_line () =
   Printf.eprintf "%s" ("\r" ^ (String.make 100 ' '))
+
+let copy_file oldfile newfile = 
+  let str = read_file oldfile in 
+  write_file newfile str
