@@ -13,29 +13,25 @@ let expand_macros defs =
   let rec print_basic_expr loc args = (
     let res = ref [
       SLet(
-        loc, true, "s", 
-        ECall(loc, "mvp_std.str.make", [
-          EString(loc, "");
-          EInt(loc, 128L)
-        ])
+        loc, true, "s", EString (loc, "")
       );
     ] in 
     List.iter (
       fun e -> (
         res := !res @ [SAssign(
           loc, "s", 
-          ECall (
-            loc, "mvp_std.str.concat", [
-              ECall(
-                loc, "mvp_std.str.concat", [ 
-                  EVar(loc, "s");
-                  ECall (
-                    loc, "string_from", [expand_expr e]
-                  );
-                ]
-              );
-              EString(loc, " ");
-            ]
+          EBinOp(
+            loc, 
+            Add,
+            EBinOp (
+              loc, 
+              Add,
+              EMove(loc, "s"),
+              ECall (
+                loc, "string_from", [expand_expr e]
+              )
+            ),
+            EString(loc, " ")
           )
         );]
     )) args;

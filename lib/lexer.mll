@@ -81,6 +81,7 @@ rule token = parse
 
   | "ptr"               { PTR }
   | "box"               { BOX }
+  | "ptrany"            { PTRANY }
   | "addr"              { ADDR }
   | "deref"             { DEREF }
 

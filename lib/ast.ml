@@ -16,6 +16,7 @@ type typ =
   | TPtr of typ
   | TBox of typ
   | TNull 
+  | TPtrAny
   | TInvalid
 
 type expr =

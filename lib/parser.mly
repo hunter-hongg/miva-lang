@@ -21,7 +21,7 @@
 %token STRUCT 
 %token TEST UNSAFE TRUSTED C_KEYWORD 
 %token EOF 
-%token PTR BOX ADDR DEREF
+%token PTR BOX ADDR DEREF PTRANY
 %token MODULE EXPORT IMPORT
 
 %type <Ast.def> def
@@ -276,4 +276,5 @@ typ:
   | LBRACKET t = typ RBRACKET { TArray t }
   | PTR LT t = typ GT { TPtr t }
   | BOX LT t = typ GT { TBox t }
+  | PTRANY { TPtrAny }
   | t = type_path { TStruct (t, []) }

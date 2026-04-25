@@ -220,4 +220,29 @@ inline std::vector<mvp_builtin_int> mvp_range(mvp_builtin_int start, mvp_builtin
   return res;
 }
 
+typedef void* mvp_builtin_ptrany;
+inline mvp_builtin_ptrany mvp_alloc(mvp_builtin_int size) {
+  auto t =  malloc(size);
+  if (t) {
+    return t;
+  } else {
+    mvp_panic("malloc failed");
+  }
+}
+inline void mvp_free(mvp_builtin_ptrany ptr) {
+  free(ptr);
+}
+inline mvp_builtin_ptrany mvp_realloc(mvp_builtin_ptrany ptr, mvp_builtin_int size) {
+  auto t = realloc(ptr, size);
+  if (t) {
+    return t;
+  } else {
+    mvp_panic("realloc failed");
+  }
+}
+template<typename T>
+inline void mvp_builtin_ptrset(T* ptr, T value) {
+  *ptr = value;
+}
+
 #endif // MVP_BUILTIN_H

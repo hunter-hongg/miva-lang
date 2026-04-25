@@ -16,14 +16,16 @@ let get_head = Wrapper.get_head
 let rec cxx_type_of_typ = function
   | TInt -> "mvp_builtin_int"
   | TBool -> "mvp_builtin_boolean"
-  | TFloat64 -> "mvp_builtin_float"
+  | TFloat64 | TFloat32 -> "mvp_builtin_float"
   | TChar -> "mvp_builtin_byte"
   | TString -> "mvp_builtin_string"
   | TArray typ -> "std::vector<" ^ cxx_type_of_typ typ ^ ">"
   | TStruct (name, _) -> name
   | TPtr typ -> cxx_type_of_typ typ ^ "*"
   | TBox typ -> "mvp_builtin_box<" ^ cxx_type_of_typ typ ^ ">"
-  | _ -> failwith "The type is not supported in C++ code generation"
+  | TNull -> "void"
+  | TPtrAny -> "mvp_builtin_ptrany"
+  | TInvalid -> "invalid"
 
 let rec cxx_stmt_of_stmt indent_level ctx stmt = 
   let ind = indent indent_level in
@@ -31,14 +33,7 @@ let rec cxx_stmt_of_stmt indent_level ctx stmt =
   | SLet (_, is_mutable, name, expr) -> 
       let expr_str = cxx_expr_of_expr indent_level ctx expr in
       let mut_str = if is_mutable then "auto " else "const auto " in
-      ind ^ mut_str ^ name ^ " = " ^ expr_str ^ ";\n" ^
-      (
-        match expr with 
-        | EVar (_, _) -> 
-        ind ^ "static_assert(is_copyable_v<decltype(" ^ name 
-        ^ ")>, \"A non-Copy type can't be assigned without clone or move\");\n"
-        | _ -> ""
-      )
+      ind ^ mut_str ^ name ^ " = " ^ expr_str ^ ";\n" 
   | SReturn (_, expr) -> 
       let expr_str = cxx_expr_of_expr indent_level ctx expr in
       ind ^ "return " ^ expr_str ^ ";\n"
@@ -47,17 +42,7 @@ let rec cxx_stmt_of_stmt indent_level ctx stmt =
       ind ^ expr_str ^ ";\n"
   | SAssign (_, name, expr) -> 
       let expr_str = cxx_expr_of_expr indent_level ctx expr in
-      ind ^ name ^ " = " ^ expr_str ^ ";\n" ^ 
-      (
-        match expr with 
-        | EMove (_, _) -> ""
-        | EClone (_, _) -> ""
-        | ECall (_, _, _) -> ""
-        | EMacro (_, _, _) -> ""
-        | _ -> 
-        ind ^ "static_assert(is_copyable_v<decltype(" ^ name 
-        ^ ")>, \"A non-Copy type can't be assigned without clone or move\");\n"
-      )
+      ind ^ name ^ " = " ^ expr_str ^ ";\n" 
   | SCIntro (_, _) -> ""
   | SEmpty _ -> ""
 and cxx_expr_of_expr indent_level ctx expr = 
@@ -139,6 +124,10 @@ and cxx_expr_of_expr indent_level ctx expr =
         | "box_new" -> "mvp_box_new"
         | "box_deref" -> "mvp_box_deref"
         | "range" -> "mvp_range"
+        | "ptr_alloc" -> "mvp_alloc"
+        | "ptr_realloc" -> "mvp_realloc"
+        | "ptr_free" -> "mvp_free"
+        | "ptr_set" -> "mvp_builtin_ptrset"
         | _ -> 
             (* 将a.b.c.foo转换为a::b::c::foo *)
             let lst = (String.split_on_char '.' name) in

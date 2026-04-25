@@ -15,6 +15,7 @@ let rec to_string typ =
   | TArray t -> "array of " ^ to_string t
   | TNull -> "null"
   | TInvalid -> "invalid type"
+  | TPtrAny -> "ptr of any"
   | TStruct (n, fields) -> "struct " ^ n ^ String.concat ", " (List.map (fun f -> (
     let (n, t) = f in 
     n ^ " " ^ to_string t
@@ -368,7 +369,6 @@ let rec make_sure_expr sym env expr =
         )
       )
       | None -> (
-        Printf.printf "function not found: %s\n%!" name;
         fail_if errs loc (true) "function not found"
       )
     else

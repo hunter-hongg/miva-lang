@@ -20,7 +20,7 @@ type context = {
 let rec is_copy_type types t =
   match t with
   | TInt | TBool | TFloat32 | TFloat64 | TChar -> true
-  | TString | TArray _ | TPtr _ | TBox _ | TNull | TInvalid -> false
+  | TString | TArray _ | TPtr _ | TBox _ | TNull | TInvalid | TPtrAny -> false
   | TStruct (name, _) -> 
       try
         let fields = Env.find name types in
@@ -222,7 +222,9 @@ let check_program defs =
 
   let funct = ref (symbol_table.functions) in
   let _ = List.iter (fun def -> (
-    funct := !funct @ [(def, [], None, Safe)];
+    match def with
+    | "ptr_set" -> funct := !funct @ [("ptr_set", [], None, Unsafe)]
+    | d -> funct := !funct @ [(d, [], None, Safe)];
     ()
   )) Global.builtin_functions in
   let here_module = List.filter_map (fun d -> (
