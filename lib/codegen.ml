@@ -495,17 +495,22 @@ let generate_test indent_level defs ctx =
             "auto res = " ^
             name ^ "();\n" ^
             "if (res != 0) {\n" ^ 
-            "throw std::runtime_error(\"Test failed: " ^ name ^ " returns none-zero.\");\n" ^
+            "throw std::runtime_error(\"returns none-zero \"+std::to_string(res));\n" ^
             "}\n" ^ 
             "passed++;\n" ^
             "} catch (const std::exception& e) {\n" ^
-            " mvp_errorlns(\"Error testing " ^ name ^ " : panic: \", e.what()); failed++;\n" ^
+            " mvp_errorlns(\"\\x1b[31mError testing " ^ name ^ " \\x1b[0m" ^ 
+            "\", e.what()); failed++;\n" ^
             "}\n"  
         )
         | _ -> ""
       )) defs) ^
-      "if (failed == 0) {mvp_println(\"All tests passed.\");return 0;}\n" ^
-      "else {mvp_printlns(\"Test failed. Failed: \", failed, \" Passed: \", passed);return 1;}" ^
+      "mvp_println(\"--------------------\");\n" ^
+      "if (failed == 0) {mvp_println(\"" ^ 
+        "\\x1b[32mAll tests passed.\\x1b[0m\");return 0;}\n" ^
+      "else {mvp_printlns(\"\\x1b[31mTest failed \\x1b[0m\\n" ^ 
+        "\\x1b[31mFailed \", failed, " ^ 
+        "\" \\x1b[32mPassed \", passed, \"\\x1b[0m\");return 1;}" ^
     "}"
 
 let generate_header defs =

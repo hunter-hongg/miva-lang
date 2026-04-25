@@ -269,12 +269,12 @@ let test_cmd =
   Cmd.v info Term.(
     const (fun verbose test_files ->
       if not (find_and_set_project_dir ()) then (
-        eprintf "Error: Project not initialized in this directory.\n%!";
+        eprintf "\x1b[31mError\x1b[0m project not initialized in this directory\n%!";
         exit 1;
       );
       init_env_var ();
       if not (Sys.file_exists "miva.toml") then (
-        eprintf "Error: Project not initialized in this directory.\n%!";
+        eprintf "\x1b[31mError\x1b[0m project not initialized in this directory\n%!";
         exit 1;
       ) else (
         let _res = build_project ~verbose in
@@ -285,7 +285,7 @@ let test_cmd =
         )) test_files
         in 
         List.iter (fun f -> (
-          eprintf "Running %s...\n%!" f;
+          eprintf "\x1b[34mRunning\x1b[0m %s\n%!" f;
           let f = (get_cache_dir () ^ "/src/" ^ f) in
           let l = (String.length (get_cache_dir ())) in
           let mvpf = (
@@ -316,15 +316,15 @@ let test_cmd =
             (Filename.remove_extension (Filename.remove_extension f)) ^ ".o";
           ] in
           if Sys.command cmd <> 0 then (
-            eprintf "Error compiling %s\n" f;
-            eprintf "Running %s\n%!" cmd;
+            eprintf "\x1b[31mError\x1b[0m compiling %s\n" f;
+            eprintf "\x1b[34mRunning\x1b[0m %s\n%!" cmd;
             exit 1;
           );
           let cmdn = sprintf "g++ %s -o %s %s %s" 
             (String.concat " " res) (Filename.remove_extension f) 
             (if verbose then "" else "2>/dev/null") (get_link_flag ()) in
           if Sys.command cmdn <> 0 then (
-            eprintf "Error linking %s\nRunning %s\n%!" f cmdn;
+            eprintf "\x1b[31mError\x1b[0m linking %s\n\x1b[34mRunning \x1b[0m%s\n%!" f cmdn;
             exit 1;
           );
           let _ = Sys.command (sprintf "./%s" (Filename.remove_extension f)) in
