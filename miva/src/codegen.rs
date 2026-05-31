@@ -1,0 +1,763 @@
+use crate::ast::*;
+use crate::symbol_table::SymbolTable;
+
+fn indent_str(n: usize) -> String {
+    " ".repeat(n * 2)
+}
+
+fn cxx_type(typ: &Typ) -> String {
+    match typ {
+        Typ::TInt => "mvp_builtin_int".into(),
+        Typ::TBool => "mvp_builtin_boolean".into(),
+        Typ::TFloat64 | Typ::TFloat32 => "mvp_builtin_float".into(),
+        Typ::TChar => "mvp_builtin_byte".into(),
+        Typ::TString => "mvp_builtin_string".into(),
+        Typ::TArray { of } => format!("std::vector<{}>", cxx_type(of)),
+        Typ::TStruct { name, .. } => name.clone(),
+        Typ::TPtr { to } => format!("{}*", cxx_type(to)),
+        Typ::TBox { of } => format!("mvp_builtin_box<{}>", cxx_type(of)),
+        Typ::TNull => "void".into(),
+        Typ::TPtrAny => "mvp_builtin_ptrany".into(),
+        Typ::TInvalid => "invalid".into(),
+    }
+}
+
+fn cxx_param(param: &Param) -> String {
+    match param {
+        Param::PRef { name, typ } => format!("{} const& {}", cxx_type(typ), name),
+        Param::POwn { name, typ } => format!("{} {}", cxx_type(typ), name),
+    }
+}
+
+fn cxx_func_decl(name: &str, params: &[Param], ret: &Option<Typ>) -> String {
+    let param_list: Vec<_> = params.iter().map(cxx_param).collect();
+    let ret_type = ret.as_ref().map_or("mvp_builtin_unit".into(), cxx_type);
+    format!("{} {}({});\n", ret_type, name, param_list.join(", "))
+}
+
+fn map_builtin(name: &str) -> String {
+    match name {
+        "print" => "mvp_print".into(),
+        "prints" => "mvp_prints".into(),
+        "println" => "mvp_println".into(),
+        "printlns" => "mvp_printlns".into(),
+        "error" => "mvp_error".into(),
+        "errors" => "mvp_errors".into(),
+        "errorln" => "mvp_errorln".into(),
+        "errorlns" => "mvp_errorlns".into(),
+        "exit" => "mvp_exit".into(),
+        "abort" => "mvp_abort".into(),
+        "panic" => "mvp_panic".into(),
+        "string_concat" => "mvp_string_concat".into(),
+        "string_parse" => "mvp_string_parse".into(),
+        "string_length" => "mvp_string_length".into(),
+        "string_make" => "mvp_string_make".into(),
+        "string_from" => "mvp_to_string".into(),
+        "box_new" => "mvp_box_new".into(),
+        "box_deref" => "mvp_box_deref".into(),
+        "range" => "mvp_range".into(),
+        "ptr_alloc" => "mvp_alloc".into(),
+        "ptr_realloc" => "mvp_realloc".into(),
+        "ptr_free" => "mvp_free".into(),
+        "ptr_set" => "mvp_builtin_ptrset".into(),
+        _ => {
+            let parts: Vec<&str> = name.split('.').collect();
+            if parts.first() == Some(&"ffi") {
+                parts[1..].join("::")
+            } else {
+                parts.join("::")
+            }
+        }
+    }
+}
+
+fn cxx_module(name: &str) -> String {
+    module_parts(name).join("::")
+}
+
+fn module_parts(name: &str) -> Vec<String> {
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.first() == Some(&"std") {
+        let mut result = vec!["mvp_std".into()];
+        result.extend(parts[1..].iter().map(|s| s.to_string()));
+        result
+    } else if parts.first() == Some(&"main") {
+        let mut result = vec!["mvp_main".into()];
+        result.extend(parts[1..].iter().map(|s| s.to_string()));
+        result
+    } else {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+}
+
+struct BlockFlow {
+    stmts: Vec<String>,
+    ret_line: String,
+}
+
+fn analyze_block(body: &Expr, depth: usize, ret_type: &str) -> BlockFlow {
+    match body {
+        Expr::EBlock { stmts, result, .. } => {
+            let inner = depth + 1;
+            if ret_type == "mvp_builtin_unit" {
+                let stmt_strs: Vec<_> = stmts.iter().map(|s| cxx_stmt(inner, s)).collect();
+
+                let ret = match result {
+                    Some(expr) => {
+                        format!("{}return {};\n", indent_str(inner), cxx_expr(expr, inner))
+                    }
+                    None => format!("{}return mvp_builtin_void;\n", indent_str(inner)),
+                };
+                BlockFlow {
+                    stmts: stmt_strs,
+                    ret_line: ret,
+                }
+            } else {
+                let (stmts_out, last_expr) = take_last_expr(stmts, inner);
+                let ret = match result {
+                    Some(expr) => {
+                        format!("{}return {};\n", indent_str(inner), cxx_expr(expr, inner))
+                    }
+                    None => match last_expr {
+                        Some(expr) => {
+                            format!("{}return {};\n", indent_str(inner), cxx_expr(&expr, inner))
+                        }
+                        None => String::new(),
+                    },
+                };
+                BlockFlow {
+                    stmts: stmts_out,
+                    ret_line: ret,
+                }
+            }
+        }
+        _ => BlockFlow {
+            stmts: vec![],
+            ret_line: String::new(),
+        },
+    }
+}
+
+fn take_last_expr(stmts: &[Stmt], depth: usize) -> (Vec<String>, Option<Expr>) {
+    let mut rev = stmts.to_vec();
+    let last_is_expr = rev
+        .last()
+        .map(|s| matches!(s, Stmt::SExpr { .. }))
+        .unwrap_or(false);
+    if last_is_expr {
+        if let Some(Stmt::SExpr { expr, .. }) = rev.pop() {
+            let out: Vec<_> = rev.iter().map(|s| cxx_stmt(depth, s)).collect();
+            return (out, Some(*expr));
+        }
+    }
+    (stmts.iter().map(|s| cxx_stmt(depth, s)).collect(), None)
+}
+
+fn cxx_expr(expr: &Expr, depth: usize) -> String {
+    match expr {
+        Expr::EInt { value, .. } => format!("static_cast<mvp_builtin_int>({})", value),
+        Expr::EBool { value, .. } => format!("bool({})", if *value { "true" } else { "false" }),
+        Expr::EFloat { value, .. } => value.to_string(),
+        Expr::EChar { value, .. } => format!("'{}'", value.escape_default()),
+        Expr::EString { value, .. } => format!("mvp_builtin_string(\"{}\")", value),
+        Expr::EVar { name, .. } => name.clone(),
+        Expr::EMove { name, .. } => format!("std::move({})", name),
+        Expr::EClone { name, .. } => format!("decltype({})({})", name, name),
+
+        Expr::EStructLit { name, fields, .. } => cxx_struct_lit(name, fields, depth),
+        Expr::EFieldAccess { expr, field, .. } => {
+            format!("{}.{}", cxx_expr(expr, depth), field)
+        }
+        Expr::EBinOp {
+            op, left, right, ..
+        } => cxx_binop(op, left, right, depth),
+        Expr::EIf {
+            cond, then, else_, ..
+        } => cxx_if(cond, then, else_, depth),
+        Expr::EWhile { cond, body, .. } => cxx_while(cond, body, depth),
+        Expr::ELoop { body, .. } => cxx_loop(body, depth),
+        Expr::EFor {
+            var, range, body, ..
+        } => cxx_for(var, range, body, depth),
+        Expr::ECall { name, args, .. } => cxx_call(name, args, depth),
+        Expr::ECast { expr, to, .. } => {
+            format!("static_cast<{}>({})", cxx_type(to), cxx_expr(expr, depth))
+        }
+        Expr::EBlock { stmts, result, .. } => cxx_block(stmts, result, depth),
+        Expr::EChoose {
+            var,
+            cases,
+            otherwise,
+            ..
+        } => cxx_choose(var, cases, otherwise, depth),
+        Expr::EArrayLit { values, .. } => cxx_array_lit(values, depth),
+        Expr::EVoid { .. } => "mvp_builtin_void".into(),
+        Expr::EAddr { expr, .. } => format!("&({})", cxx_expr(expr, depth)),
+        Expr::EDeref { expr, .. } => format!("*({})", cxx_expr(expr, depth)),
+        Expr::EMacro { .. } => String::new(),
+    }
+}
+
+fn cxx_binop(op: &BinOp, left: &Expr, right: &Expr, depth: usize) -> String {
+    let op_str = match op {
+        BinOp::Add => " + ",
+        BinOp::Sub => " - ",
+        BinOp::Mul => " * ",
+        BinOp::Eq => " == ",
+        BinOp::Neq => " != ",
+    };
+    format!(
+        "({}{}{})",
+        cxx_expr(left, depth),
+        op_str,
+        cxx_expr(right, depth)
+    )
+}
+
+fn cxx_call(name: &str, args: &[Expr], depth: usize) -> String {
+    let args_strs: Vec<_> = args.iter().map(|a| cxx_expr(a, depth)).collect();
+    format!("{}({})", map_builtin(name), args_strs.join(", "))
+}
+
+fn cxx_if(cond: &Expr, then: &Expr, else_: &Option<Box<Expr>>, depth: usize) -> String {
+    let cond_str = cxx_expr(cond, depth);
+    let then_str = cxx_expr(then, depth + 1);
+    let else_str = match else_ {
+        Some(e) => format!(" else {{ return {}; }}", cxx_expr(e, depth + 1)),
+        None => String::new(),
+    };
+    format!(
+        "([&]() {{ if ({}) {{ return {}; }}{} }})()",
+        cond_str, then_str, else_str
+    )
+}
+
+fn cxx_while(cond: &Expr, body: &Expr, depth: usize) -> String {
+    let cond_str = cxx_expr(cond, depth);
+    let body_str = cxx_expr(body, depth + 1);
+    format!("([&]() {{ while ({}) {{ {} ;}}}})()", cond_str, body_str)
+}
+
+fn cxx_loop(body: &Expr, depth: usize) -> String {
+    let body_str = cxx_expr(body, depth + 1);
+    format!("([&]() {{ for (;;) {{ {} ;}}}})()", body_str)
+}
+
+fn cxx_for(var: &str, range: &Expr, body: &Expr, depth: usize) -> String {
+    let range_str = cxx_expr(range, depth);
+    let body_str = cxx_expr(body, depth + 1);
+    format!(
+        "([&]() {{ for (auto {} : {}) {{ {} ;}}}})()",
+        var, range_str, body_str
+    )
+}
+
+fn cxx_struct_lit(name: &str, fields: &[ValueField], depth: usize) -> String {
+    if fields.is_empty() {
+        format!("{}{{}}", name)
+    } else {
+        let temp = "__temp";
+        let inits: Vec<_> = fields
+            .iter()
+            .map(|f| format!("{}.{} = {}", temp, f.name, cxx_expr(&f.value, depth + 1)))
+            .collect();
+        format!(
+            "([&]() {{ {} {}={{}}; {}; return {}; }}())",
+            name,
+            temp,
+            inits.join("; "),
+            temp
+        )
+    }
+}
+
+fn cxx_choose(
+    var: &Expr,
+    cases: &[WhenCase],
+    otherwise: &Option<Box<Expr>>,
+    depth: usize,
+) -> String {
+    let var_str = cxx_expr(var, depth);
+    let ind = indent_str(depth);
+    let cases_str: String = cases.iter().fold(String::new(), |acc, c| {
+        let value_str = cxx_expr(&c.when, depth);
+        let body_str = cxx_expr(&c.then, depth + 1);
+        format!(
+            "{}{}if ({} == {}) {{ {} }}\n",
+            acc, ind, var_str, value_str, body_str
+        )
+    });
+    let otherwise_str = match otherwise {
+        Some(e) => format!("{}else {{ {} }}", ind, cxx_expr(e, depth + 1)),
+        None => String::new(),
+    };
+    format!("([&]() {{\n{}{}\n{}\n}}())", cases_str, otherwise_str, ind)
+}
+
+fn cxx_block(stmts: &[Stmt], result: &Option<Box<Expr>>, depth: usize) -> String {
+    let ind = indent_str(depth);
+    let inner = depth + 1;
+    let stmt_strs: String = stmts.iter().fold(String::new(), |acc, stmt| match stmt {
+        Stmt::SLet {
+            mutable,
+            name,
+            expr,
+            ..
+        } => {
+            let expr_str = cxx_expr(expr, inner);
+            let mut_str = if *mutable { "auto " } else { "const auto " };
+            format!(
+                "{}{}{}{} = {};\n",
+                acc,
+                indent_str(inner),
+                mut_str,
+                name,
+                expr_str
+            )
+        }
+        _ => format!("{}{}", acc, cxx_stmt(inner, stmt)),
+    });
+    let result_str = match result {
+        Some(expr) => format!("{}return {};\n", indent_str(inner), cxx_expr(expr, inner)),
+        None => String::new(),
+    };
+    format!("([&]() {{\n{}{}{}}})()", stmt_strs, result_str, ind)
+}
+
+fn cxx_array_lit(values: &[Expr], depth: usize) -> String {
+    let elems: Vec<_> = values.iter().map(|e| cxx_expr(e, depth)).collect();
+    format!("std::vector{{{}}}", elems.join(", "))
+}
+
+fn cxx_stmt(depth: usize, stmt: &Stmt) -> String {
+    let ind = indent_str(depth);
+    match stmt {
+        Stmt::SLet {
+            mutable,
+            name,
+            expr,
+            ..
+        } => {
+            let mut_str = if *mutable { "auto " } else { "const auto " };
+            format!("{}{}{} = {};\n", ind, mut_str, name, cxx_expr(expr, depth))
+        }
+        Stmt::SReturn { expr, .. } => {
+            format!("{}return {};\n", ind, cxx_expr(expr, depth))
+        }
+        Stmt::SExpr { expr, .. } => {
+            format!("{}{};\n", ind, cxx_expr(expr, depth))
+        }
+        Stmt::SAssign { name, expr, .. } => {
+            format!("{}{} = {};\n", ind, name, cxx_expr(expr, depth))
+        }
+        Stmt::SCIntro { .. } | Stmt::SEmpty { .. } => String::new(),
+    }
+}
+
+fn cxx_def(def: &Def, depth: usize) -> String {
+    let ind = indent_str(depth);
+    let inner = depth + 1;
+    match def {
+        Def::DStruct { name, fields, .. } => cxx_struct_def(name, fields, ind, inner),
+        Def::DFunc {
+            name,
+            params,
+            returns,
+            body,
+            ..
+        } if name == "main" => cxx_main_func(ind, inner, body),
+        Def::DCFuncUnsafe {
+            name,
+            params,
+            returns,
+            code,
+            ..
+        } => cxx_cfunc(name, params, returns, code, ind),
+        Def::DFunc {
+            name,
+            params,
+            returns,
+            body,
+            ..
+        } => cxx_normal_func(name, params, returns, body, ind, inner),
+        Def::DImpl {
+            struct_name, impls, ..
+        } => cxx_impl(struct_name, impls, ind),
+        Def::DModule { .. }
+        | Def::SExport { .. }
+        | Def::SImport { .. }
+        | Def::SImportAs { .. }
+        | Def::SImportHere { .. }
+        | Def::DTest { .. }
+        | Def::DCMagical { .. }
+        | Def::DCIntro { .. } => String::new(),
+    }
+}
+
+fn cxx_struct_def(name: &str, fields: &[FieldDef], ind: String, inner: usize) -> String {
+    let field_strs: String = fields
+        .iter()
+        .map(|f| format!("{}{} {};\n", indent_str(inner), cxx_type(&f.typ), f.name))
+        .collect();
+    format!("struct {} {{\n{}{}}};\n\n", name, field_strs, ind)
+}
+
+fn cxx_main_func(ind: String, inner: usize, body: &Expr) -> String {
+    let signature = "mvp_builtin_unit mvp_own_main(mvp_builtin_int argc)";
+    match body {
+        Expr::EBlock { stmts, .. } => {
+            let stmt_strs: String = stmts
+                .iter()
+                .map(|s| cxx_stmt(inner, s))
+                .collect::<Vec<_>>()
+                .join("");
+            let mut out = String::new();
+            out.push_str(&ind);
+            out.push_str(signature);
+            out.push_str(" {\n");
+            out.push_str(&stmt_strs);
+            out.push_str(&indent_str(inner));
+            out.push_str("return mvp_builtin_void;\n");
+            out.push_str(&ind);
+            out.push_str("}\n\n");
+            out
+        }
+        _ => format!(
+            "{} {} {{ {}; return mvp_builtin_void; }}\n\n",
+            ind,
+            signature,
+            cxx_expr(body, 0)
+        ),
+    }
+}
+
+fn cxx_cfunc(
+    name: &str,
+    params: &[Param],
+    returns: &Option<Typ>,
+    code: &str,
+    ind: String,
+) -> String {
+    let param_strs: Vec<_> = params.iter().map(cxx_param).collect();
+    let ret_type = returns.as_ref().map_or("mvp_builtin_unit".into(), cxx_type);
+    let signature = format!("{} {}({})", ret_type, name, param_strs.join(", "));
+    format!("{} {} {{\n{}{}}}\n\n", ind, signature, code, ind)
+}
+
+fn cxx_normal_func(
+    name: &str,
+    params: &[Param],
+    returns: &Option<Typ>,
+    body: &Expr,
+    ind: String,
+    _inner: usize,
+) -> String {
+    let param_strs: Vec<_> = params.iter().map(cxx_param).collect();
+    let ret_type = returns.as_ref().map_or("mvp_builtin_unit".into(), cxx_type);
+    let signature = format!("{} {}({})", ret_type, name, param_strs.join(", "));
+
+    match body {
+        Expr::EBlock { .. } => {
+            let flow = analyze_block(body, 0, &ret_type);
+            format!(
+                "{} {} {{\n{}{}{}}}\n\n",
+                ind,
+                signature,
+                flow.stmts.join(""),
+                flow.ret_line,
+                ind
+            )
+        }
+        _ => {
+            if ret_type == "mvp_builtin_unit" {
+                format!(
+                    "{} {} {{ {}; return mvp_builtin_void; }}\n\n",
+                    ind,
+                    signature,
+                    cxx_expr(body, 0)
+                )
+            } else {
+                format!(
+                    "{} {} {{ return {}; }}\n\n",
+                    ind,
+                    signature,
+                    cxx_expr(body, 0)
+                )
+            }
+        }
+    }
+}
+
+fn cxx_impl(struct_name: &str, impls: &[ImplExpr], ind: String) -> String {
+    let mut ret = String::new();
+    for impl_expr in impls {
+        let op = &impl_expr.op;
+        let fn_name = &impl_expr.func;
+        let ret_typ = match op {
+            ImplOp::ImAdd | ImplOp::ImSub | ImplOp::ImMul => struct_name.to_string(),
+            ImplOp::ImEq | ImplOp::ImNeq => "mvp_builtin_boolean".to_string(),
+        };
+        let operator = match op {
+            ImplOp::ImAdd => "+",
+            ImplOp::ImSub => "-",
+            ImplOp::ImMul => "*",
+            ImplOp::ImEq => "==",
+            ImplOp::ImNeq => "!=",
+        };
+        ret.push_str(&format!(
+            "{} {} operator{}(const {}& ____a, const {}& ____b) {{ return {}(____a, ____b); }}\n\n",
+            ind, ret_typ, operator, struct_name, struct_name, fn_name
+        ));
+    }
+    ret
+}
+
+fn cxx_include_path(path: &str) -> String {
+    if let Some(c_path) = path.strip_prefix("c:") {
+        return format!("#include <{}>\n", c_path);
+    }
+    let parts: Vec<&str> = path.split('/').collect();
+    match crate::config::Config::project_name() {
+        Some(proj_name) => {
+            if path.starts_with(&proj_name) {
+                if parts.len() > 1 {
+                    format!("#include <src/{}.h>\n", parts[1..].join("/"))
+                } else {
+                    String::new()
+                }
+            } else if let Some(head) = parts.first() {
+                if parts.len() > 1 {
+                    format!("#include <{}/src/{}.h>\n", head, parts[1..].join("/"))
+                } else {
+                    format!("#include <{}.h>\n", head)
+                }
+            } else {
+                String::new()
+            }
+        }
+        None => String::new(),
+    }
+}
+
+fn cxx_include_here(path: &str) -> String {
+    let include = cxx_include_path(path);
+    if path.starts_with("c:") {
+        include
+    } else {
+        let parts: Vec<&str> = path.split('/').collect();
+        if let Some(head) = parts.first() {
+            format!("{}using namespace {};\n", include, head.replace('.', "::"))
+        } else {
+            include
+        }
+    }
+}
+
+fn generate_test(defs: &[Def]) -> String {
+    let modname = defs
+        .iter()
+        .find_map(|d| match d {
+            Def::DModule { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let modname_cxx = cxx_module(&modname);
+    let header = format!(
+        "#include <mvp_builtin.h>\nusing namespace {};\n",
+        modname_cxx
+    );
+
+    let mut body = String::new();
+    let mut found = false;
+
+    for def in defs {
+        if let Def::DTest {
+            name, body: expr, ..
+        } = def
+        {
+            found = true;
+            let signature = format!("mvp_builtin_int {}()", name);
+
+            let body_str = match expr.as_ref() {
+                Expr::EBlock { .. } => {
+                    let flow = analyze_block(expr, 0, "mvp_builtin_int");
+                    format!(
+                        "{} {{\n{}{}{}}}\n\n",
+                        signature,
+                        flow.stmts.join(""),
+                        flow.ret_line,
+                        indent_str(0)
+                    )
+                }
+                _ => format!("{} {{ return {}; }}\n\n", signature, cxx_expr(expr, 0)),
+            };
+            body.push_str(&body_str);
+        }
+    }
+
+    if !found {
+        return String::new();
+    }
+
+    let test_calls: String = defs
+        .iter()
+        .map(|def| {
+            if let Def::DTest { name, .. } = def {
+                format!(
+                    "try {{\nauto res = {}();\nif (res != 0) {{\nthrow std::runtime_error(\"returns none-zero \"+std::to_string(res));\n}}\npassed++;\n}} catch (const std::exception& e) {{\n mvp_errorlns(\"\\x1b[31mError testing {} \\x1b[0m\", e.what()); failed++;\n}}\n",
+                    name, name
+                )
+            } else {
+                String::new()
+            }
+        })
+        .collect();
+
+    format!(
+        "{}{}int main() {{\nmvp_builtin_int passed = 0, failed = 0;\n{}mvp_println(\"--------------------\");\nif (failed == 0) {{mvp_println(\"\\x1b[32mAll tests passed.\\x1b[0m\");return 0;}}\nelse {{mvp_printlns(\"\\x1b[31mTest failed \\x1b[0m\\n\\x1b[31mFailed \", failed, \" \\x1b[32mPassed \", passed, \"\\x1b[0m\");return 1;}}\n}}",
+        header, body, test_calls
+    )
+}
+
+fn generate_header(defs: &[Def]) -> String {
+    let sym = SymbolTable::build(defs);
+    let exported = collect_exported(defs, &sym);
+    if exported.is_empty() {
+        return String::new();
+    }
+    format!("#pragma once\n\n#include <mvp_builtin.h>\n\n{}\n", exported)
+}
+
+fn collect_exported(defs: &[Def], sym: &SymbolTable) -> String {
+    let mut result = String::new();
+    collect_exported_rec(defs, sym, &[], &mut result);
+    result
+}
+
+fn collect_exported_rec(
+    defs: &[Def],
+    sym: &SymbolTable,
+    current_modules: &[String],
+    result: &mut String,
+) {
+    for def in defs.iter() {
+        match def {
+            Def::DModule { name, .. } => {
+                let mut new_modules = current_modules.to_vec();
+                new_modules.push(name.clone());
+                let parts = module_parts(name);
+                let ns_start: String = parts
+                    .iter()
+                    .map(|p| format!("namespace {} {{\n\n", p))
+                    .collect();
+                let ns_end: String = parts.iter().map(|_| "}\n\n".to_string()).collect();
+                result.push_str(&ns_start);
+                collect_exported_rec(&defs[1..], sym, &new_modules, result);
+                result.push_str(&ns_end);
+                return;
+            }
+            Def::SExport { symbol, .. } => {
+                let decl = if let Some(s) = sym.lookup_struct(symbol) {
+                    let field_strs: String = s
+                        .fields
+                        .iter()
+                        .map(|f| format!("  {} {};\n", cxx_type(&f.typ), f.name))
+                        .collect();
+                    format!("struct {} {{\n{}}};\n\n", s.name, field_strs)
+                } else if let Some(f) = sym.lookup_function(symbol) {
+                    cxx_func_decl(&f.name, &f.params, &f.return_typ)
+                } else {
+                    String::new()
+                };
+                result.push_str(&decl);
+            }
+            _ => {}
+        }
+    }
+}
+
+struct ScopeParts {
+    includes: String,
+    defs_str: String,
+    main_functions: String,
+}
+
+fn generate_with_scope(defs: &[Def], module: Option<&str>) -> ScopeParts {
+    let mut includes = String::new();
+    let mut defs_str = String::new();
+    let mut main_functions = String::new();
+
+    for (i, def) in defs.iter().enumerate() {
+        match def {
+            Def::DModule { name, .. } => {
+                let parts = module_parts(name);
+                let ns_start: String = parts
+                    .iter()
+                    .map(|p| format!("namespace {} {{\n\n", p))
+                    .collect();
+                let ns_end: String = parts.iter().map(|_| "}\n\n".to_string()).collect();
+                let inner = generate_with_scope(&defs[i + 1..], Some(name.as_str()));
+                includes.push_str(&inner.includes);
+                defs_str.push_str(&ns_start);
+                defs_str.push_str(&inner.defs_str);
+                defs_str.push_str(&ns_end);
+                main_functions.push_str(&inner.main_functions);
+                break;
+            }
+            _ if is_main_func(def) => {
+                let mvp_main_str = cxx_def(def, 0);
+                defs_str.push_str(&mvp_main_str);
+                let global_main = if let Some(name) = module {
+                    format!(
+                        "int main(int argc, char** argv)\n{{\n  try {{\n  {}::mvp_own_main(argc);\n  }} catch (std::exception& e) {{\n     mvp_errorlns(\"panic: \", e.what());}}\n  return 0;\n}}\n\n",
+                        cxx_module(name)
+                    )
+                } else {
+                    "int main(int argc, char** argv)\n{\n  mvp_own_main(argc);\n  return 0;\n}\n\n"
+                        .into()
+                };
+                main_functions.push_str(&global_main);
+            }
+            Def::SImport { path, .. } => includes.push_str(&cxx_include_path(path)),
+            Def::SImportAs { path, .. } => includes.push_str(&cxx_include_path(path)),
+            Def::SImportHere { path, .. } => includes.push_str(&cxx_include_here(path)),
+            _ => defs_str.push_str(&cxx_def(def, 0)),
+        }
+    }
+
+    ScopeParts {
+        includes,
+        defs_str,
+        main_functions,
+    }
+}
+
+fn is_main_func(def: &Def) -> bool {
+    matches!(def, Def::DFunc { name, .. } if name == "main")
+}
+
+pub fn build_ir(defs: &[Def]) -> [String; 3] {
+    let header_content = generate_header(defs);
+    let ScopeParts {
+        includes,
+        defs_str: module_content,
+        main_functions,
+    } = generate_with_scope(defs, None);
+    let preamble = "\
+#include <iostream>
+#include <string>
+#include <vector>
+#include <cstdint>
+#include <mvp_builtin.h>
+
+
+using namespace std;
+
+";
+    let program = format!(
+        "{}{}{}{}\n",
+        preamble, includes, module_content, main_functions
+    );
+    let test = generate_test(defs);
+    [program, header_content, test]
+}

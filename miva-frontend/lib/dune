@@ -1,0 +1,10 @@
+(library
+ (name mvp_frontend_lib)
+ (libraries unix)
+ )
+
+(menhir
+ (modules parser))
+
+(ocamllex
+ (modules lexer))

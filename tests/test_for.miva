@@ -1,0 +1,6 @@
+module main;
+main = () => {
+  for i in (range(3)) {
+    printlns!(i);
+  };
+}

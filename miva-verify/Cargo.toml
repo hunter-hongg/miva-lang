@@ -1,0 +1,7 @@
+[package]
+name = "miva-verify"
+version = "0.1.0"
+edition = "2021"
+description = "对拍器 - verifies compiler output by running a command and comparing its output with expected result"
+
+[dependencies]
