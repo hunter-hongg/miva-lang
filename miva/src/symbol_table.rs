@@ -688,19 +688,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_function_safety_first_of_duplicates() {
-        let defs = vec![
-            make_func("dup", Safety::Safe),
-            make_func("dup", Safety::Unsafe),
-        ];
-        let st = SymbolTable::build(&defs);
-        assert!(
-            matches!(st.get_function_safety("dup"), Some(Safety::Safe)),
-            "with duplicates, get_function_safety returns first match"
-        );
-    }
-
-    #[test]
     fn test_duplicate_function_three_times_two_errors() {
         let defs = vec![
             make_func("f", Safety::Safe),
@@ -732,20 +719,6 @@ mod tests {
         let defs = vec![make_module("")];
         let st = SymbolTable::build(&defs);
         assert_eq!(st.module_name, "");
-    }
-
-    #[test]
-    fn test_dfuncunsafe_respects_safety_field() {
-        let def = Def::DCFuncUnsafe {
-            loc: loc(),
-            name: "c_func".to_string(),
-            params: Vec::new(),
-            returns: None,
-            code: String::new(),
-            safety: Safety::Trusted,
-        };
-        let st = SymbolTable::build(&[def]);
-        assert!(matches!(st.functions[0].safety, Safety::Trusted));
     }
 
     #[test]

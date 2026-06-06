@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use crate::ast::*;
 use crate::error::Error;
+use std::collections::HashMap;
 
 struct TypeEnv {
     vars: HashMap<String, Typ>,
@@ -22,13 +22,13 @@ fn is_numeric(t: &Typ) -> bool {
 
 fn builtin_return_typ(name: &str) -> Option<Typ> {
     match name {
-        "print" | "prints" | "println" | "printlns"
-        | "error" | "errors" | "errorln" | "errorlns"
-        | "exit" | "abort" | "panic"
-        | "ptr_free" | "ptr_set" => Some(Typ::TNull),
+        "print" | "prints" | "println" | "printlns" | "error" | "errors" | "errorln"
+        | "errorlns" | "exit" | "abort" | "panic" | "ptr_free" | "ptr_set" => Some(Typ::TNull),
         "string_concat" | "string_make" | "string_from" => Some(Typ::TString),
         "string_parse" | "string_length" => Some(Typ::TInt),
-        "range" => Some(Typ::TArray { of: Box::new(Typ::TInt) }),
+        "range" => Some(Typ::TArray {
+            of: Box::new(Typ::TInt),
+        }),
         "ptr_alloc" | "ptr_realloc" => Some(Typ::TPtrAny),
         "box_new" | "box_deref" => None,
         _ => None,
@@ -39,7 +39,18 @@ fn build_func_sigs(defs: &[Def]) -> HashMap<String, (Vec<Param>, Option<Typ>)> {
     let mut sigs = HashMap::new();
     for def in defs {
         match def {
-            Def::DFunc { name, params, returns, .. } | Def::DCFuncUnsafe { name, params, returns, .. } => {
+            Def::DFunc {
+                name,
+                params,
+                returns,
+                ..
+            }
+            | Def::DCFuncUnsafe {
+                name,
+                params,
+                returns,
+                ..
+            } => {
                 sigs.insert(name.clone(), (params.clone(), returns.clone()));
             }
             _ => {}
@@ -80,30 +91,30 @@ fn require_type(
 
 fn loc_of(e: &Expr) -> Loc {
     match e {
-        Expr::EInt { loc, .. } => loc.clone(),
-        Expr::EBool { loc, .. } => loc.clone(),
-        Expr::EFloat { loc, .. } => loc.clone(),
-        Expr::EChar { loc, .. } => loc.clone(),
-        Expr::EString { loc, .. } => loc.clone(),
-        Expr::EVar { loc, .. } => loc.clone(),
-        Expr::EMove { loc, .. } => loc.clone(),
-        Expr::EClone { loc, .. } => loc.clone(),
-        Expr::EStructLit { loc, .. } => loc.clone(),
-        Expr::EFieldAccess { loc, .. } => loc.clone(),
-        Expr::EBinOp { loc, .. } => loc.clone(),
-        Expr::EIf { loc, .. } => loc.clone(),
-        Expr::EChoose { loc, .. } => loc.clone(),
-        Expr::ECall { loc, .. } => loc.clone(),
-        Expr::EMacro { loc, .. } => loc.clone(),
-        Expr::ECast { loc, .. } => loc.clone(),
-        Expr::EBlock { loc, .. } => loc.clone(),
-        Expr::EArrayLit { loc, .. } => loc.clone(),
-        Expr::EVoid { loc, .. } => loc.clone(),
-        Expr::EAddr { loc, .. } => loc.clone(),
-        Expr::EDeref { loc, .. } => loc.clone(),
-        Expr::EWhile { loc, .. } => loc.clone(),
-        Expr::ELoop { loc, .. } => loc.clone(),
-        Expr::EFor { loc, .. } => loc.clone(),
+        Expr::EInt { loc, .. }
+        | Expr::EBool { loc, .. }
+        | Expr::EFloat { loc, .. }
+        | Expr::EChar { loc, .. }
+        | Expr::EString { loc, .. }
+        | Expr::EVar { loc, .. }
+        | Expr::EMove { loc, .. }
+        | Expr::EClone { loc, .. }
+        | Expr::EStructLit { loc, .. }
+        | Expr::EFieldAccess { loc, .. }
+        | Expr::EBinOp { loc, .. }
+        | Expr::EIf { loc, .. }
+        | Expr::EChoose { loc, .. }
+        | Expr::ECall { loc, .. }
+        | Expr::EMacro { loc, .. }
+        | Expr::ECast { loc, .. }
+        | Expr::EBlock { loc, .. }
+        | Expr::EArrayLit { loc, .. }
+        | Expr::EVoid { loc, .. }
+        | Expr::EAddr { loc, .. }
+        | Expr::EDeref { loc, .. }
+        | Expr::EWhile { loc, .. }
+        | Expr::ELoop { loc, .. }
+        | Expr::EFor { loc, .. } => loc.clone(),
     }
 }
 
@@ -121,24 +132,18 @@ fn infer_type(
         Expr::EChar { .. } => (Typ::TChar, vec![]),
         Expr::EString { .. } => (Typ::TString, vec![]),
         Expr::EVoid { .. } => (Typ::TNull, vec![]),
-        Expr::EVar { name, .. } => {
-            match env.vars.get(name) {
-                Some(t) => (t.clone(), vec![]),
-                None => (Typ::TInvalid, vec![]),
-            }
-        }
-        Expr::EMove { name, .. } => {
-            match env.vars.get(name) {
-                Some(t) => (t.clone(), vec![]),
-                None => (Typ::TInvalid, vec![]),
-            }
-        }
-        Expr::EClone { name, .. } => {
-            match env.vars.get(name) {
-                Some(t) => (t.clone(), vec![]),
-                None => (Typ::TInvalid, vec![]),
-            }
-        }
+        Expr::EVar { name, .. } => match env.vars.get(name) {
+            Some(t) => (t.clone(), vec![]),
+            None => (Typ::TInvalid, vec![]),
+        },
+        Expr::EMove { name, .. } => match env.vars.get(name) {
+            Some(t) => (t.clone(), vec![]),
+            None => (Typ::TInvalid, vec![]),
+        },
+        Expr::EClone { name, .. } => match env.vars.get(name) {
+            Some(t) => (t.clone(), vec![]),
+            None => (Typ::TInvalid, vec![]),
+        },
         Expr::EAddr { expr, loc, .. } => {
             let (inner_typ, mut errs) = infer_type(env, func_sigs, structs, func_return, expr);
             if matches!(inner_typ, Typ::TNull | Typ::TInvalid) {
@@ -148,7 +153,12 @@ fn infer_type(
                     "cannot take address of expression with no value",
                 ));
             }
-            (Typ::TPtr { to: Box::new(inner_typ) }, errs)
+            (
+                Typ::TPtr {
+                    to: Box::new(inner_typ),
+                },
+                errs,
+            )
         }
         Expr::EDeref { expr, loc, .. } => {
             let (inner_typ, mut errs) = infer_type(env, func_sigs, structs, func_return, expr);
@@ -164,7 +174,12 @@ fn infer_type(
                 }
             }
         }
-        Expr::EBinOp { op, left, right, loc } => {
+        Expr::EBinOp {
+            op,
+            left,
+            right,
+            loc,
+        } => {
             let (lt, mut errs) = require_type(env, func_sigs, structs, func_return, left);
             let (rt, errs2) = require_type(env, func_sigs, structs, func_return, right);
             errs.extend(errs2);
@@ -175,7 +190,10 @@ fn infer_type(
                         errs.push(Error::new(
                             "E0014",
                             loc,
-                            &format!("arithmetic operation requires numeric types, got {:?} and {:?}", lt, rt),
+                            &format!(
+                                "arithmetic operation requires numeric types, got {:?} and {:?}",
+                                lt, rt
+                            ),
                         ));
                         (Typ::TInvalid, errs)
                     } else if !types_equal(&lt, &rt) {
@@ -203,13 +221,18 @@ fn infer_type(
                 }
             }
         }
-        Expr::EIf { cond, then, else_, loc } => {
+        Expr::EIf {
+            cond,
+            then,
+            else_,
+            loc,
+        } => {
             let (ct, mut errs) = require_type(env, func_sigs, structs, func_return, cond);
             if !types_equal(&ct, &Typ::TBool) {
                 errs.push(Error::new(
                     "E0014",
                     loc,
-                    &format!("if condition must be bool, got {:?}", ct),
+                    &format!("if condition must be bool"),
                 ));
             }
 
@@ -224,10 +247,7 @@ fn infer_type(
                         errs.push(Error::new(
                             "E0014",
                             loc,
-                            &format!(
-                                "if and else branches have different types: {:?} vs {:?}",
-                                tt, et
-                            ),
+                            &format!("if and else branches have different types",),
                         ));
                     }
                     (tt, errs)
@@ -235,9 +255,15 @@ fn infer_type(
                 None => (Typ::TNull, errs),
             }
         }
-        Expr::EChoose { var, cases, otherwise, loc } => {
+        Expr::EChoose {
+            var,
+            cases,
+            otherwise,
+            loc,
+        } => {
             let (vt, mut errs) = require_type(env, func_sigs, structs, func_return, var);
             let _ = vt;
+            let mut tmp_typ = vec![];
 
             if let Some(else_expr) = otherwise {
                 let (et, errs3) = infer_type(env, func_sigs, structs, func_return, else_expr);
@@ -247,9 +273,16 @@ fn infer_type(
                 let mut first_type: Option<Typ> = Some(et);
                 let mut first_case = true;
                 for case in cases {
-                    let (wt, errs_w) = require_type(env, func_sigs, structs, func_return, &case.when);
+                    let (wt, errs_w) =
+                        require_type(env, func_sigs, structs, func_return, &case.when);
                     errs.extend(errs_w);
-                    let _ = wt;
+                    if !types_equal(&wt, &vt) {
+                        errs.push(Error::new(
+                            "E0014",
+                            loc,
+                            "choose expr and the variable must have the same type",
+                        ));
+                    }
                     let (tt, errs_t) = infer_type(env, func_sigs, structs, func_return, &case.then);
                     errs.extend(errs_t);
                     if first_case {
@@ -277,13 +310,39 @@ fn infer_type(
                 }
             } else {
                 for case in cases {
-                    let (wt, errs_w) = require_type(env, func_sigs, structs, func_return, &case.when);
+                    let (wt, errs_w) =
+                        require_type(env, func_sigs, structs, func_return, &case.when);
                     errs.extend(errs_w);
-                    let _ = wt;
-                    let (_, errs_t) = infer_type(env, func_sigs, structs, func_return, &case.then);
+                    if !types_equal(&wt, &vt) {
+                        errs.push(Error::new(
+                            "E0014",
+                            loc,
+                            "choose expr and the variable must have the same type",
+                        ));
+                    }
+                    let (tt, errs_t) = infer_type(env, func_sigs, structs, func_return, &case.then);
                     errs.extend(errs_t);
+                    if tmp_typ.is_empty() && tt != Typ::TInvalid {
+                        tmp_typ.push(tt);
+                    } else {
+                        let t1 = tmp_typ.get(0).unwrap_or(&Typ::TInvalid);
+                        if t1 == &Typ::TInvalid || tt == Typ::TInvalid {
+                            errs.push(Error::new(
+                                "E0014",
+                                loc,
+                                "choose branches must not have invalid type",
+                            ));
+                        }
+                        if !types_equal(&tt, t1) {
+                            errs.push(Error::new(
+                                "E0014",
+                                loc,
+                                "choose branches must all have the same type",
+                            ));
+                        }
+                    }
                 }
-                (Typ::TNull, errs)
+                (tmp_typ.get(0).unwrap_or(&Typ::TInvalid).clone(), errs)
             }
         }
         Expr::ECall { name, args, loc } => {
@@ -318,8 +377,9 @@ fn infer_type(
                                 "E0016",
                                 loc,
                                 &format!(
-                                    "argument {} to function '{}' has wrong type: expected {:?}, got {:?}",
-                                    i + 1, name, param_t, arg_t
+                                    "argument {} to function '{}' has wrong type",
+                                    i + 1,
+                                    name
                                 ),
                             ));
                         }
@@ -332,7 +392,9 @@ fn infer_type(
                         if args.is_empty() {
                             Typ::TNull
                         } else {
-                            Typ::TBox { of: Box::new(arg_types[0].clone()) }
+                            Typ::TBox {
+                                of: Box::new(arg_types[0].clone()),
+                            }
                         }
                     }
                     "box_deref" => {
@@ -345,9 +407,7 @@ fn infer_type(
                             }
                         }
                     }
-                    name => {
-                        builtin_return_typ(name).unwrap_or(Typ::TNull)
-                    }
+                    name => builtin_return_typ(name).unwrap_or(Typ::TNull),
                 }
             };
             (ret_typ, errs)
@@ -382,10 +442,7 @@ fn infer_type(
                             errs.push(Error::new(
                                 "E0018",
                                 loc,
-                                &format!(
-                                    "field '{}' of struct '{}' has wrong type: expected {:?}, got {:?}",
-                                    vf.name, name, expected_t, ft
-                                ),
+                                &format!("field '{}' of struct '{}' has wrong type", vf.name, name),
                             ));
                         }
                     }
@@ -393,10 +450,7 @@ fn infer_type(
                         errs.push(Error::new(
                             "E0018",
                             loc,
-                            &format!(
-                                "unknown field '{}' in struct '{}'",
-                                vf.name, name
-                            ),
+                            &format!("unknown field '{}' in struct '{}'", vf.name, name),
                         ));
                     }
                 }
@@ -407,57 +461,59 @@ fn infer_type(
                     errs.push(Error::new(
                         "E0018",
                         loc,
-                        &format!(
-                            "missing field '{}' in struct '{}' literal",
-                            sf.name, name
-                        ),
+                        &format!("missing field '{}' in struct '{}' literal", sf.name, name),
                     ));
                 }
             }
 
-            (Typ::TStruct { name: name.clone(), fields: struct_fields.clone() }, errs)
+            (
+                Typ::TStruct {
+                    name: name.clone(),
+                    fields: struct_fields.clone(),
+                },
+                errs,
+            )
         }
         Expr::EFieldAccess { expr, field, loc } => {
             let (et, mut errs) = require_type(env, func_sigs, structs, func_return, expr);
             match et {
-                Typ::TStruct { name: sname, .. } => {
-                    match structs.get(&sname) {
-                        Some(fields) => {
-                            for f in fields {
-                                if f.name == *field {
-                                    return (f.typ.clone(), errs);
-                                }
+                Typ::TStruct { name: sname, .. } => match structs.get(&sname) {
+                    Some(fields) => {
+                        for f in fields {
+                            if f.name == *field {
+                                return (f.typ.clone(), errs);
                             }
-                            errs.push(Error::new(
-                                "E0019",
-                                loc,
-                                &format!("unknown field '{}' in struct '{}'", field, sname),
-                            ));
-                            (Typ::TInvalid, errs)
                         }
-                        None => {
-                            errs.push(Error::new(
-                                "E0018",
-                                loc,
-                                &format!("unknown struct '{}'", sname),
-                            ));
-                            (Typ::TInvalid, errs)
-                        }
+                        errs.push(Error::new(
+                            "E0019",
+                            loc,
+                            &format!("unknown field '{}' in struct '{}'", field, sname),
+                        ));
+                        (Typ::TInvalid, errs)
                     }
-                }
+                    None => {
+                        errs.push(Error::new(
+                            "E0018",
+                            loc,
+                            &format!("unknown struct '{}'", sname),
+                        ));
+                        (Typ::TInvalid, errs)
+                    }
+                },
                 _ => {
-                    errs.push(Error::new(
-                        "E0014",
-                        loc,
-                        &format!("field access on non-struct type {:?}", et),
-                    ));
+                    errs.push(Error::new("E0014", loc, "field access on non-struct type"));
                     (Typ::TInvalid, errs)
                 }
             }
         }
         Expr::EArrayLit { values, loc } => {
             if values.is_empty() {
-                return (Typ::TArray { of: Box::new(Typ::TInvalid) }, vec![]);
+                return (
+                    Typ::TArray {
+                        of: Box::new(Typ::TInvalid),
+                    },
+                    vec![],
+                );
             }
             let mut errs = vec![];
             let (first_t, fe) = require_type(env, func_sigs, structs, func_return, &values[0]);
@@ -477,30 +533,38 @@ fn infer_type(
                     "all array elements must have the same type",
                 ));
             }
-            (Typ::TArray { of: Box::new(first_t) }, errs)
+            (
+                Typ::TArray {
+                    of: Box::new(first_t),
+                },
+                errs,
+            )
         }
         Expr::ECast { expr, to, loc } => {
             let (et, mut errs) = require_type(env, func_sigs, structs, func_return, expr);
             let valid = match (&et, to) {
-                (Typ::TInt, Typ::TFloat32) | (Typ::TFloat32, Typ::TInt)
-                | (Typ::TInt, Typ::TFloat64) | (Typ::TFloat64, Typ::TInt)
-                | (Typ::TFloat32, Typ::TFloat64) | (Typ::TFloat64, Typ::TFloat32)
-                | (Typ::TInt, Typ::TChar) | (Typ::TChar, Typ::TInt)
-                | (Typ::TInt, Typ::TBool) | (Typ::TBool, Typ::TInt)
-                | (Typ::TInt, Typ::TString) | (Typ::TString, Typ::TInt) => true,
+                (Typ::TInt, Typ::TFloat32)
+                | (Typ::TFloat32, Typ::TInt)
+                | (Typ::TInt, Typ::TFloat64)
+                | (Typ::TFloat64, Typ::TInt)
+                | (Typ::TFloat32, Typ::TFloat64)
+                | (Typ::TFloat64, Typ::TFloat32)
+                | (Typ::TInt, Typ::TChar)
+                | (Typ::TChar, Typ::TInt)
+                | (Typ::TBool, Typ::TInt) => true,
                 _ if types_equal(&et, to) => true,
                 _ => false,
             };
             if !valid {
-                errs.push(Error::new(
-                    "E0021",
-                    loc,
-                    &format!("invalid cast from {:?} to {:?}", et, to),
-                ));
+                errs.push(Error::new("E0021", loc, &format!("invalid cast")));
             }
             (to.clone(), errs)
         }
-        Expr::EBlock { stmts, result, loc: _ } => {
+        Expr::EBlock {
+            stmts,
+            result,
+            loc: _,
+        } => {
             let mut errs = vec![];
             for stmt in stmts {
                 match stmt {
@@ -518,10 +582,7 @@ fn infer_type(
                                     errs.push(Error::new(
                                         "E0022",
                                         loc,
-                                        &format!(
-                                            "cannot assign {:?} to variable '{}' of type {:?}",
-                                            t, name, expected_t
-                                        ),
+                                        &format!("cannot assign to variable '{}'", name),
                                     ));
                                 }
                             }
@@ -536,10 +597,7 @@ fn infer_type(
                                 errs.push(Error::new(
                                     "E0017",
                                     loc,
-                                    &format!(
-                                        "expected return type {:?}, got {:?}",
-                                        rt, t
-                                    ),
+                                    &format!("return type incorrect"),
                                 ));
                             }
                         }
@@ -567,7 +625,7 @@ fn infer_type(
                 errs.push(Error::new(
                     "E0014",
                     loc,
-                    &format!("while condition must be bool, got {:?}", ct),
+                    &format!("while condition must be bool"),
                 ));
             }
             let (_, be) = infer_type(env, func_sigs, structs, func_return, body);
@@ -580,7 +638,12 @@ fn infer_type(
             errs.extend(be);
             (Typ::TNull, errs)
         }
-        Expr::EFor { var, range, body, loc } => {
+        Expr::EFor {
+            var,
+            range,
+            body,
+            loc,
+        } => {
             let mut errs = vec![];
             let (rt, re) = require_type(env, func_sigs, structs, func_return, range);
             errs.extend(re);
@@ -590,7 +653,7 @@ fn infer_type(
                     errs.push(Error::new(
                         "E0026",
                         loc,
-                        &format!("for loop range must be an array, got {:?}", rt),
+                        &format!("for loop range must be an array"),
                     ));
                     Typ::TInvalid
                 }
@@ -611,8 +674,16 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
 
     for def in defs {
         match def {
-            Def::DFunc { name: _, params, returns, body, .. } => {
-                let mut env = TypeEnv { vars: HashMap::new() };
+            Def::DFunc {
+                name: _,
+                params,
+                returns,
+                body,
+                ..
+            } => {
+                let mut env = TypeEnv {
+                    vars: HashMap::new(),
+                };
                 for p in params {
                     match p {
                         Param::PRef { name, typ } | Param::POwn { name, typ } => {
@@ -620,7 +691,8 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
                         }
                     }
                 }
-                let (body_t, mut fun_errs) = infer_type(&mut env, &func_sigs, &structs, returns, body);
+                let (body_t, mut fun_errs) =
+                    infer_type(&mut env, &func_sigs, &structs, returns, body);
                 errs.append(&mut fun_errs);
                 if let Some(ref rt) = returns {
                     if !matches!(body_t, Typ::TNull) && !types_equal(rt, &body_t) {
@@ -636,7 +708,9 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
                 }
             }
             Def::DTest { body, .. } => {
-                let mut env = TypeEnv { vars: HashMap::new() };
+                let mut env = TypeEnv {
+                    vars: HashMap::new(),
+                };
                 let (_, mut fun_errs) = infer_type(&mut env, &func_sigs, &structs, &None, body);
                 errs.append(&mut fun_errs);
             }
@@ -656,15 +730,35 @@ mod tests {
     }
 
     fn make_module(name: &str) -> Def {
-        Def::DModule { loc: loc(), name: name.to_string() }
+        Def::DModule {
+            loc: loc(),
+            name: name.to_string(),
+        }
     }
 
-    fn make_func(name: &str, params: Vec<Param>, returns: Option<Typ>, body: Expr, safety: Safety) -> Def {
-        Def::DFunc { loc: loc(), name: name.to_string(), params, returns, body: Box::new(body), safety }
+    fn make_func(
+        name: &str,
+        params: Vec<Param>,
+        returns: Option<Typ>,
+        body: Expr,
+        safety: Safety,
+    ) -> Def {
+        Def::DFunc {
+            loc: loc(),
+            name: name.to_string(),
+            params,
+            returns,
+            body: Box::new(body),
+            safety,
+        }
     }
 
     fn make_struct(name: &str, fields: Vec<FieldDef>) -> Def {
-        Def::DStruct { loc: loc(), name: name.to_string(), fields }
+        Def::DStruct {
+            loc: loc(),
+            name: name.to_string(),
+            fields,
+        }
     }
 
     #[test]
@@ -678,30 +772,52 @@ mod tests {
     fn test_valid_int_addition() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EBinOp {
                     loc: loc(),
                     op: BinOp::Add,
-                    left: Box::new(Expr::EInt { loc: loc(), value: 1 }),
-                    right: Box::new(Expr::EInt { loc: loc(), value: 2 }),
+                    left: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
+                    right: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 2,
+                    }),
                 },
                 Safety::Safe,
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "int + int should be valid, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "int + int should be valid, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_type_mismatch_binop() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EBinOp {
                     loc: loc(),
                     op: BinOp::Add,
-                    left: Box::new(Expr::EInt { loc: loc(), value: 1 }),
-                    right: Box::new(Expr::EBool { loc: loc(), value: true }),
+                    left: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
+                    right: Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }),
                 },
                 Safety::Safe,
             ),
@@ -715,12 +831,24 @@ mod tests {
     fn test_if_condition_must_be_bool() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EIf {
                     loc: loc(),
-                    cond: Box::new(Expr::EInt { loc: loc(), value: 0 }),
-                    then: Box::new(Expr::EInt { loc: loc(), value: 1 }),
-                    else_: Some(Box::new(Expr::EInt { loc: loc(), value: 2 })),
+                    cond: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 0,
+                    }),
+                    then: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
+                    else_: Some(Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 2,
+                    })),
                 },
                 Safety::Safe,
             ),
@@ -734,12 +862,24 @@ mod tests {
     fn test_if_else_type_mismatch() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EIf {
                     loc: loc(),
-                    cond: Box::new(Expr::EBool { loc: loc(), value: true }),
-                    then: Box::new(Expr::EInt { loc: loc(), value: 1 }),
-                    else_: Some(Box::new(Expr::EBool { loc: loc(), value: false })),
+                    cond: Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }),
+                    then: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
+                    else_: Some(Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: false,
+                    })),
                 },
                 Safety::Safe,
             ),
@@ -753,28 +893,50 @@ mod tests {
     fn test_if_else_same_type_ok() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EIf {
                     loc: loc(),
-                    cond: Box::new(Expr::EBool { loc: loc(), value: true }),
-                    then: Box::new(Expr::EInt { loc: loc(), value: 1 }),
-                    else_: Some(Box::new(Expr::EInt { loc: loc(), value: 2 })),
+                    cond: Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }),
+                    then: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
+                    else_: Some(Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 2,
+                    })),
                 },
                 Safety::Safe,
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "if/else same type should be ok, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "if/else same type should be ok, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_if_void_branch_no_else_ok() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EIf {
                     loc: loc(),
-                    cond: Box::new(Expr::EBool { loc: loc(), value: true }),
+                    cond: Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }),
                     then: Box::new(Expr::EVoid { loc: loc() }),
                     else_: None,
                 },
@@ -782,17 +944,27 @@ mod tests {
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "if with void then and no else should be ok, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "if with void then and no else should be ok, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_if_void_then_void_else_ok() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EIf {
                     loc: loc(),
-                    cond: Box::new(Expr::EBool { loc: loc(), value: true }),
+                    cond: Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }),
                     then: Box::new(Expr::EVoid { loc: loc() }),
                     else_: Some(Box::new(Expr::EVoid { loc: loc() })),
                 },
@@ -800,22 +972,38 @@ mod tests {
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "if with both void branches should be ok, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "if with both void branches should be ok, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_fn_call_arg_type_mismatch() {
         let defs = vec![
             make_module("test"),
-            make_func("needs_int", vec![Param::POwn { name: "x".to_string(), typ: Typ::TInt }], None,
+            make_func(
+                "needs_int",
+                vec![Param::POwn {
+                    name: "x".to_string(),
+                    typ: Typ::TInt,
+                }],
+                None,
                 Expr::EVoid { loc: loc() },
                 Safety::Safe,
             ),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::ECall {
                     loc: loc(),
                     name: "needs_int".to_string(),
-                    args: vec![Expr::EBool { loc: loc(), value: true }],
+                    args: vec![Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }],
                 },
                 Safety::Safe,
             ),
@@ -829,18 +1017,33 @@ mod tests {
     fn test_fn_call_arg_count_mismatch() {
         let defs = vec![
             make_module("test"),
-            make_func("two_args", vec![
-                Param::POwn { name: "a".to_string(), typ: Typ::TInt },
-                Param::POwn { name: "b".to_string(), typ: Typ::TInt },
-            ], None,
+            make_func(
+                "two_args",
+                vec![
+                    Param::POwn {
+                        name: "a".to_string(),
+                        typ: Typ::TInt,
+                    },
+                    Param::POwn {
+                        name: "b".to_string(),
+                        typ: Typ::TInt,
+                    },
+                ],
+                None,
                 Expr::EVoid { loc: loc() },
                 Safety::Safe,
             ),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::ECall {
                     loc: loc(),
                     name: "two_args".to_string(),
-                    args: vec![Expr::EInt { loc: loc(), value: 1 }],
+                    args: vec![Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }],
                 },
                 Safety::Safe,
             ),
@@ -854,69 +1057,139 @@ mod tests {
     fn test_fn_call_correct_args() {
         let defs = vec![
             make_module("test"),
-            make_func("add", vec![
-                Param::POwn { name: "a".to_string(), typ: Typ::TInt },
-                Param::POwn { name: "b".to_string(), typ: Typ::TInt },
-            ], Some(Typ::TInt),
+            make_func(
+                "add",
+                vec![
+                    Param::POwn {
+                        name: "a".to_string(),
+                        typ: Typ::TInt,
+                    },
+                    Param::POwn {
+                        name: "b".to_string(),
+                        typ: Typ::TInt,
+                    },
+                ],
+                Some(Typ::TInt),
                 Expr::EBinOp {
                     loc: loc(),
                     op: BinOp::Add,
-                    left: Box::new(Expr::EVar { loc: loc(), name: "a".to_string() }),
-                    right: Box::new(Expr::EVar { loc: loc(), name: "b".to_string() }),
+                    left: Box::new(Expr::EVar {
+                        loc: loc(),
+                        name: "a".to_string(),
+                    }),
+                    right: Box::new(Expr::EVar {
+                        loc: loc(),
+                        name: "b".to_string(),
+                    }),
                 },
                 Safety::Safe,
             ),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::ECall {
                     loc: loc(),
                     name: "add".to_string(),
-                    args: vec![Expr::EInt { loc: loc(), value: 1 }, Expr::EInt { loc: loc(), value: 2 }],
+                    args: vec![
+                        Expr::EInt {
+                            loc: loc(),
+                            value: 1,
+                        },
+                        Expr::EInt {
+                            loc: loc(),
+                            value: 2,
+                        },
+                    ],
                 },
                 Safety::Safe,
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "correct args should be ok, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "correct args should be ok, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_struct_literal_type_check() {
         let defs = vec![
             make_module("test"),
-            make_struct("Point", vec![
-                FieldDef { name: "x".to_string(), typ: Typ::TInt },
-                FieldDef { name: "y".to_string(), typ: Typ::TInt },
-            ]),
-            make_func("main", vec![], None,
+            make_struct(
+                "Point",
+                vec![
+                    FieldDef {
+                        name: "x".to_string(),
+                        typ: Typ::TInt,
+                    },
+                    FieldDef {
+                        name: "y".to_string(),
+                        typ: Typ::TInt,
+                    },
+                ],
+            ),
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EStructLit {
                     loc: loc(),
                     name: "Point".to_string(),
                     fields: vec![
-                        ValueField { name: "x".to_string(), value: Expr::EInt { loc: loc(), value: 1 } },
-                        ValueField { name: "y".to_string(), value: Expr::EInt { loc: loc(), value: 2 } },
+                        ValueField {
+                            name: "x".to_string(),
+                            value: Expr::EInt {
+                                loc: loc(),
+                                value: 1,
+                            },
+                        },
+                        ValueField {
+                            name: "y".to_string(),
+                            value: Expr::EInt {
+                                loc: loc(),
+                                value: 2,
+                            },
+                        },
                     ],
                 },
                 Safety::Safe,
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "correct struct lit should be ok, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "correct struct lit should be ok, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_struct_literal_wrong_field_type() {
         let defs = vec![
             make_module("test"),
-            make_struct("Point", vec![
-                FieldDef { name: "x".to_string(), typ: Typ::TInt },
-            ]),
-            make_func("main", vec![], None,
+            make_struct(
+                "Point",
+                vec![FieldDef {
+                    name: "x".to_string(),
+                    typ: Typ::TInt,
+                }],
+            ),
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EStructLit {
                     loc: loc(),
                     name: "Point".to_string(),
-                    fields: vec![
-                        ValueField { name: "x".to_string(), value: Expr::EBool { loc: loc(), value: true } },
-                    ],
+                    fields: vec![ValueField {
+                        name: "x".to_string(),
+                        value: Expr::EBool {
+                            loc: loc(),
+                            value: true,
+                        },
+                    }],
                 },
                 Safety::Safe,
             ),
@@ -930,17 +1203,33 @@ mod tests {
     fn test_struct_literal_missing_field() {
         let defs = vec![
             make_module("test"),
-            make_struct("Point", vec![
-                FieldDef { name: "x".to_string(), typ: Typ::TInt },
-                FieldDef { name: "y".to_string(), typ: Typ::TInt },
-            ]),
-            make_func("main", vec![], None,
+            make_struct(
+                "Point",
+                vec![
+                    FieldDef {
+                        name: "x".to_string(),
+                        typ: Typ::TInt,
+                    },
+                    FieldDef {
+                        name: "y".to_string(),
+                        typ: Typ::TInt,
+                    },
+                ],
+            ),
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EStructLit {
                     loc: loc(),
                     name: "Point".to_string(),
-                    fields: vec![
-                        ValueField { name: "x".to_string(), value: Expr::EInt { loc: loc(), value: 1 } },
-                    ],
+                    fields: vec![ValueField {
+                        name: "x".to_string(),
+                        value: Expr::EInt {
+                            loc: loc(),
+                            value: 1,
+                        },
+                    }],
                 },
                 Safety::Safe,
             ),
@@ -954,7 +1243,10 @@ mod tests {
     fn test_unknown_struct() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EStructLit {
                     loc: loc(),
                     name: "NonExistent".to_string(),
@@ -972,18 +1264,29 @@ mod tests {
     fn test_field_access_ok() {
         let defs = vec![
             make_module("test"),
-            make_struct("Point", vec![
-                FieldDef { name: "x".to_string(), typ: Typ::TInt },
-            ]),
-            make_func("main", vec![], None,
+            make_struct(
+                "Point",
+                vec![FieldDef {
+                    name: "x".to_string(),
+                    typ: Typ::TInt,
+                }],
+            ),
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EFieldAccess {
                     loc: loc(),
                     expr: Box::new(Expr::EStructLit {
                         loc: loc(),
                         name: "Point".to_string(),
-                        fields: vec![
-                            ValueField { name: "x".to_string(), value: Expr::EInt { loc: loc(), value: 1 } },
-                        ],
+                        fields: vec![ValueField {
+                            name: "x".to_string(),
+                            value: Expr::EInt {
+                                loc: loc(),
+                                value: 1,
+                            },
+                        }],
                     }),
                     field: "x".to_string(),
                 },
@@ -991,25 +1294,40 @@ mod tests {
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "valid field access should be ok, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "valid field access should be ok, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_field_access_unknown_field() {
         let defs = vec![
             make_module("test"),
-            make_struct("Point", vec![
-                FieldDef { name: "x".to_string(), typ: Typ::TInt },
-            ]),
-            make_func("main", vec![], None,
+            make_struct(
+                "Point",
+                vec![FieldDef {
+                    name: "x".to_string(),
+                    typ: Typ::TInt,
+                }],
+            ),
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EFieldAccess {
                     loc: loc(),
                     expr: Box::new(Expr::EStructLit {
                         loc: loc(),
                         name: "Point".to_string(),
-                        fields: vec![
-                            ValueField { name: "x".to_string(), value: Expr::EInt { loc: loc(), value: 1 } },
-                        ],
+                        fields: vec![ValueField {
+                            name: "x".to_string(),
+                            value: Expr::EInt {
+                                loc: loc(),
+                                value: 1,
+                            },
+                        }],
                     }),
                     field: "z".to_string(),
                 },
@@ -1025,8 +1343,14 @@ mod tests {
     fn test_return_type_mismatch() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], Some(Typ::TInt),
-                Expr::EBool { loc: loc(), value: true },
+            make_func(
+                "main",
+                vec![],
+                Some(Typ::TInt),
+                Expr::EBool {
+                    loc: loc(),
+                    value: true,
+                },
                 Safety::Safe,
             ),
         ];
@@ -1039,31 +1363,46 @@ mod tests {
     fn test_return_type_match_ok() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], Some(Typ::TInt),
-                Expr::EInt { loc: loc(), value: 42 },
+            make_func(
+                "main",
+                vec![],
+                Some(Typ::TInt),
+                Expr::EInt {
+                    loc: loc(),
+                    value: 42,
+                },
                 Safety::Safe,
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "correct return type should be ok, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "correct return type should be ok, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_assignment_type_mismatch() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![
-                Param::POwn { name: "x".to_string(), typ: Typ::TInt },
-            ], None,
+            make_func(
+                "main",
+                vec![Param::POwn {
+                    name: "x".to_string(),
+                    typ: Typ::TInt,
+                }],
+                None,
                 Expr::EBlock {
                     loc: loc(),
-                    stmts: vec![
-                        Stmt::SAssign {
+                    stmts: vec![Stmt::SAssign {
+                        loc: loc(),
+                        name: "x".to_string(),
+                        expr: Box::new(Expr::EBool {
                             loc: loc(),
-                            name: "x".to_string(),
-                            expr: Box::new(Expr::EBool { loc: loc(), value: true }),
-                        },
-                    ],
+                            value: true,
+                        }),
+                    }],
                     result: Some(Box::new(Expr::EVoid { loc: loc() })),
                 },
                 Safety::Safe,
@@ -1078,12 +1417,21 @@ mod tests {
     fn test_array_type_consistency() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EArrayLit {
                     loc: loc(),
                     values: vec![
-                        Expr::EInt { loc: loc(), value: 1 },
-                        Expr::EBool { loc: loc(), value: true },
+                        Expr::EInt {
+                            loc: loc(),
+                            value: 1,
+                        },
+                        Expr::EBool {
+                            loc: loc(),
+                            value: true,
+                        },
                     ],
                 },
                 Safety::Safe,
@@ -1098,29 +1446,48 @@ mod tests {
     fn test_array_type_homogeneous_ok() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EArrayLit {
                     loc: loc(),
                     values: vec![
-                        Expr::EInt { loc: loc(), value: 1 },
-                        Expr::EInt { loc: loc(), value: 2 },
+                        Expr::EInt {
+                            loc: loc(),
+                            value: 1,
+                        },
+                        Expr::EInt {
+                            loc: loc(),
+                            value: 2,
+                        },
                     ],
                 },
                 Safety::Safe,
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "homogeneous array should be ok, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "homogeneous array should be ok, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_invalid_cast() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::ECast {
                     loc: loc(),
-                    expr: Box::new(Expr::EBool { loc: loc(), value: true }),
+                    expr: Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }),
                     to: Typ::TString,
                 },
                 Safety::Safe,
@@ -1135,27 +1502,43 @@ mod tests {
     fn test_valid_cast() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::ECast {
                     loc: loc(),
-                    expr: Box::new(Expr::EInt { loc: loc(), value: 65 }),
+                    expr: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 65,
+                    }),
                     to: Typ::TChar,
                 },
                 Safety::Safe,
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "int to char cast should be valid, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "int to char cast should be valid, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_while_condition_must_be_bool() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EWhile {
                     loc: loc(),
-                    cond: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                    cond: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
                     body: Box::new(Expr::EVoid { loc: loc() }),
                 },
                 Safety::Safe,
@@ -1170,10 +1553,16 @@ mod tests {
     fn test_while_valid() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EWhile {
                     loc: loc(),
-                    cond: Box::new(Expr::EBool { loc: loc(), value: true }),
+                    cond: Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }),
                     body: Box::new(Expr::EVoid { loc: loc() }),
                 },
                 Safety::Safe,
@@ -1187,11 +1576,17 @@ mod tests {
     fn test_for_loop_range_type() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EFor {
                     loc: loc(),
                     var: "i".to_string(),
-                    range: Box::new(Expr::EBool { loc: loc(), value: true }),
+                    range: Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }),
                     body: Box::new(Expr::EVoid { loc: loc() }),
                 },
                 Safety::Safe,
@@ -1206,7 +1601,10 @@ mod tests {
     fn test_block_let_inference() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EBlock {
                     loc: loc(),
                     stmts: vec![
@@ -1214,15 +1612,24 @@ mod tests {
                             loc: loc(),
                             mutable: false,
                             name: "x".to_string(),
-                            expr: Box::new(Expr::EInt { loc: loc(), value: 42 }),
+                            expr: Box::new(Expr::EInt {
+                                loc: loc(),
+                                value: 42,
+                            }),
                         },
                         Stmt::SExpr {
                             loc: loc(),
                             expr: Box::new(Expr::EBinOp {
                                 loc: loc(),
                                 op: BinOp::Add,
-                                left: Box::new(Expr::EVar { loc: loc(), name: "x".to_string() }),
-                                right: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                                left: Box::new(Expr::EVar {
+                                    loc: loc(),
+                                    name: "x".to_string(),
+                                }),
+                                right: Box::new(Expr::EInt {
+                                    loc: loc(),
+                                    value: 1,
+                                }),
                             }),
                         },
                     ],
@@ -1232,17 +1639,27 @@ mod tests {
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "let inference should work, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "let inference should work, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_deref_non_pointer() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EDeref {
                     loc: loc(),
-                    expr: Box::new(Expr::EInt { loc: loc(), value: 42 }),
+                    expr: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 42,
+                    }),
                 },
                 Safety::Safe,
             ),
@@ -1256,12 +1673,21 @@ mod tests {
     fn test_eq_operator_on_same_types() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EBinOp {
                     loc: loc(),
                     op: BinOp::Eq,
-                    left: Box::new(Expr::EInt { loc: loc(), value: 1 }),
-                    right: Box::new(Expr::EInt { loc: loc(), value: 2 }),
+                    left: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
+                    right: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 2,
+                    }),
                 },
                 Safety::Safe,
             ),
@@ -1274,12 +1700,21 @@ mod tests {
     fn test_eq_operator_type_mismatch() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EBinOp {
                     loc: loc(),
                     op: BinOp::Eq,
-                    left: Box::new(Expr::EInt { loc: loc(), value: 1 }),
-                    right: Box::new(Expr::EBool { loc: loc(), value: true }),
+                    left: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
+                    right: Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }),
                 },
                 Safety::Safe,
             ),
@@ -1293,7 +1728,10 @@ mod tests {
     fn test_nested_blocks() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], None,
+            make_func(
+                "main",
+                vec![],
+                None,
                 Expr::EBlock {
                     loc: loc(),
                     stmts: vec![
@@ -1301,80 +1739,112 @@ mod tests {
                             loc: loc(),
                             mutable: false,
                             name: "x".to_string(),
-                            expr: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                            expr: Box::new(Expr::EInt {
+                                loc: loc(),
+                                value: 1,
+                            }),
                         },
                         Stmt::SExpr {
                             loc: loc(),
                             expr: Box::new(Expr::EBlock {
                                 loc: loc(),
-                                stmts: vec![
-                                    Stmt::SLet {
+                                stmts: vec![Stmt::SLet {
+                                    loc: loc(),
+                                    mutable: false,
+                                    name: "y".to_string(),
+                                    expr: Box::new(Expr::EBool {
                                         loc: loc(),
-                                        mutable: false,
-                                        name: "y".to_string(),
-                                        expr: Box::new(Expr::EBool { loc: loc(), value: true }),
-                                    },
-                                ],
-                                result: Some(Box::new(Expr::EVar { loc: loc(), name: "y".to_string() })),
+                                        value: true,
+                                    }),
+                                }],
+                                result: Some(Box::new(Expr::EVar {
+                                    loc: loc(),
+                                    name: "y".to_string(),
+                                })),
                             }),
                         },
                     ],
                     result: Some(Box::new(Expr::EBinOp {
                         loc: loc(),
                         op: BinOp::Add,
-                        left: Box::new(Expr::EVar { loc: loc(), name: "x".to_string() }),
-                        right: Box::new(Expr::EInt { loc: loc(), value: 2 }),
+                        left: Box::new(Expr::EVar {
+                            loc: loc(),
+                            name: "x".to_string(),
+                        }),
+                        right: Box::new(Expr::EInt {
+                            loc: loc(),
+                            value: 2,
+                        }),
                     })),
                 },
                 Safety::Safe,
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "nested blocks with type inference should work, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "nested blocks with type inference should work, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_return_stmt_in_block() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], Some(Typ::TInt),
+            make_func(
+                "main",
+                vec![],
+                Some(Typ::TInt),
                 Expr::EBlock {
                     loc: loc(),
-                    stmts: vec![
-                        Stmt::SReturn {
+                    stmts: vec![Stmt::SReturn {
+                        loc: loc(),
+                        expr: Box::new(Expr::EInt {
                             loc: loc(),
-                            expr: Box::new(Expr::EInt { loc: loc(), value: 42 }),
-                        },
-                    ],
+                            value: 42,
+                        }),
+                    }],
                     result: Some(Box::new(Expr::EVoid { loc: loc() })),
                 },
                 Safety::Safe,
             ),
         ];
         let errs = check_program(&defs);
-        assert!(errs.is_empty(), "return int from int function should be ok, got: {:?}", errs);
+        assert!(
+            errs.is_empty(),
+            "return int from int function should be ok, got: {:?}",
+            errs
+        );
     }
 
     #[test]
     fn test_return_stmt_type_mismatch() {
         let defs = vec![
             make_module("test"),
-            make_func("main", vec![], Some(Typ::TInt),
+            make_func(
+                "main",
+                vec![],
+                Some(Typ::TInt),
                 Expr::EBlock {
                     loc: loc(),
-                    stmts: vec![
-                        Stmt::SReturn {
+                    stmts: vec![Stmt::SReturn {
+                        loc: loc(),
+                        expr: Box::new(Expr::EBool {
                             loc: loc(),
-                            expr: Box::new(Expr::EBool { loc: loc(), value: true }),
-                        },
-                    ],
+                            value: true,
+                        }),
+                    }],
                     result: Some(Box::new(Expr::EVoid { loc: loc() })),
                 },
                 Safety::Safe,
             ),
         ];
         let errs = check_program(&defs);
-        assert!(!errs.is_empty(), "return bool from int function should error");
+        assert!(
+            !errs.is_empty(),
+            "return bool from int function should error"
+        );
         assert!(errs.iter().any(|e| e.code == "E0017"));
     }
 }

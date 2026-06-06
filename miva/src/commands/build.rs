@@ -213,6 +213,15 @@ fn compile_file_to_cpp(
 
     if !test.is_empty() {
         let test_path = cache_dir.join(format!("{}.test.cpp", cache_key));
+        let test = if !header.is_empty() {
+            let basename = std::path::Path::new(&cache_key)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&cache_key);
+            format!("#include \"{}.h\"\n{}", basename, test)
+        } else {
+            test
+        };
         std::fs::write(&test_path, &test)?;
     }
 

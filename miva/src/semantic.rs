@@ -94,7 +94,7 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
             }
         }
         Expr::EMove { loc, name } => {
-            if ctx.vars.contains_key(name.as_str()) {
+            if let Some(info) = ctx.vars.get(name) {
                 mark_moved(ctx, loc, name);
             } else {
                 errs.push(Error::new(
@@ -1375,8 +1375,14 @@ mod tests {
                     range: Box::new(Expr::EArrayLit {
                         loc: loc(),
                         values: vec![
-                            Expr::EInt { loc: loc(), value: 1 },
-                            Expr::EInt { loc: loc(), value: 2 },
+                            Expr::EInt {
+                                loc: loc(),
+                                value: 1,
+                            },
+                            Expr::EInt {
+                                loc: loc(),
+                                value: 2,
+                            },
                         ],
                     }),
                     body: Box::new(Expr::EVar {
@@ -1388,10 +1394,7 @@ mod tests {
             ),
         ];
         let errs = check_program(&defs);
-        let var_errs: Vec<_> = errs
-            .iter()
-            .filter(|e| e.code == "E0007")
-            .collect();
+        let var_errs: Vec<_> = errs.iter().filter(|e| e.code == "E0007").collect();
         assert!(
             var_errs.is_empty(),
             "loop variable 'i' should be accessible in body, got: {:?}",
