@@ -274,6 +274,18 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
                             },
                         );
                     }
+                    Stmt::SLetTyped { loc, name, typ, expr } => {
+                        errs.extend(check_expr(ctx, symbol_table, expr));
+                        ctx.vars.insert(
+                            name.clone(),
+                            VarInfo {
+                                typ: typ.clone(),
+                                state: VarState::Valid,
+                                is_mutable: false,
+                                is_ref_param: false,
+                            },
+                        );
+                    }
                     Stmt::SAssign { loc, name, expr } => {
                         if let Some(var_info) = ctx.vars.get(name.as_str()) {
                             let is_mutable = var_info.is_mutable;

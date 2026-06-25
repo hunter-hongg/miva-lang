@@ -315,6 +315,17 @@ fn cxx_block(stmts: &[Stmt], result: &Option<Box<Expr>>, depth: usize) -> String
                 expr_str
             )
         }
+        Stmt::SLetTyped { name, typ, expr, .. } => {
+            let expr_str = cxx_expr(expr, inner);
+            format!(
+                "{}{}{} {} = {};\n",
+                acc,
+                indent_str(inner),
+                cxx_type(typ),
+                name,
+                expr_str
+            )
+        }
         _ => format!("{}{}", acc, cxx_stmt(inner, stmt)),
     });
     let result_str = match result {
@@ -340,6 +351,9 @@ fn cxx_stmt(depth: usize, stmt: &Stmt) -> String {
         } => {
             let mut_str = if *mutable { "auto " } else { "const auto " };
             format!("{}{}{} = {};\n", ind, mut_str, name, cxx_expr(expr, depth))
+        }
+        Stmt::SLetTyped { name, typ, expr, .. } => {
+            format!("{}{} {} = {};\n", ind, cxx_type(typ), name, cxx_expr(expr, depth))
         }
         Stmt::SReturn { expr, .. } => {
             format!("{}return {};\n", ind, cxx_expr(expr, depth))
@@ -524,15 +538,15 @@ fn cxx_include_path(path: &str) -> String {
         Some(proj_name) => {
             if path.starts_with(&proj_name) {
                 if parts.len() > 1 {
-                    format!("#include <src/{}.h>\n", parts[1..].join("/"))
+                    format!("#include <src/{}.miva.h>\n", parts[1..].join("/"))
                 } else {
                     String::new()
                 }
             } else if let Some(head) = parts.first() {
                 if parts.len() > 1 {
-                    format!("#include <{}/src/{}.h>\n", head, parts[1..].join("/"))
+                    format!("#include <{}/src/{}.miva.h>\n", head, parts[1..].join("/"))
                 } else {
-                    format!("#include <{}.h>\n", head)
+                    format!("#include <{}.miva.h>\n", head)
                 }
             } else {
                 String::new()
@@ -817,32 +831,48 @@ mod tests {
 
     #[test]
     fn test_cxx_type_array() {
-        let typ = Typ::TArray { of: Box::new(Typ::TInt) };
+        let typ = Typ::TArray {
+            of: Box::new(Typ::TInt),
+        };
         assert_eq!(cxx_type(&typ), "std::vector<mvp_builtin_int>");
     }
 
     #[test]
     fn test_cxx_type_nested_array() {
-        let inner = Typ::TArray { of: Box::new(Typ::TInt) };
-        let outer = Typ::TArray { of: Box::new(inner) };
-        assert_eq!(cxx_type(&outer), "std::vector<std::vector<mvp_builtin_int>>");
+        let inner = Typ::TArray {
+            of: Box::new(Typ::TInt),
+        };
+        let outer = Typ::TArray {
+            of: Box::new(inner),
+        };
+        assert_eq!(
+            cxx_type(&outer),
+            "std::vector<std::vector<mvp_builtin_int>>"
+        );
     }
 
     #[test]
     fn test_cxx_type_struct() {
-        let typ = Typ::TStruct { name: "Point".into(), fields: vec![] };
+        let typ = Typ::TStruct {
+            name: "Point".into(),
+            fields: vec![],
+        };
         assert_eq!(cxx_type(&typ), "Point");
     }
 
     #[test]
     fn test_cxx_type_ptr() {
-        let typ = Typ::TPtr { to: Box::new(Typ::TInt) };
+        let typ = Typ::TPtr {
+            to: Box::new(Typ::TInt),
+        };
         assert_eq!(cxx_type(&typ), "mvp_builtin_int*");
     }
 
     #[test]
     fn test_cxx_type_box() {
-        let typ = Typ::TBox { of: Box::new(Typ::TInt) };
+        let typ = Typ::TBox {
+            of: Box::new(Typ::TInt),
+        };
         assert_eq!(cxx_type(&typ), "mvp_builtin_box<mvp_builtin_int>");
     }
 
@@ -865,19 +895,28 @@ mod tests {
 
     #[test]
     fn test_cxx_param_ref() {
-        let p = Param::PRef { name: "x".into(), typ: Typ::TInt };
+        let p = Param::PRef {
+            name: "x".into(),
+            typ: Typ::TInt,
+        };
         assert_eq!(cxx_param(&p), "mvp_builtin_int const& x");
     }
 
     #[test]
     fn test_cxx_param_own() {
-        let p = Param::POwn { name: "flag".into(), typ: Typ::TBool };
+        let p = Param::POwn {
+            name: "flag".into(),
+            typ: Typ::TBool,
+        };
         assert_eq!(cxx_param(&p), "mvp_builtin_boolean flag");
     }
 
     #[test]
     fn test_cxx_param_ref_string() {
-        let p = Param::PRef { name: "s".into(), typ: Typ::TString };
+        let p = Param::PRef {
+            name: "s".into(),
+            typ: Typ::TString,
+        };
         assert_eq!(cxx_param(&p), "mvp_builtin_string const& s");
     }
 
@@ -898,11 +937,20 @@ mod tests {
     #[test]
     fn test_cxx_func_decl_with_params() {
         let params = vec![
-            Param::POwn { name: "a".into(), typ: Typ::TInt },
-            Param::POwn { name: "b".into(), typ: Typ::TInt },
+            Param::POwn {
+                name: "a".into(),
+                typ: Typ::TInt,
+            },
+            Param::POwn {
+                name: "b".into(),
+                typ: Typ::TInt,
+            },
         ];
         let result = cxx_func_decl("add", &params, &Some(Typ::TInt));
-        assert_eq!(result, "mvp_builtin_int add(mvp_builtin_int a, mvp_builtin_int b);\n");
+        assert_eq!(
+            result,
+            "mvp_builtin_int add(mvp_builtin_int a, mvp_builtin_int b);\n"
+        );
     }
 
     // ===== map_builtin =====
@@ -1090,67 +1138,100 @@ mod tests {
 
     #[test]
     fn test_cxx_expr_int() {
-        let e = Expr::EInt { loc: loc(), value: 42 };
+        let e = Expr::EInt {
+            loc: loc(),
+            value: 42,
+        };
         assert_eq!(cxx_expr(&e, 0), "static_cast<mvp_builtin_int>(42)");
     }
 
     #[test]
     fn test_cxx_expr_neg_int() {
-        let e = Expr::EInt { loc: loc(), value: -5 };
+        let e = Expr::EInt {
+            loc: loc(),
+            value: -5,
+        };
         assert_eq!(cxx_expr(&e, 0), "static_cast<mvp_builtin_int>(-5)");
     }
 
     #[test]
     fn test_cxx_expr_bool_true() {
-        let e = Expr::EBool { loc: loc(), value: true };
+        let e = Expr::EBool {
+            loc: loc(),
+            value: true,
+        };
         assert_eq!(cxx_expr(&e, 0), "mvp_builtin_boolean(true)");
     }
 
     #[test]
     fn test_cxx_expr_bool_false() {
-        let e = Expr::EBool { loc: loc(), value: false };
+        let e = Expr::EBool {
+            loc: loc(),
+            value: false,
+        };
         assert_eq!(cxx_expr(&e, 0), "mvp_builtin_boolean(false)");
     }
 
     #[test]
     fn test_cxx_expr_float() {
-        let e = Expr::EFloat { loc: loc(), value: 3.14 };
+        let e = Expr::EFloat {
+            loc: loc(),
+            value: 3.14,
+        };
         assert_eq!(cxx_expr(&e, 0), "mvp_builtin_float(3.14)");
     }
 
     #[test]
     fn test_cxx_expr_float_zero() {
-        let e = Expr::EFloat { loc: loc(), value: 0.0 };
+        let e = Expr::EFloat {
+            loc: loc(),
+            value: 0.0,
+        };
         assert_eq!(cxx_expr(&e, 0), "mvp_builtin_float(0)");
     }
 
     #[test]
     fn test_cxx_expr_char() {
-        let e = Expr::EChar { loc: loc(), value: "a".into() };
+        let e = Expr::EChar {
+            loc: loc(),
+            value: "a".into(),
+        };
         assert_eq!(cxx_expr(&e, 0), "'a'");
     }
 
     #[test]
     fn test_cxx_expr_string() {
-        let e = Expr::EString { loc: loc(), value: "hello".into() };
+        let e = Expr::EString {
+            loc: loc(),
+            value: "hello".into(),
+        };
         assert_eq!(cxx_expr(&e, 0), "mvp_builtin_string(\"hello\")");
     }
 
     #[test]
     fn test_cxx_expr_var() {
-        let e = Expr::EVar { loc: loc(), name: "x".into() };
+        let e = Expr::EVar {
+            loc: loc(),
+            name: "x".into(),
+        };
         assert_eq!(cxx_expr(&e, 0), "x");
     }
 
     #[test]
     fn test_cxx_expr_move() {
-        let e = Expr::EMove { loc: loc(), name: "x".into() };
+        let e = Expr::EMove {
+            loc: loc(),
+            name: "x".into(),
+        };
         assert_eq!(cxx_expr(&e, 0), "std::move(x)");
     }
 
     #[test]
     fn test_cxx_expr_clone() {
-        let e = Expr::EClone { loc: loc(), name: "x".into() };
+        let e = Expr::EClone {
+            loc: loc(),
+            name: "x".into(),
+        };
         assert_eq!(cxx_expr(&e, 0), "decltype(x)(x)");
     }
 
@@ -1162,19 +1243,35 @@ mod tests {
 
     #[test]
     fn test_cxx_expr_addr() {
-        let e = Expr::EAddr { loc: loc(), expr: Box::new(Expr::EVar { loc: loc(), name: "x".into() }) };
+        let e = Expr::EAddr {
+            loc: loc(),
+            expr: Box::new(Expr::EVar {
+                loc: loc(),
+                name: "x".into(),
+            }),
+        };
         assert_eq!(cxx_expr(&e, 0), "&(x)");
     }
 
     #[test]
     fn test_cxx_expr_deref() {
-        let e = Expr::EDeref { loc: loc(), expr: Box::new(Expr::EVar { loc: loc(), name: "p".into() }) };
+        let e = Expr::EDeref {
+            loc: loc(),
+            expr: Box::new(Expr::EVar {
+                loc: loc(),
+                name: "p".into(),
+            }),
+        };
         assert_eq!(cxx_expr(&e, 0), "*(p)");
     }
 
     #[test]
     fn test_cxx_expr_macro_empty() {
-        let e = Expr::EMacro { loc: loc(), name: "something".into(), args: vec![] };
+        let e = Expr::EMacro {
+            loc: loc(),
+            name: "something".into(),
+            args: vec![],
+        };
         assert_eq!(cxx_expr(&e, 0), "");
     }
 
@@ -1182,7 +1279,10 @@ mod tests {
     fn test_cxx_expr_field_access() {
         let e = Expr::EFieldAccess {
             loc: loc(),
-            expr: Box::new(Expr::EVar { loc: loc(), name: "p".into() }),
+            expr: Box::new(Expr::EVar {
+                loc: loc(),
+                name: "p".into(),
+            }),
             field: "x".into(),
         };
         assert_eq!(cxx_expr(&e, 0), "p.x");
@@ -1192,51 +1292,112 @@ mod tests {
     fn test_cxx_expr_cast() {
         let e = Expr::ECast {
             loc: loc(),
-            expr: Box::new(Expr::EInt { loc: loc(), value: 65 }),
+            expr: Box::new(Expr::EInt {
+                loc: loc(),
+                value: 65,
+            }),
             to: Typ::TChar,
         };
-        assert_eq!(cxx_expr(&e, 0), "static_cast<mvp_builtin_byte>(static_cast<mvp_builtin_int>(65))");
+        assert_eq!(
+            cxx_expr(&e, 0),
+            "static_cast<mvp_builtin_byte>(static_cast<mvp_builtin_int>(65))"
+        );
     }
 
     // ===== cxx_binop =====
 
     #[test]
     fn test_cxx_binop_add() {
-        let left = Expr::EVar { loc: loc(), name: "a".into() };
-        let right = Expr::EVar { loc: loc(), name: "b".into() };
-        let e = Expr::EBinOp { loc: loc(), op: BinOp::Add, left: Box::new(left), right: Box::new(right) };
+        let left = Expr::EVar {
+            loc: loc(),
+            name: "a".into(),
+        };
+        let right = Expr::EVar {
+            loc: loc(),
+            name: "b".into(),
+        };
+        let e = Expr::EBinOp {
+            loc: loc(),
+            op: BinOp::Add,
+            left: Box::new(left),
+            right: Box::new(right),
+        };
         assert_eq!(cxx_expr(&e, 0), "(a + b)");
     }
 
     #[test]
     fn test_cxx_binop_sub() {
-        let left = Expr::EVar { loc: loc(), name: "a".into() };
-        let right = Expr::EVar { loc: loc(), name: "b".into() };
-        let e = Expr::EBinOp { loc: loc(), op: BinOp::Sub, left: Box::new(left), right: Box::new(right) };
+        let left = Expr::EVar {
+            loc: loc(),
+            name: "a".into(),
+        };
+        let right = Expr::EVar {
+            loc: loc(),
+            name: "b".into(),
+        };
+        let e = Expr::EBinOp {
+            loc: loc(),
+            op: BinOp::Sub,
+            left: Box::new(left),
+            right: Box::new(right),
+        };
         assert_eq!(cxx_expr(&e, 0), "(a - b)");
     }
 
     #[test]
     fn test_cxx_binop_mul() {
-        let left = Expr::EVar { loc: loc(), name: "a".into() };
-        let right = Expr::EVar { loc: loc(), name: "b".into() };
-        let e = Expr::EBinOp { loc: loc(), op: BinOp::Mul, left: Box::new(left), right: Box::new(right) };
+        let left = Expr::EVar {
+            loc: loc(),
+            name: "a".into(),
+        };
+        let right = Expr::EVar {
+            loc: loc(),
+            name: "b".into(),
+        };
+        let e = Expr::EBinOp {
+            loc: loc(),
+            op: BinOp::Mul,
+            left: Box::new(left),
+            right: Box::new(right),
+        };
         assert_eq!(cxx_expr(&e, 0), "(a * b)");
     }
 
     #[test]
     fn test_cxx_binop_eq() {
-        let left = Expr::EVar { loc: loc(), name: "a".into() };
-        let right = Expr::EVar { loc: loc(), name: "b".into() };
-        let e = Expr::EBinOp { loc: loc(), op: BinOp::Eq, left: Box::new(left), right: Box::new(right) };
+        let left = Expr::EVar {
+            loc: loc(),
+            name: "a".into(),
+        };
+        let right = Expr::EVar {
+            loc: loc(),
+            name: "b".into(),
+        };
+        let e = Expr::EBinOp {
+            loc: loc(),
+            op: BinOp::Eq,
+            left: Box::new(left),
+            right: Box::new(right),
+        };
         assert_eq!(cxx_expr(&e, 0), "(a == b)");
     }
 
     #[test]
     fn test_cxx_binop_neq() {
-        let left = Expr::EVar { loc: loc(), name: "a".into() };
-        let right = Expr::EVar { loc: loc(), name: "b".into() };
-        let e = Expr::EBinOp { loc: loc(), op: BinOp::Neq, left: Box::new(left), right: Box::new(right) };
+        let left = Expr::EVar {
+            loc: loc(),
+            name: "a".into(),
+        };
+        let right = Expr::EVar {
+            loc: loc(),
+            name: "b".into(),
+        };
+        let e = Expr::EBinOp {
+            loc: loc(),
+            op: BinOp::Neq,
+            left: Box::new(left),
+            right: Box::new(right),
+        };
         assert_eq!(cxx_expr(&e, 0), "(a != b)");
     }
 
@@ -1244,7 +1405,11 @@ mod tests {
 
     #[test]
     fn test_cxx_call_builtin_no_args() {
-        let e = Expr::ECall { loc: loc(), name: "println".into(), args: vec![] };
+        let e = Expr::ECall {
+            loc: loc(),
+            name: "println".into(),
+            args: vec![],
+        };
         assert_eq!(cxx_expr(&e, 0), "mvp_println()");
     }
 
@@ -1253,7 +1418,10 @@ mod tests {
         let e = Expr::ECall {
             loc: loc(),
             name: "printlns".into(),
-            args: vec![Expr::EString { loc: loc(), value: "hi".into() }],
+            args: vec![Expr::EString {
+                loc: loc(),
+                value: "hi".into(),
+            }],
         };
         assert_eq!(cxx_expr(&e, 0), "mvp_printlns(mvp_builtin_string(\"hi\"))");
     }
@@ -1263,9 +1431,21 @@ mod tests {
         let e = Expr::ECall {
             loc: loc(),
             name: "myfunc".into(),
-            args: vec![Expr::EInt { loc: loc(), value: 1 }, Expr::EInt { loc: loc(), value: 2 }],
+            args: vec![
+                Expr::EInt {
+                    loc: loc(),
+                    value: 1,
+                },
+                Expr::EInt {
+                    loc: loc(),
+                    value: 2,
+                },
+            ],
         };
-        assert_eq!(cxx_expr(&e, 0), "myfunc(static_cast<mvp_builtin_int>(1), static_cast<mvp_builtin_int>(2))");
+        assert_eq!(
+            cxx_expr(&e, 0),
+            "myfunc(static_cast<mvp_builtin_int>(1), static_cast<mvp_builtin_int>(2))"
+        );
     }
 
     #[test]
@@ -1284,8 +1464,14 @@ mod tests {
     fn test_cxx_if_no_else() {
         let e = Expr::EIf {
             loc: loc(),
-            cond: Box::new(Expr::EBool { loc: loc(), value: true }),
-            then: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+            cond: Box::new(Expr::EBool {
+                loc: loc(),
+                value: true,
+            }),
+            then: Box::new(Expr::EInt {
+                loc: loc(),
+                value: 1,
+            }),
             else_: None,
         };
         assert_eq!(
@@ -1298,9 +1484,18 @@ mod tests {
     fn test_cxx_if_with_else() {
         let e = Expr::EIf {
             loc: loc(),
-            cond: Box::new(Expr::EBool { loc: loc(), value: true }),
-            then: Box::new(Expr::EInt { loc: loc(), value: 1 }),
-            else_: Some(Box::new(Expr::EInt { loc: loc(), value: 2 })),
+            cond: Box::new(Expr::EBool {
+                loc: loc(),
+                value: true,
+            }),
+            then: Box::new(Expr::EInt {
+                loc: loc(),
+                value: 1,
+            }),
+            else_: Some(Box::new(Expr::EInt {
+                loc: loc(),
+                value: 2,
+            })),
         };
         assert_eq!(
             cxx_expr(&e, 0),
@@ -1314,7 +1509,10 @@ mod tests {
     fn test_cxx_while() {
         let e = Expr::EWhile {
             loc: loc(),
-            cond: Box::new(Expr::EBool { loc: loc(), value: true }),
+            cond: Box::new(Expr::EBool {
+                loc: loc(),
+                value: true,
+            }),
             body: Box::new(Expr::EVoid { loc: loc() }),
         };
         assert_eq!(
@@ -1344,7 +1542,10 @@ mod tests {
         let e = Expr::EFor {
             loc: loc(),
             var: "i".into(),
-            range: Box::new(Expr::EVar { loc: loc(), name: "items".into() }),
+            range: Box::new(Expr::EVar {
+                loc: loc(),
+                name: "items".into(),
+            }),
             body: Box::new(Expr::EVoid { loc: loc() }),
         };
         assert_eq!(
@@ -1371,8 +1572,20 @@ mod tests {
             loc: loc(),
             name: "Point".into(),
             fields: vec![
-                ValueField { name: "x".into(), value: Expr::EInt { loc: loc(), value: 1 } },
-                ValueField { name: "y".into(), value: Expr::EInt { loc: loc(), value: 2 } },
+                ValueField {
+                    name: "x".into(),
+                    value: Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    },
+                },
+                ValueField {
+                    name: "y".into(),
+                    value: Expr::EInt {
+                        loc: loc(),
+                        value: 2,
+                    },
+                },
             ],
         };
         assert_eq!(
@@ -1387,10 +1600,19 @@ mod tests {
     fn test_cxx_choose_single_case() {
         let e = Expr::EChoose {
             loc: loc(),
-            var: Box::new(Expr::EVar { loc: loc(), name: "x".into() }),
+            var: Box::new(Expr::EVar {
+                loc: loc(),
+                name: "x".into(),
+            }),
             cases: vec![WhenCase {
-                when: Box::new(Expr::EInt { loc: loc(), value: 1 }),
-                then: Box::new(Expr::EInt { loc: loc(), value: 10 }),
+                when: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 1,
+                }),
+                then: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 10,
+                }),
             }],
             otherwise: None,
         };
@@ -1404,12 +1626,24 @@ mod tests {
     fn test_cxx_choose_with_otherwise() {
         let e = Expr::EChoose {
             loc: loc(),
-            var: Box::new(Expr::EVar { loc: loc(), name: "x".into() }),
+            var: Box::new(Expr::EVar {
+                loc: loc(),
+                name: "x".into(),
+            }),
             cases: vec![WhenCase {
-                when: Box::new(Expr::EInt { loc: loc(), value: 1 }),
-                then: Box::new(Expr::EInt { loc: loc(), value: 10 }),
+                when: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 1,
+                }),
+                then: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 10,
+                }),
             }],
-            otherwise: Some(Box::new(Expr::EInt { loc: loc(), value: 0 })),
+            otherwise: Some(Box::new(Expr::EInt {
+                loc: loc(),
+                value: 0,
+            })),
         };
         let result = cxx_expr(&e, 0);
         assert!(result.contains("else"));
@@ -1420,7 +1654,10 @@ mod tests {
 
     #[test]
     fn test_cxx_array_lit_empty() {
-        let e = Expr::EArrayLit { loc: loc(), values: vec![] };
+        let e = Expr::EArrayLit {
+            loc: loc(),
+            values: vec![],
+        };
         assert_eq!(cxx_expr(&e, 0), "std::vector{}");
     }
 
@@ -1429,8 +1666,14 @@ mod tests {
         let e = Expr::EArrayLit {
             loc: loc(),
             values: vec![
-                Expr::EInt { loc: loc(), value: 1 },
-                Expr::EInt { loc: loc(), value: 2 },
+                Expr::EInt {
+                    loc: loc(),
+                    value: 1,
+                },
+                Expr::EInt {
+                    loc: loc(),
+                    value: 2,
+                },
             ],
         };
         assert_eq!(
@@ -1443,7 +1686,11 @@ mod tests {
 
     #[test]
     fn test_cxx_block_empty() {
-        let e = Expr::EBlock { loc: loc(), stmts: vec![], result: None };
+        let e = Expr::EBlock {
+            loc: loc(),
+            stmts: vec![],
+            result: None,
+        };
         assert_eq!(cxx_expr(&e, 0), "([&]() {\n})()");
     }
 
@@ -1455,9 +1702,15 @@ mod tests {
                 loc: loc(),
                 mutable: false,
                 name: "x".into(),
-                expr: Box::new(Expr::EInt { loc: loc(), value: 42 }),
+                expr: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 42,
+                }),
             }],
-            result: Some(Box::new(Expr::EVar { loc: loc(), name: "x".into() })),
+            result: Some(Box::new(Expr::EVar {
+                loc: loc(),
+                name: "x".into(),
+            })),
         };
         assert_eq!(
             cxx_expr(&e, 0),
@@ -1473,7 +1726,10 @@ mod tests {
                 loc: loc(),
                 mutable: true,
                 name: "x".into(),
-                expr: Box::new(Expr::EInt { loc: loc(), value: 0 }),
+                expr: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 0,
+                }),
             }],
             result: None,
         };
@@ -1492,14 +1748,20 @@ mod tests {
                     loc: loc(),
                     mutable: false,
                     name: "x".into(),
-                    expr: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                    expr: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
                 },
                 Stmt::SExpr {
                     loc: loc(),
                     expr: Box::new(Expr::ECall {
                         loc: loc(),
                         name: "println".into(),
-                        args: vec![Expr::EVar { loc: loc(), name: "x".into() }],
+                        args: vec![Expr::EVar {
+                            loc: loc(),
+                            name: "x".into(),
+                        }],
                     }),
                 },
             ],
@@ -1519,9 +1781,15 @@ mod tests {
             loc: loc(),
             mutable: false,
             name: "x".into(),
-            expr: Box::new(Expr::EInt { loc: loc(), value: 5 }),
+            expr: Box::new(Expr::EInt {
+                loc: loc(),
+                value: 5,
+            }),
         };
-        assert_eq!(cxx_stmt(1, &s), "  const auto x = static_cast<mvp_builtin_int>(5);\n");
+        assert_eq!(
+            cxx_stmt(1, &s),
+            "  const auto x = static_cast<mvp_builtin_int>(5);\n"
+        );
     }
 
     #[test]
@@ -1530,18 +1798,30 @@ mod tests {
             loc: loc(),
             mutable: true,
             name: "counter".into(),
-            expr: Box::new(Expr::EInt { loc: loc(), value: 0 }),
+            expr: Box::new(Expr::EInt {
+                loc: loc(),
+                value: 0,
+            }),
         };
-        assert_eq!(cxx_stmt(1, &s), "  auto counter = static_cast<mvp_builtin_int>(0);\n");
+        assert_eq!(
+            cxx_stmt(1, &s),
+            "  auto counter = static_cast<mvp_builtin_int>(0);\n"
+        );
     }
 
     #[test]
     fn test_cxx_stmt_return() {
         let s = Stmt::SReturn {
             loc: loc(),
-            expr: Box::new(Expr::EInt { loc: loc(), value: 42 }),
+            expr: Box::new(Expr::EInt {
+                loc: loc(),
+                value: 42,
+            }),
         };
-        assert_eq!(cxx_stmt(0, &s), "return static_cast<mvp_builtin_int>(42);\n");
+        assert_eq!(
+            cxx_stmt(0, &s),
+            "return static_cast<mvp_builtin_int>(42);\n"
+        );
     }
 
     #[test]
@@ -1562,14 +1842,20 @@ mod tests {
         let s = Stmt::SAssign {
             loc: loc(),
             name: "x".into(),
-            expr: Box::new(Expr::EInt { loc: loc(), value: 10 }),
+            expr: Box::new(Expr::EInt {
+                loc: loc(),
+                value: 10,
+            }),
         };
         assert_eq!(cxx_stmt(0, &s), "x = static_cast<mvp_builtin_int>(10);\n");
     }
 
     #[test]
     fn test_cxx_stmt_cintro_empty() {
-        let s = Stmt::SCIntro { loc: loc(), content: "some c code".into() };
+        let s = Stmt::SCIntro {
+            loc: loc(),
+            content: "some c code".into(),
+        };
         assert_eq!(cxx_stmt(0, &s), "");
     }
 
@@ -1585,16 +1871,25 @@ mod tests {
             loc: loc(),
             mutable: false,
             name: "x".into(),
-            expr: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+            expr: Box::new(Expr::EInt {
+                loc: loc(),
+                value: 1,
+            }),
         };
-        assert_eq!(cxx_stmt(2, &s), "    const auto x = static_cast<mvp_builtin_int>(1);\n");
+        assert_eq!(
+            cxx_stmt(2, &s),
+            "    const auto x = static_cast<mvp_builtin_int>(1);\n"
+        );
     }
 
     // ===== analyze_block =====
 
     #[test]
     fn test_analyze_block_non_block_returns_none() {
-        let e = Expr::EInt { loc: loc(), value: 1 };
+        let e = Expr::EInt {
+            loc: loc(),
+            value: 1,
+        };
         assert!(analyze_block(&e, 0, "mvp_builtin_int").is_none());
     }
 
@@ -1606,7 +1901,10 @@ mod tests {
                 loc: loc(),
                 mutable: false,
                 name: "x".into(),
-                expr: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                expr: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 1,
+                }),
             }],
             result: None,
         };
@@ -1620,10 +1918,15 @@ mod tests {
         let body = Expr::EBlock {
             loc: loc(),
             stmts: vec![],
-            result: Some(Box::new(Expr::EInt { loc: loc(), value: 42 })),
+            result: Some(Box::new(Expr::EInt {
+                loc: loc(),
+                value: 42,
+            })),
         };
         let flow = analyze_block(&body, 0, "mvp_builtin_int").unwrap();
-        assert!(flow.ret_line.contains("return static_cast<mvp_builtin_int>(42)"));
+        assert!(flow
+            .ret_line
+            .contains("return static_cast<mvp_builtin_int>(42)"));
     }
 
     #[test]
@@ -1635,11 +1938,17 @@ mod tests {
                     loc: loc(),
                     mutable: false,
                     name: "x".into(),
-                    expr: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                    expr: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
                 },
                 Stmt::SExpr {
                     loc: loc(),
-                    expr: Box::new(Expr::EVar { loc: loc(), name: "x".into() }),
+                    expr: Box::new(Expr::EVar {
+                        loc: loc(),
+                        name: "x".into(),
+                    }),
                 },
             ],
             result: None,
@@ -1658,11 +1967,17 @@ mod tests {
                 loc: loc(),
                 mutable: false,
                 name: "x".into(),
-                expr: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                expr: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 1,
+                }),
             },
             Stmt::SExpr {
                 loc: loc(),
-                expr: Box::new(Expr::EVar { loc: loc(), name: "x".into() }),
+                expr: Box::new(Expr::EVar {
+                    loc: loc(),
+                    name: "x".into(),
+                }),
             },
         ];
         let (result_stmts, last_expr) = take_last_expr(&stmts, 0);
@@ -1679,7 +1994,10 @@ mod tests {
             loc: loc(),
             mutable: false,
             name: "x".into(),
-            expr: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+            expr: Box::new(Expr::EInt {
+                loc: loc(),
+                value: 1,
+            }),
         }];
         let (result_stmts, last_expr) = take_last_expr(&stmts, 0);
         assert_eq!(result_stmts.len(), 1);
@@ -1724,7 +2042,11 @@ mod tests {
 
     #[test]
     fn test_is_main_func_non_func() {
-        let def = Def::DStruct { loc: loc(), name: "Foo".into(), fields: vec![] };
+        let def = Def::DStruct {
+            loc: loc(),
+            name: "Foo".into(),
+            fields: vec![],
+        };
         assert!(!is_main_func(&def));
     }
 
@@ -1739,11 +2061,20 @@ mod tests {
     #[test]
     fn test_cxx_struct_def_with_fields() {
         let fields = vec![
-            FieldDef { name: "x".into(), typ: Typ::TInt },
-            FieldDef { name: "y".into(), typ: Typ::TBool },
+            FieldDef {
+                name: "x".into(),
+                typ: Typ::TInt,
+            },
+            FieldDef {
+                name: "y".into(),
+                typ: Typ::TBool,
+            },
         ];
         let result = cxx_struct_def("Point", &fields, "".into(), 1);
-        assert_eq!(result, "struct Point {\n  mvp_builtin_int x;\n  mvp_builtin_boolean y;\n};\n\n");
+        assert_eq!(
+            result,
+            "struct Point {\n  mvp_builtin_int x;\n  mvp_builtin_boolean y;\n};\n\n"
+        );
     }
 
     // ===== cxx_func helpers =====
@@ -1756,7 +2087,10 @@ mod tests {
                 loc: loc(),
                 mutable: false,
                 name: "x".into(),
-                expr: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                expr: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 1,
+                }),
             }],
             result: None,
         };
@@ -1784,14 +2118,29 @@ mod tests {
     #[test]
     fn test_cxx_cfunc_no_params() {
         let result = cxx_cfunc("my_c_func", &[], &None, "  // custom code\n", "".into());
-        assert_eq!(result, " mvp_builtin_unit my_c_func() {\n  // custom code\n}\n\n");
+        assert_eq!(
+            result,
+            " mvp_builtin_unit my_c_func() {\n  // custom code\n}\n\n"
+        );
     }
 
     #[test]
     fn test_cxx_cfunc_with_params_and_return() {
-        let params = vec![Param::POwn { name: "x".into(), typ: Typ::TInt }];
-        let result = cxx_cfunc("add_one", &params, &Some(Typ::TInt), "  return x + 1;\n", "".into());
-        assert_eq!(result, " mvp_builtin_int add_one(mvp_builtin_int x) {\n  return x + 1;\n}\n\n");
+        let params = vec![Param::POwn {
+            name: "x".into(),
+            typ: Typ::TInt,
+        }];
+        let result = cxx_cfunc(
+            "add_one",
+            &params,
+            &Some(Typ::TInt),
+            "  return x + 1;\n",
+            "".into(),
+        );
+        assert_eq!(
+            result,
+            " mvp_builtin_int add_one(mvp_builtin_int x) {\n  return x + 1;\n}\n\n"
+        );
     }
 
     // ===== cxx_normal_func =====
@@ -1805,7 +2154,10 @@ mod tests {
                 expr: Box::new(Expr::ECall {
                     loc: loc(),
                     name: "println".into(),
-                    args: vec![Expr::EString { loc: loc(), value: "hi".into() }],
+                    args: vec![Expr::EString {
+                        loc: loc(),
+                        value: "hi".into(),
+                    }],
                 }),
             }],
             result: None,
@@ -1821,7 +2173,10 @@ mod tests {
         let body = Expr::EBlock {
             loc: loc(),
             stmts: vec![],
-            result: Some(Box::new(Expr::EInt { loc: loc(), value: 42 })),
+            result: Some(Box::new(Expr::EInt {
+                loc: loc(),
+                value: 42,
+            })),
         };
         let result = cxx_normal_func("answer", &[], &Some(Typ::TInt), &body, "".into(), 0);
         assert!(result.contains("mvp_builtin_int answer()"));
@@ -1836,49 +2191,78 @@ mod tests {
             args: vec![],
         };
         let result = cxx_normal_func("do_it", &[], &None, &body, "".into(), 0);
-        assert_eq!(result, " mvp_builtin_unit do_it() { mvp_println(); return mvp_builtin_void; }\n\n");
+        assert_eq!(
+            result,
+            " mvp_builtin_unit do_it() { mvp_println(); return mvp_builtin_void; }\n\n"
+        );
     }
 
     #[test]
     fn test_cxx_normal_func_typed_expr_body() {
-        let body = Expr::EInt { loc: loc(), value: 99 };
+        let body = Expr::EInt {
+            loc: loc(),
+            value: 99,
+        };
         let result = cxx_normal_func("get_val", &[], &Some(Typ::TInt), &body, "".into(), 0);
-        assert_eq!(result, " mvp_builtin_int get_val() { return static_cast<mvp_builtin_int>(99); }\n\n");
+        assert_eq!(
+            result,
+            " mvp_builtin_int get_val() { return static_cast<mvp_builtin_int>(99); }\n\n"
+        );
     }
 
     // ===== cxx_impl =====
 
     #[test]
     fn test_cxx_impl_add() {
-        let impl_expr = ImplExpr { op: ImplOp::ImAdd, func: "vec_add".into(), loc: loc() };
+        let impl_expr = ImplExpr {
+            op: ImplOp::ImAdd,
+            func: "vec_add".into(),
+            loc: loc(),
+        };
         let result = cxx_impl("Vec2", &[impl_expr], "".into());
         assert!(result.contains("Vec2 operator+(const Vec2& ____a, const Vec2& ____b) { return vec_add(____a, ____b); }"));
     }
 
     #[test]
     fn test_cxx_impl_sub() {
-        let impl_expr = ImplExpr { op: ImplOp::ImSub, func: "vec_sub".into(), loc: loc() };
+        let impl_expr = ImplExpr {
+            op: ImplOp::ImSub,
+            func: "vec_sub".into(),
+            loc: loc(),
+        };
         let result = cxx_impl("Vec2", &[impl_expr], "".into());
         assert!(result.contains("operator-"));
     }
 
     #[test]
     fn test_cxx_impl_mul() {
-        let impl_expr = ImplExpr { op: ImplOp::ImMul, func: "vec_mul".into(), loc: loc() };
+        let impl_expr = ImplExpr {
+            op: ImplOp::ImMul,
+            func: "vec_mul".into(),
+            loc: loc(),
+        };
         let result = cxx_impl("Vec2", &[impl_expr], "".into());
         assert!(result.contains("operator*"));
     }
 
     #[test]
     fn test_cxx_impl_eq() {
-        let impl_expr = ImplExpr { op: ImplOp::ImEq, func: "vec_eq".into(), loc: loc() };
+        let impl_expr = ImplExpr {
+            op: ImplOp::ImEq,
+            func: "vec_eq".into(),
+            loc: loc(),
+        };
         let result = cxx_impl("Vec2", &[impl_expr], "".into());
         assert!(result.contains("mvp_builtin_boolean operator=="));
     }
 
     #[test]
     fn test_cxx_impl_neq() {
-        let impl_expr = ImplExpr { op: ImplOp::ImNeq, func: "vec_neq".into(), loc: loc() };
+        let impl_expr = ImplExpr {
+            op: ImplOp::ImNeq,
+            func: "vec_neq".into(),
+            loc: loc(),
+        };
         let result = cxx_impl("Vec2", &[impl_expr], "".into());
         assert!(result.contains("mvp_builtin_boolean operator!="));
     }
@@ -1886,8 +2270,16 @@ mod tests {
     #[test]
     fn test_cxx_impl_multi() {
         let impls = vec![
-            ImplExpr { op: ImplOp::ImAdd, func: "add".into(), loc: loc() },
-            ImplExpr { op: ImplOp::ImEq, func: "eq".into(), loc: loc() },
+            ImplExpr {
+                op: ImplOp::ImAdd,
+                func: "add".into(),
+                loc: loc(),
+            },
+            ImplExpr {
+                op: ImplOp::ImEq,
+                func: "eq".into(),
+                loc: loc(),
+            },
         ];
         let result = cxx_impl("Foo", &impls, "".into());
         assert!(result.contains("operator+"));
@@ -1928,11 +2320,17 @@ mod tests {
     #[test]
     fn test_generate_test_simple() {
         let defs = vec![
-            Def::DModule { loc: loc(), name: "test_mod".into() },
+            Def::DModule {
+                loc: loc(),
+                name: "test_mod".into(),
+            },
             Def::DTest {
                 loc: loc(),
                 name: "test_one".into(),
-                body: Box::new(Expr::EInt { loc: loc(), value: 0 }),
+                body: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 0,
+                }),
             },
         ];
         let result = generate_test(&defs);
@@ -1946,14 +2344,20 @@ mod tests {
     #[test]
     fn test_generate_test_block_body() {
         let defs = vec![
-            Def::DModule { loc: loc(), name: "test_mod".into() },
+            Def::DModule {
+                loc: loc(),
+                name: "test_mod".into(),
+            },
             Def::DTest {
                 loc: loc(),
                 name: "test_block".into(),
                 body: Box::new(Expr::EBlock {
                     loc: loc(),
                     stmts: vec![],
-                    result: Some(Box::new(Expr::EInt { loc: loc(), value: 1 })),
+                    result: Some(Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    })),
                 }),
             },
         ];
@@ -1965,16 +2369,25 @@ mod tests {
     #[test]
     fn test_generate_test_multiple() {
         let defs = vec![
-            Def::DModule { loc: loc(), name: "m".into() },
+            Def::DModule {
+                loc: loc(),
+                name: "m".into(),
+            },
             Def::DTest {
                 loc: loc(),
                 name: "t1".into(),
-                body: Box::new(Expr::EInt { loc: loc(), value: 0 }),
+                body: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 0,
+                }),
             },
             Def::DTest {
                 loc: loc(),
                 name: "t2".into(),
-                body: Box::new(Expr::EInt { loc: loc(), value: 0 }),
+                body: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 0,
+                }),
             },
         ];
         let result = generate_test(&defs);
@@ -1987,7 +2400,10 @@ mod tests {
 
     #[test]
     fn test_generate_header_no_exports() {
-        let defs = vec![Def::DModule { loc: loc(), name: "empty".into() }];
+        let defs = vec![Def::DModule {
+            loc: loc(),
+            name: "empty".into(),
+        }];
         let hdr = generate_header(&defs);
         assert!(hdr.contains("#pragma once"));
         assert!(hdr.contains("namespace empty {"));
@@ -2006,16 +2422,14 @@ mod tests {
 
     #[test]
     fn test_build_ir_simple_func() {
-        let defs = vec![
-            Def::DFunc {
-                loc: loc(),
-                name: "foo".into(),
-                params: vec![],
-                returns: None,
-                body: Box::new(Expr::EVoid { loc: loc() }),
-                safety: Safety::Safe,
-            },
-        ];
+        let defs = vec![Def::DFunc {
+            loc: loc(),
+            name: "foo".into(),
+            params: vec![],
+            returns: None,
+            body: Box::new(Expr::EVoid { loc: loc() }),
+            safety: Safety::Safe,
+        }];
         let [program, _header, _test] = build_ir(&defs);
         assert!(program.contains("mvp_builtin_unit foo()"));
         assert!(program.contains("return mvp_builtin_void"));
@@ -2043,7 +2457,10 @@ mod tests {
     #[test]
     fn test_build_ir_with_module_and_main() {
         let defs = vec![
-            Def::DModule { loc: loc(), name: "myapp".into() },
+            Def::DModule {
+                loc: loc(),
+                name: "myapp".into(),
+            },
             Def::DFunc {
                 loc: loc(),
                 name: "main".into(),
@@ -2065,8 +2482,14 @@ mod tests {
     #[test]
     fn test_build_ir_with_import() {
         let defs = vec![
-            Def::DModule { loc: loc(), name: "app".into() },
-            Def::SImport { loc: loc(), path: "c:iostream".into() },
+            Def::DModule {
+                loc: loc(),
+                name: "app".into(),
+            },
+            Def::SImport {
+                loc: loc(),
+                path: "c:iostream".into(),
+            },
         ];
         let [program, _header, _test] = build_ir(&defs);
         assert!(program.contains("#include <iostream>"));
@@ -2075,24 +2498,42 @@ mod tests {
     #[test]
     fn test_build_ir_with_export() {
         let defs = vec![
-            Def::DModule { loc: loc(), name: "lib".into() },
+            Def::DModule {
+                loc: loc(),
+                name: "lib".into(),
+            },
             Def::DFunc {
                 loc: loc(),
                 name: "add".into(),
                 params: vec![
-                    Param::POwn { name: "a".into(), typ: Typ::TInt },
-                    Param::POwn { name: "b".into(), typ: Typ::TInt },
+                    Param::POwn {
+                        name: "a".into(),
+                        typ: Typ::TInt,
+                    },
+                    Param::POwn {
+                        name: "b".into(),
+                        typ: Typ::TInt,
+                    },
                 ],
                 returns: Some(Typ::TInt),
                 body: Box::new(Expr::EBinOp {
                     loc: loc(),
                     op: BinOp::Add,
-                    left: Box::new(Expr::EVar { loc: loc(), name: "a".into() }),
-                    right: Box::new(Expr::EVar { loc: loc(), name: "b".into() }),
+                    left: Box::new(Expr::EVar {
+                        loc: loc(),
+                        name: "a".into(),
+                    }),
+                    right: Box::new(Expr::EVar {
+                        loc: loc(),
+                        name: "b".into(),
+                    }),
                 }),
                 safety: Safety::Safe,
             },
-            Def::SExport { loc: loc(), symbol: "add".into() },
+            Def::SExport {
+                loc: loc(),
+                symbol: "add".into(),
+            },
         ];
         let [_program, header, _test] = build_ir(&defs);
         assert!(header.contains("#pragma once"));
@@ -2101,16 +2542,20 @@ mod tests {
 
     #[test]
     fn test_build_ir_with_struct() {
-        let defs = vec![
-            Def::DStruct {
-                loc: loc(),
-                name: "Point".into(),
-                fields: vec![
-                    FieldDef { name: "x".into(), typ: Typ::TInt },
-                    FieldDef { name: "y".into(), typ: Typ::TInt },
-                ],
-            },
-        ];
+        let defs = vec![Def::DStruct {
+            loc: loc(),
+            name: "Point".into(),
+            fields: vec![
+                FieldDef {
+                    name: "x".into(),
+                    typ: Typ::TInt,
+                },
+                FieldDef {
+                    name: "y".into(),
+                    typ: Typ::TInt,
+                },
+            ],
+        }];
         let [program, _header, _test] = build_ir(&defs);
         assert!(program.contains("struct Point {"));
         assert!(program.contains("mvp_builtin_int x;"));
@@ -2150,11 +2595,17 @@ mod tests {
     #[test]
     fn test_build_ir_with_test() {
         let defs = vec![
-            Def::DModule { loc: loc(), name: "app".into() },
+            Def::DModule {
+                loc: loc(),
+                name: "app".into(),
+            },
             Def::DTest {
                 loc: loc(),
                 name: "my_test".into(),
-                body: Box::new(Expr::EInt { loc: loc(), value: 0 }),
+                body: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 0,
+                }),
             },
         ];
         let [_program, _header, test] = build_ir(&defs);
@@ -2166,31 +2617,47 @@ mod tests {
 
     #[test]
     fn test_cxx_def_module_returns_empty() {
-        let def = Def::DModule { loc: loc(), name: "m".into() };
+        let def = Def::DModule {
+            loc: loc(),
+            name: "m".into(),
+        };
         assert_eq!(cxx_def(&def, 0), "");
     }
 
     #[test]
     fn test_cxx_def_export_returns_empty() {
-        let def = Def::SExport { loc: loc(), symbol: "foo".into() };
+        let def = Def::SExport {
+            loc: loc(),
+            symbol: "foo".into(),
+        };
         assert_eq!(cxx_def(&def, 0), "");
     }
 
     #[test]
     fn test_cxx_def_import_returns_empty() {
-        let def = Def::SImport { loc: loc(), path: "std/io".into() };
+        let def = Def::SImport {
+            loc: loc(),
+            path: "std/io".into(),
+        };
         assert_eq!(cxx_def(&def, 0), "");
     }
 
     #[test]
     fn test_cxx_def_import_as_returns_empty() {
-        let def = Def::SImportAs { loc: loc(), path: "std/io".into(), alias: "io".into() };
+        let def = Def::SImportAs {
+            loc: loc(),
+            path: "std/io".into(),
+            alias: "io".into(),
+        };
         assert_eq!(cxx_def(&def, 0), "");
     }
 
     #[test]
     fn test_cxx_def_import_here_returns_empty() {
-        let def = Def::SImportHere { loc: loc(), path: "std/io".into() };
+        let def = Def::SImportHere {
+            loc: loc(),
+            path: "std/io".into(),
+        };
         assert_eq!(cxx_def(&def, 0), "");
     }
 
@@ -2206,13 +2673,19 @@ mod tests {
 
     #[test]
     fn test_cxx_def_cmagical_returns_empty() {
-        let def = Def::DCMagical { loc: loc(), content: "something".into() };
+        let def = Def::DCMagical {
+            loc: loc(),
+            content: "something".into(),
+        };
         assert_eq!(cxx_def(&def, 0), "");
     }
 
     #[test]
     fn test_cxx_def_cintro_returns_empty() {
-        let def = Def::DCIntro { loc: loc(), content: "something".into() };
+        let def = Def::DCIntro {
+            loc: loc(),
+            content: "something".into(),
+        };
         assert_eq!(cxx_def(&def, 0), "");
     }
 
@@ -2221,10 +2694,19 @@ mod tests {
     #[test]
     fn test_cxx_normal_func_with_params() {
         let params = vec![
-            Param::POwn { name: "a".into(), typ: Typ::TInt },
-            Param::POwn { name: "b".into(), typ: Typ::TInt },
+            Param::POwn {
+                name: "a".into(),
+                typ: Typ::TInt,
+            },
+            Param::POwn {
+                name: "b".into(),
+                typ: Typ::TInt,
+            },
         ];
-        let body = Expr::EInt { loc: loc(), value: 0 };
+        let body = Expr::EInt {
+            loc: loc(),
+            value: 0,
+        };
         let result = cxx_normal_func("noop", &params, &None, &body, "".into(), 0);
         assert!(result.contains("mvp_builtin_unit noop(mvp_builtin_int a, mvp_builtin_int b)"));
     }
@@ -2234,9 +2716,18 @@ mod tests {
     #[test]
     fn test_cxx_struct_def_varied_types() {
         let fields = vec![
-            FieldDef { name: "name".into(), typ: Typ::TString },
-            FieldDef { name: "age".into(), typ: Typ::TInt },
-            FieldDef { name: "active".into(), typ: Typ::TBool },
+            FieldDef {
+                name: "name".into(),
+                typ: Typ::TString,
+            },
+            FieldDef {
+                name: "age".into(),
+                typ: Typ::TInt,
+            },
+            FieldDef {
+                name: "active".into(),
+                typ: Typ::TBool,
+            },
         ];
         let result = cxx_struct_def("Person", &fields, "".into(), 0);
         assert!(result.contains("mvp_builtin_string name;"));
@@ -2248,7 +2739,9 @@ mod tests {
 
     #[test]
     fn test_cxx_type_array_of_string() {
-        let typ = Typ::TArray { of: Box::new(Typ::TString) };
+        let typ = Typ::TArray {
+            of: Box::new(Typ::TString),
+        };
         assert_eq!(cxx_type(&typ), "std::vector<mvp_builtin_string>");
     }
 
@@ -2261,7 +2754,10 @@ mod tests {
             name: "Inner".into(),
             fields: vec![ValueField {
                 name: "val".into(),
-                value: Expr::EInt { loc: loc(), value: 5 },
+                value: Expr::EInt {
+                    loc: loc(),
+                    value: 5,
+                },
             }],
         };
         let outer = Expr::EStructLit {
@@ -2288,9 +2784,15 @@ mod tests {
                 loc: loc(),
                 mutable: false,
                 name: "y".into(),
-                expr: Box::new(Expr::EInt { loc: loc(), value: 2 }),
+                expr: Box::new(Expr::EInt {
+                    loc: loc(),
+                    value: 2,
+                }),
             }],
-            result: Some(Box::new(Expr::EVar { loc: loc(), name: "y".into() })),
+            result: Some(Box::new(Expr::EVar {
+                loc: loc(),
+                name: "y".into(),
+            })),
         };
         let outer_block = Expr::EBlock {
             loc: loc(),
@@ -2299,7 +2801,10 @@ mod tests {
                     loc: loc(),
                     mutable: false,
                     name: "x".into(),
-                    expr: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                    expr: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
                 },
                 Stmt::SExpr {
                     loc: loc(),
@@ -2333,18 +2838,36 @@ mod tests {
     fn test_cxx_choose_multi_case() {
         let e = Expr::EChoose {
             loc: loc(),
-            var: Box::new(Expr::EVar { loc: loc(), name: "x".into() }),
+            var: Box::new(Expr::EVar {
+                loc: loc(),
+                name: "x".into(),
+            }),
             cases: vec![
                 WhenCase {
-                    when: Box::new(Expr::EInt { loc: loc(), value: 1 }),
-                    then: Box::new(Expr::EInt { loc: loc(), value: 10 }),
+                    when: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
+                    then: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 10,
+                    }),
                 },
                 WhenCase {
-                    when: Box::new(Expr::EInt { loc: loc(), value: 2 }),
-                    then: Box::new(Expr::EInt { loc: loc(), value: 20 }),
+                    when: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 2,
+                    }),
+                    then: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 20,
+                    }),
                 },
             ],
-            otherwise: Some(Box::new(Expr::EInt { loc: loc(), value: 0 })),
+            otherwise: Some(Box::new(Expr::EInt {
+                loc: loc(),
+                value: 0,
+            })),
         };
         let result = cxx_expr(&e, 0);
         assert!(result.contains("if (x == static_cast<mvp_builtin_int>(1))"));

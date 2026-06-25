@@ -75,6 +75,12 @@ fn expand_stmt(stmt: &Stmt, addf: &mut Vec<Def>) -> Result<Stmt> {
             name: name.clone(),
             expr: Box::new(expand_expr(expr, addf)?),
         }),
+        Stmt::SLetTyped { loc, name, typ, expr } => Ok(Stmt::SLetTyped {
+            loc: loc.clone(),
+            name: name.clone(),
+            typ: typ.clone(),
+            expr: Box::new(expand_expr(expr, addf)?),
+        }),
         Stmt::SAssign { loc, name, expr } => Ok(Stmt::SAssign {
             loc: loc.clone(),
             name: name.clone(),

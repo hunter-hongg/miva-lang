@@ -104,6 +104,8 @@ pub enum Param {
 pub enum Stmt {
     #[serde(rename = "let")]
     SLet { loc: Loc, mutable: bool, name: String, expr: Box<Expr> },
+    #[serde(rename = "letTyped")]
+    SLetTyped { loc: Loc, name: String, #[serde(rename = "type")] typ: Typ, expr: Box<Expr> },
     #[serde(rename = "assign")]
     SAssign { loc: Loc, name: String, expr: Box<Expr> },
     #[serde(rename = "return")]

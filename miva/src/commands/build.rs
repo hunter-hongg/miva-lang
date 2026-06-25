@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fs::exists;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -6,6 +7,7 @@ use anyhow::Result;
 
 use super::{color, dependency_graph::DependencyGraph, env, frontend};
 use crate::codegen;
+use crate::commands::clean;
 use crate::config::Config;
 use crate::json_ast;
 use crate::macro_expand;
@@ -52,7 +54,7 @@ fn read_dep_cache(path: &Path, source: &str) -> Option<Vec<String>> {
     Some(content.lines().map(|l| l.to_string()).collect())
 }
 
-fn write_dep_cache(path: &Path, deps: &[String]) {
+fn _write_dep_cache(path: &Path, deps: &[String]) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -68,11 +70,35 @@ fn collect_imports_with_graph(
     cache_dir: &Path,
     std_path: &str,
     graph: &mut DependencyGraph,
+    name: &str,
 ) -> Result<()> {
-    if !visited.insert(file.to_string()) {
+    let mut file_parts: Vec<_> = file.split('/').collect();
+    let _file = file;
+    let file: String;
+    if exists(_file)? {
+        file = _file.to_string();
+    } else if file_parts.is_empty() {
+        color::errize("cannot parse import file");
+        anyhow::bail!("parsing failed")
+    } else {
+        let first = *file_parts.get(0).unwrap_or(&"");
+        file_parts.remove(0);
+        match first {
+            _ if first == name => {
+                file = "src/".to_string() + file_parts.join("/").as_str() + ".miva";
+            }
+            _ => {
+                let inc = format!("{}", env::get_std_include_dir().display());
+                file = inc + "/" + first + "/src/" + file_parts.join("/").as_str() + ".miva";
+            }
+        }
+    }
+
+    if !visited.insert(file.clone()) {
         return Ok(());
     }
 
+    let file = file.as_str();
     let dep_path = dep_cache_path(cache_dir, file, std_path);
     let deps = read_dep_cache(&dep_path, file);
 
@@ -94,20 +120,13 @@ fn collect_imports_with_graph(
             })
             .collect();
 
-        write_dep_cache(&dep_path, &paths);
         paths
     };
 
     for path in &import_paths {
         graph.add_dependency(file, path);
         collect_imports_with_graph(
-            frontend,
-            work_dir,
-            path,
-            visited,
-            cache_dir,
-            std_path,
-            graph,
+            frontend, work_dir, path, visited, cache_dir, std_path, graph, name,
         )?;
     }
 
@@ -151,15 +170,12 @@ fn compile_file_to_cpp(
     file: &str,
     cache_dir: &Path,
     std_path: &str,
-    verbose: bool,
+    _verbose: bool,
 ) -> Result<(PathBuf, bool)> {
     let cache_key = make_cache_key(file, std_path);
     let cpp_path = cache_dir.join(format!("{}.cpp", cache_key));
 
     if cpp_path.exists() && !needs_rebuild_by_hash(file, cache_dir, &cache_key) {
-        if verbose {
-            eprintln!("  {} (cached)", file);
-        }
         let has_main = std::fs::read_to_string(&cpp_path)
             .map(|s| s.contains("mvp_own_main"))
             .unwrap_or(false);
@@ -175,16 +191,30 @@ fn compile_file_to_cpp(
     let sem_errors = semantic::check_program(&defs);
     if !sem_errors.is_empty() {
         for err in &sem_errors {
-            eprintln!("semantic error [{}]: {}", err.code, err.message);
+            eprintln!(
+                "{}",
+                color::colorize(
+                    color::RED,
+                    format!("Error [{}]: {}", err.code, err.message).as_str()
+                )
+            );
         }
+        eprintln!("{}", "-".repeat(30));
         anyhow::bail!("semantic errors found");
     }
 
     let type_errors = typecheck::check_program(&defs);
     if !type_errors.is_empty() {
         for err in &type_errors {
-            eprintln!("type error [{}]: {}", err.code, err.message);
+            eprintln!(
+                "{}",
+                color::colorize(
+                    color::RED,
+                    format!("Error [{}]: {}", err.code, err.message).as_str()
+                )
+            );
         }
+        eprintln!("{}", "-".repeat(30));
         anyhow::bail!("type errors found");
     }
 
@@ -192,13 +222,23 @@ fn compile_file_to_cpp(
     let warnings = warning::get_warnings(&defs);
     let (warnings, err_warnings) = magical::filter_warnings(warnings, &magical_flags);
     for w in &err_warnings {
-        eprintln!("{}", color::colorize(color::RED, &format!("warning-as-error [{}]: {}", w.code, w.message)));
+        eprintln!(
+            "{}",
+            color::colorize(color::RED, &format!("Error [{}]: {}", w.code, w.message))
+        );
     }
     if !err_warnings.is_empty() {
+        eprintln!("{}", "-".repeat(30));
         anyhow::bail!("some warnings treated as errors");
     }
     for w in &warnings {
-        eprintln!("{}", color::colorize(color::YELLOW, &format!("warning [{}]: {}", w.code, w.message)));
+        eprintln!(
+            "{}",
+            color::colorize(
+                color::YELLOW,
+                &format!("Warning [{}]: {}", w.code, w.message)
+            )
+        );
     }
 
     let [program, header, test] = codegen::build_ir(&defs);
@@ -226,10 +266,6 @@ fn compile_file_to_cpp(
     }
 
     update_hash_cache(file, cache_dir, &cache_key);
-
-    if verbose {
-        eprintln!("  {} -> {}.cpp", file, cache_key);
-    }
 
     let has_main = program.contains("mvp_own_main");
     Ok((cpp_path, has_main))
@@ -291,15 +327,9 @@ fn compile_cpp_to_obj(
         .map_err(|e| anyhow::anyhow!("Failed to run g++: {}", e))?;
 
     if !compile_output.status.success() {
-        let stderr = String::from_utf8_lossy(&compile_output.stderr);
-        eprintln!(
-            "{}",
-            color::errize(&format!(
-                "g++ compilation failed for {}:\n{}",
-                cpp_path.display(),
-                stderr
-            ))
-        );
+        eprintln!("{}", "-".repeat(30));
+        eprintln!("{}", color::errize("g++ compilation failed"));
+        clean::exec(false)?;
         std::process::exit(1);
     }
 
@@ -387,9 +417,8 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
         anyhow::bail!("entry file not found: {}", entry_file);
     }
 
-    let (frontend, frontend_work_dir) = frontend::find_frontend().ok_or_else(|| {
-        anyhow::anyhow!("miva-frontend not found. Build it with: cd ../miva-frontend && dune build")
-    })?;
+    let (frontend, frontend_work_dir) =
+        frontend::find_frontend().ok_or_else(|| anyhow::anyhow!("miva-frontend not found"))?;
 
     let std_include_dir = env::get_std_include_dir();
     let cache_dir = env::get_cache_dir_rel(release);
@@ -398,10 +427,8 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
     std::fs::create_dir_all(&build_dir)?;
 
     eprintln!(
-        "{} {} ({})",
-        color::colorize(color::BLUE, "Building"),
-        name,
-        project_type
+        "{}",
+        color::infoize(&format!("building {} ({})", name, project_type))
     );
 
     let std_path_str = std_include_dir.to_string_lossy();
@@ -417,6 +444,7 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
         &cache_dir,
         &std_path_str,
         &mut graph,
+        &name,
     )?;
 
     let mut files: Vec<String> = Vec::new();
@@ -436,7 +464,7 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
     let mut recompiled_files: HashSet<String> = HashSet::new();
 
     for file in &files {
-        eprintln!("{} {}", color::colorize(color::BLUE, "Compiling"), file);
+        eprintln!("{}", color::logize(color::CYAN, "COMPILE", file));
 
         let cache_key = make_cache_key(file, &std_path_str);
         let was_cached = !needs_rebuild_by_hash(file, &cache_dir, &cache_key);
@@ -479,9 +507,6 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
             // All files cached, use mtime check for .o
             let obj_path = cpp_path.with_extension("o");
             if obj_path.exists() {
-                if verbose {
-                    eprintln!("  {} (cached)", obj_path.display());
-                }
                 obj_files.push(obj_path);
                 continue;
             }
@@ -489,9 +514,6 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
             // This file wasn't recompiled and isn't a dependent of a changed file
             let obj_path = cpp_path.with_extension("o");
             if obj_path.exists() {
-                if verbose {
-                    eprintln!("  {} (cached)", obj_path.display());
-                }
                 obj_files.push(obj_path);
                 continue;
             }
@@ -510,13 +532,10 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
         obj_files.push(obj_path);
     }
 
-    if !verbose {
-        eprintln!();
-    }
+    eprintln!("{}", "-".repeat(30));
+    eprintln!("{}", color::logize(color::CYAN, "LINK", name));
 
-    eprintln!("\x1b[34mLinking\x1b[0m files...");
-
-    let exe_path = link_objects(&obj_files, name, &build_dir, project_type, release)?;
+    let _ = link_objects(&obj_files, name, &build_dir, project_type, release)?;
 
     if !env::get_keep_cpp() {
         for obj in &obj_files {
@@ -534,9 +553,8 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
     }
 
     println!(
-        "\n{} {}",
-        color::colorize(color::GREEN, "Compilation succeeded:"),
-        exe_path
+        "{}",
+        color::logize(color::GREEN, "SUCCEDD", "compilation succeeded"),
     );
 
     Ok(())

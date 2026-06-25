@@ -14,8 +14,14 @@ mod warning;
 use clap::Parser;
 use commands::{build, clean, dep, init_cmd, run, sin_build, sin_run, test_cmd};
 
+use crate::commands::color;
+
 #[derive(Parser)]
-#[command(name = "miva", version, about = "The Miva programming language compiler")]
+#[command(
+    name = "miva",
+    version,
+    about = "The Miva programming language compiler"
+)]
 struct Cli {
     #[arg(short, long, global = true, help = "Enable verbose output")]
     verbose: bool,
@@ -49,10 +55,10 @@ enum Command {
     Test(test_cmd::Args),
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     let cli = Cli::parse();
 
-    match cli.command {
+    let res = match cli.command {
         Command::Init(args) => init_cmd::exec(args, cli.verbose),
         Command::Build => build::exec(cli.verbose, cli.release),
         Command::Run => run::exec(cli.verbose, cli.release),
@@ -61,5 +67,10 @@ fn main() -> anyhow::Result<()> {
         Command::SinRun(args) => sin_run::exec(args, cli.verbose),
         Command::Dep => dep::exec(cli.verbose),
         Command::Test(args) => test_cmd::exec(args, cli.verbose),
+    };
+
+    if let Some(e) = res.err() {
+        let err = e.to_string();
+        println!("{}", color::errize(&err));
     }
 }

@@ -185,7 +185,34 @@ fn infer_type(
             errs.extend(errs2);
 
             match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                BinOp::Add => {
+                    // Allow numeric + numeric (arithmetic) and string + string (concatenation)
+                    if lt == Typ::TString && rt == Typ::TString {
+                        (Typ::TString, errs)
+                    } else if is_numeric(&lt) && is_numeric(&rt) {
+                        if !types_equal(&lt, &rt) {
+                            errs.push(Error::new(
+                                "E0014",
+                                loc,
+                                &format!("type mismatch in arithmetic: {:?} vs {:?}", lt, rt),
+                            ));
+                            (Typ::TInvalid, errs)
+                        } else {
+                            (lt, errs)
+                        }
+                    } else {
+                        errs.push(Error::new(
+                            "E0014",
+                            loc,
+                            &format!(
+                                "addition requires numeric or string types, got {:?} and {:?}",
+                                lt, rt
+                            ),
+                        ));
+                        (Typ::TInvalid, errs)
+                    }
+                }
+                BinOp::Sub | BinOp::Mul => {
                     if !is_numeric(&lt) || !is_numeric(&rt) {
                         errs.push(Error::new(
                             "E0014",
@@ -572,6 +599,21 @@ fn infer_type(
                         let (t, se) = require_type(env, func_sigs, structs, func_return, expr);
                         errs.extend(se);
                         env.vars.insert(name.clone(), t);
+                    }
+                    Stmt::SLetTyped { name, typ, expr, loc } => {
+                        let (t, se) = require_type(env, func_sigs, structs, func_return, expr);
+                        errs.extend(se);
+                        if !types_equal(typ, &t) {
+                            errs.push(Error::new(
+                                "E0022",
+                                loc,
+                                &format!(
+                                    "type mismatch in let: declared {:?} but expression has type {:?}",
+                                    typ, t
+                                ),
+                            ));
+                        }
+                        env.vars.insert(name.clone(), typ.clone());
                     }
                     Stmt::SAssign { name, expr, loc } => {
                         let (t, se) = require_type(env, func_sigs, structs, func_return, expr);

@@ -7,6 +7,7 @@ use crate::json_ast;
 use crate::macro_expand;
 use crate::magical;
 use crate::semantic;
+use crate::typecheck;
 use crate::warning;
 
 #[derive(clap::Args)]
@@ -65,6 +66,15 @@ pub fn exec(args: Args, verbose: bool) -> anyhow::Result<()> {
                 eprintln!("semantic error [{}]: {}", err.code, err.message);
             }
             anyhow::bail!("semantic errors found");
+        }
+
+        let type_errors = typecheck::check_program(&defs);
+        if !type_errors.is_empty() {
+            for err in &type_errors {
+                eprintln!("{}", color::colorize(color::RED, format!("Error [{}]: {}", err.code, err.message).as_str()));
+            }
+            eprintln!("{}", "-".repeat(30));
+            anyhow::bail!("type errors found");
         }
 
         let magical_flags = magical::get_magical_flags(&defs);

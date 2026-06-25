@@ -192,6 +192,12 @@ fn check_stmt(stmt: &Stmt, modname: &str, warnings: &mut Vec<Warning>) {
             }
             check_expr(expr, modname, warnings);
         }
+        Stmt::SLetTyped { loc, name, expr, .. } => {
+            if let Some(w) = check_snake(loc, name, "var") {
+                warnings.push(w);
+            }
+            check_expr(expr, modname, warnings);
+        }
         Stmt::SAssign { expr, .. } => {
             check_expr(expr, modname, warnings);
         }

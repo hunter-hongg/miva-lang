@@ -7,14 +7,17 @@ use crate::config::Config;
 
 pub fn exec(verbose: bool, release: bool) -> Result<()> {
     if !Path::new("miva.toml").exists() {
-        eprintln!("{}", color::errize("project not initialized in this directory"));
+        eprintln!(
+            "{}",
+            color::errize("project not initialized in this directory")
+        );
         std::process::exit(1);
     }
 
     build::exec(verbose, release)?;
+    eprintln!("{}", "-".repeat(30));
 
-    let config =
-        Config::load().ok_or_else(|| anyhow::anyhow!("failed to parse miva.toml"))?;
+    let config = Config::load().ok_or_else(|| anyhow::anyhow!("failed to parse miva.toml"))?;
     let project = config
         .project
         .as_ref()

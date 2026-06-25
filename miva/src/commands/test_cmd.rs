@@ -12,14 +12,17 @@ pub struct Args {
 
 fn find_test_files(cache_dir: &Path, files: &[String]) -> Vec<PathBuf> {
     if !files.is_empty() {
-        return files.iter().map(|f| {
-            let p = PathBuf::from(f);
-            if p.is_absolute() {
-                p
-            } else {
-                cache_dir.join(p)
-            }
-        }).collect();
+        return files
+            .iter()
+            .map(|f| {
+                let p = PathBuf::from(f);
+                if p.is_absolute() {
+                    p
+                } else {
+                    cache_dir.join(p)
+                }
+            })
+            .collect();
     }
     let mut results = Vec::new();
     let mut stack = vec![cache_dir.to_path_buf()];
@@ -97,19 +100,22 @@ fn compile_test(
     let out = cmd.output()?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        eprintln!("{}", color::errize(&format!(
-            "test compilation failed for {}:\n{}",
-            test_file.display(),
-            stderr
-        )));
+        eprintln!(
+            "{}",
+            color::errize(&format!(
+                "test compilation failed for {}:\n{}",
+                test_file.display(),
+                stderr
+            ))
+        );
         return Ok(false);
     }
     Ok(true)
 }
 
 pub fn exec(args: Args, verbose: bool) -> Result<()> {
-    eprintln!("{}", color::colorize(color::BLUE, "Building..."));
     build::exec(verbose, false)?;
+    eprintln!("{}", "-".repeat(30));
 
     let cache_dir = env::get_cache_dir_rel(false);
     let std_include = env::get_std_include_dir();
@@ -144,9 +150,7 @@ pub fn exec(args: Args, verbose: bool) -> Result<()> {
 
         let exe_path = PathBuf::from("/tmp").join(format!("{}.test", test_name));
 
-        if verbose {
-            eprintln!("{} {}", color::colorize(color::CYAN, "test"), test_name);
-        }
+        eprintln!("{}", color::logize(color::CYAN, "TESTING", test_name));
 
         let ok = compile_test(
             test_file,
@@ -172,10 +176,10 @@ pub fn exec(args: Args, verbose: bool) -> Result<()> {
 
         let stderr_output = String::from_utf8_lossy(&run_out.stderr);
         if !stderr_output.is_empty() {
-            eprint!("{}", color::errize(&format!(
-                "test stderr [{}]: {}",
-                test_name, stderr_output
-            )));
+            eprint!(
+                "{}",
+                color::errize(&format!("test stderr [{}]: {}", test_name, stderr_output))
+            );
         }
 
         if run_out.status.success() {
@@ -188,17 +192,22 @@ pub fn exec(args: Args, verbose: bool) -> Result<()> {
     }
 
     if total > 0 {
-        let color = if failed == 0 { color::GREEN } else { color::RED };
         println!(
             "{}",
-            color::colorize(
-                color,
-                &format!(
-                    "test summary: {}/{} passed, {}/{} failed",
-                    passed, total, failed, total
-                )
+            color::logize(
+                color::CYAN,
+                "SUMMARY",
+                &format!("{}/{} passed, {}/{} failed", passed, total, failed, total)
             )
         );
+        if failed > 0 {
+            println!("{}", color::logize(color::RED, "ERROR", "test failed"))
+        } else {
+            println!(
+                "{}",
+                color::logize(color::GREEN, "SUCCEED", "all tests passed")
+            )
+        }
     }
 
     if failed > 0 {

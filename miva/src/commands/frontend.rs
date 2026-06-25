@@ -1,51 +1,51 @@
-use std::path::Path;
+use std::env;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn exe_dir() -> Option<PathBuf> {
+    env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+}
+
 pub fn find_frontend() -> Option<(String, Option<String>)> {
-    if let Ok(output) = Command::new("miva-frontend").arg("--help").output() {
-        if output.status.success() {
-            return Some(("miva-frontend".to_string(), None));
+    let base = exe_dir();
+
+    if let Some(ref dir) = base {
+        let candidates = [
+            dir.join("miva-frontend"),
+            dir.join("../../../miva-frontend-rs/target/debug/miva-frontend"),
+            dir.join("../../../miva-frontend-rs/target/release/miva-frontend"),
+        ];
+        for c in &candidates {
+            if c.exists() {
+                return Some((c.to_string_lossy().to_string(), None));
+            }
         }
     }
-    let exe_candidates = [
-        "../miva-frontend/_build/default/bin/main.exe",
-        "miva-frontend/_build/default/bin/main.exe",
-        "../../miva-frontend/_build/default/bin/main.exe",
+
+    // Fallback: cwd-relative paths
+    let cwd_candidates = [
+        "../miva-frontend-rs/target/debug/miva-frontend",
+        "../miva-frontend-rs/target/release/miva-frontend",
+        "miva-frontend-rs/target/debug/miva-frontend",
+        "miva-frontend-rs/target/release/miva-frontend",
+        "../../miva-frontend-rs/target/debug/miva-frontend",
+        "../../miva-frontend-rs/target/release/miva-frontend",
     ];
-    for c in &exe_candidates {
+    for c in &cwd_candidates {
         if Path::new(c).exists() {
             return Some((c.to_string(), None));
         }
     }
-    let dune_candidates = [
-        ("../miva-frontend", "../miva-frontend"),
-        ("miva-frontend", "miva-frontend"),
-        ("../../miva-frontend", "../../miva-frontend"),
-    ];
-    for (_check, dir) in &dune_candidates {
-        if Path::new(dir).exists() && Path::new(dir).join("dune-project").exists() {
-            return Some(("dune".to_string(), Some(dir.to_string())));
-        }
-    }
+
     None
 }
 
 pub fn run_frontend(
     frontend: &str,
-    work_dir: &Option<String>,
+    _work_dir: &Option<String>,
     input: &str,
 ) -> anyhow::Result<String> {
-    let output = if frontend == "dune" {
-        let dir = work_dir
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("dune work directory not set"))?;
-        Command::new("dune")
-            .args(["exec", "bin/main.exe", "--", input])
-            .current_dir(dir)
-            .output()?
-    } else {
-        Command::new(frontend).arg(input).output()?
-    };
+    let output = Command::new(frontend).arg(input).output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
