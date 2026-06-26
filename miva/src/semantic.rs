@@ -374,6 +374,7 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
         | Expr::EString { .. }
         | Expr::EVoid { .. }
         | Expr::EMacro { .. }
+        | Expr::EMacroVar { .. }
         | Expr::EAddr { .. } => {}
     }
 
@@ -550,7 +551,8 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
                     }
                 }
             }
-            Def::SExport { .. }
+            Def::DMacro { .. }
+            | Def::SExport { .. }
             | Def::SImport { .. }
             | Def::SImportAs { .. }
             | Def::SImportHere { .. }

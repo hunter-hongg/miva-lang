@@ -124,6 +124,7 @@ impl SymbolTable {
                     table.files.push(path.clone());
                 }
                 Def::DTest { .. }
+                | Def::DMacro { .. }
                 | Def::DCMagical { .. }
                 | Def::DCIntro { .. }
                 | Def::DImpl { .. } => {}

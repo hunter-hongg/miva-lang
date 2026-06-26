@@ -51,14 +51,16 @@ pub fn exec(args: Args, verbose: bool) -> anyhow::Result<()> {
 
     if needs_recompile {
         if verbose {
-            eprintln!("{} {}", color::colorize(color::BLUE, "Compiling"), input);
+            eprintln!("{}", color::step("compile", input));
         }
 
         let json_str = frontend::run_frontend(&frontend, &work_dir, input)?;
         let ast = json_ast::from_str(&json_str)
             .map_err(|e| anyhow::anyhow!("Failed to parse JSON AST: {}", e))?;
 
-        let defs = macro_expand::expand_macros(&ast.defs)?;
+        // Collect macros from the single file before expansion
+        let macro_table = macro_expand::collect_macros(&ast.defs);
+        let defs = macro_expand::expand_macros(&ast.defs, &macro_table)?;
 
         let sem_errors = semantic::check_program(&defs);
         if !sem_errors.is_empty() {
@@ -71,9 +73,14 @@ pub fn exec(args: Args, verbose: bool) -> anyhow::Result<()> {
         let type_errors = typecheck::check_program(&defs);
         if !type_errors.is_empty() {
             for err in &type_errors {
-                eprintln!("{}", color::colorize(color::RED, format!("Error [{}]: {}", err.code, err.message).as_str()));
+                eprintln!(
+                    "{}",
+                    color::colorize(
+                        color::RED,
+                        format!("  Error [{}]: {}", err.code, err.message).as_str()
+                    )
+                );
             }
-            eprintln!("{}", "-".repeat(30));
             anyhow::bail!("type errors found");
         }
 
@@ -81,13 +88,19 @@ pub fn exec(args: Args, verbose: bool) -> anyhow::Result<()> {
         let warnings = warning::get_warnings(&defs);
         let (warnings, err_warnings) = magical::filter_warnings(warnings, &magical_flags);
         for w in &err_warnings {
-            eprintln!("{}", color::colorize(color::RED, &format!("warning-as-error [{}]: {}", w.code, w.message)));
+            eprintln!(
+                "{}",
+                color::colorize(
+                    color::RED,
+                    &format!("  warning-as-error [{}]: {}", w.code, w.message)
+                )
+            );
         }
         if !err_warnings.is_empty() {
             anyhow::bail!("some warnings treated as errors");
         }
         for w in &warnings {
-            eprintln!("{}", color::colorize(color::YELLOW, &format!("warning [{}]: {}", w.code, w.message)));
+            eprintln!("{}", color::warn(&format!("[{}]: {}", w.code, w.message)));
         }
 
         let [program, header, test] = codegen::build_ir(&defs);
@@ -121,8 +134,12 @@ pub fn exec(args: Args, verbose: bool) -> anyhow::Result<()> {
     }
 
     let needs_obj = if obj_path.exists() {
-        let cpp_mtime = std::fs::metadata(&cpp_path).ok().and_then(|m| m.modified().ok());
-        let obj_mtime = std::fs::metadata(&obj_path).ok().and_then(|m| m.modified().ok());
+        let cpp_mtime = std::fs::metadata(&cpp_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let obj_mtime = std::fs::metadata(&obj_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
         match (cpp_mtime, obj_mtime) {
             (Some(cpp_t), Some(obj_t)) => cpp_t > obj_t,
             _ => true,
@@ -155,7 +172,7 @@ pub fn exec(args: Args, verbose: bool) -> anyhow::Result<()> {
             let stderr = String::from_utf8_lossy(&gpp_output.stderr);
             eprintln!(
                 "{}",
-                color::errize(&format!("g++ compilation failed:\n{}", stderr))
+                color::error(&format!("g++ compilation failed:\n{}", stderr))
             );
             std::process::exit(1);
         }
@@ -188,13 +205,13 @@ pub fn exec(args: Args, verbose: bool) -> anyhow::Result<()> {
 
     if !link_output.status.success() {
         let stderr = String::from_utf8_lossy(&link_output.stderr);
-        eprintln!(
-            "{}",
-            color::errize(&format!("linking failed:\n{}", stderr))
-        );
+        eprintln!("{}", color::error(&format!("linking failed:\n{}", stderr)));
         std::process::exit(1);
     }
 
-    println!("{} compiled -> {}", input, out_path);
+    println!(
+        "{}",
+        color::success(&format!("{} compiled -> {}", input, out_path))
+    );
     Ok(())
 }

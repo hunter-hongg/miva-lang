@@ -1,6 +1,45 @@
 use crate::ast::*;
 use crate::symbol_table::SymbolTable;
 
+/// Escape a string value for use in a C++ string literal.
+///
+/// The Miva frontend's `process_escapes` stores escape sequences as follows:
+/// - `\n` → the two-char string `\n` (backslash + n) — intended to become `\n` in C++ (newline)
+/// - `\t` → the two-char string `\t` — intended to become `\t` in C++ (tab)
+/// - `\"` → the single char `"` — must become `\"` in C++
+/// - `\\` → the single char `\` — must become `\\` in C++
+///
+/// So we must escape only characters that would BREAK the C++ literal:
+/// `"` and standalone `\` (i.e. `\` not followed by n/t/r/0/x/u/U).
+fn cxx_escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => {
+                // Check if next char forms a known C++ escape sequence
+                match chars.clone().next() {
+                    Some('n') | Some('t') | Some('r') | Some('0') | Some('x') | Some('u')
+                    | Some('U') => {
+                        // Leave as-is: it's part of a C++ escape sequence
+                        out.push('\\');
+                        if let Some(next) = chars.next() {
+                            out.push(next);
+                        }
+                    }
+                    _ => {
+                        // Standalone backslash: escape it
+                        out.push_str("\\\\");
+                    }
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn indent_str(n: usize) -> String {
     " ".repeat(n * 2)
 }
@@ -158,8 +197,10 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
             if *value { "true" } else { "false" }
         ),
         Expr::EFloat { value, .. } => format!("mvp_builtin_float({})", value.to_string()),
-        Expr::EChar { value, .. } => format!("'{}'", value.escape_default()),
-        Expr::EString { value, .. } => format!("mvp_builtin_string(\"{}\")", value),
+        Expr::EChar { value, .. } => format!("'{}'", cxx_escape_string(value)),
+        Expr::EString { value, .. } => {
+            format!("mvp_builtin_string(\"{}\")", cxx_escape_string(value))
+        }
         Expr::EVar { name, .. } => name.clone(),
         Expr::EMove { name, .. } => format!("std::move({})", name),
         Expr::EClone { name, .. } => format!("decltype({})({})", name, name),
@@ -195,6 +236,7 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
         Expr::EAddr { expr, .. } => format!("&({})", cxx_expr(expr, depth)),
         Expr::EDeref { expr, .. } => format!("*({})", cxx_expr(expr, depth)),
         Expr::EMacro { .. } => String::new(),
+        Expr::EMacroVar { .. } => unreachable!(),
     }
 }
 
@@ -315,7 +357,9 @@ fn cxx_block(stmts: &[Stmt], result: &Option<Box<Expr>>, depth: usize) -> String
                 expr_str
             )
         }
-        Stmt::SLetTyped { name, typ, expr, .. } => {
+        Stmt::SLetTyped {
+            name, typ, expr, ..
+        } => {
             let expr_str = cxx_expr(expr, inner);
             format!(
                 "{}{}{} {} = {};\n",
@@ -352,8 +396,16 @@ fn cxx_stmt(depth: usize, stmt: &Stmt) -> String {
             let mut_str = if *mutable { "auto " } else { "const auto " };
             format!("{}{}{} = {};\n", ind, mut_str, name, cxx_expr(expr, depth))
         }
-        Stmt::SLetTyped { name, typ, expr, .. } => {
-            format!("{}{} {} = {};\n", ind, cxx_type(typ), name, cxx_expr(expr, depth))
+        Stmt::SLetTyped {
+            name, typ, expr, ..
+        } => {
+            format!(
+                "{}{} {} = {};\n",
+                ind,
+                cxx_type(typ),
+                name,
+                cxx_expr(expr, depth)
+            )
         }
         Stmt::SReturn { expr, .. } => {
             format!("{}return {};\n", ind, cxx_expr(expr, depth))
@@ -397,6 +449,7 @@ fn cxx_def(def: &Def, depth: usize) -> String {
         Def::DImpl {
             struct_name, impls, ..
         } => cxx_impl(struct_name, impls, ind),
+        Def::DMacro { .. } => unreachable!(),
         Def::DModule { .. }
         | Def::SExport { .. }
         | Def::SImport { .. }
@@ -778,6 +831,88 @@ mod tests {
 
     fn loc() -> Loc {
         Loc { line: 1, col: 1 }
+    }
+
+    // ===== Unicode string encoding =====
+
+    #[test]
+    fn test_cxx_expr_string_unicode_bytes() {
+        // Direct byte check: the ═ char (U+2550) should be E2 95 90 in UTF-8
+        let value = "\u{2550}";
+        assert_eq!(
+            value.as_bytes(),
+            &[0xe2, 0x95, 0x90],
+            "Rust string should contain correct UTF-8"
+        );
+
+        let e = Expr::EString {
+            loc: loc(),
+            value: value.to_string(),
+        };
+        let result = cxx_expr(&e, 0);
+        // Find the string content inside mvp_builtin_string("...")
+        let prefix = "mvp_builtin_string(\"";
+        let suffix = "\")";
+        assert!(
+            result.starts_with(prefix),
+            "Result should start with prefix"
+        );
+        assert!(result.ends_with(suffix), "Result should end with suffix");
+        let inner = &result[prefix.len()..result.len() - suffix.len()];
+        // The inner content should be the UTF-8 bytes of ═, NOT double-encoded
+        assert_eq!(
+            inner.as_bytes(),
+            &[0xe2, 0x95, 0x90],
+            "Inner string value should be correct UTF-8, not C3 A2 C2 95 C2 90"
+        );
+    }
+
+    // ===== build_ir Unicode integration =====
+
+    #[test]
+    fn test_build_ir_unicode_with_macro_expansion() {
+        // Simulate what happens with prints!/printlns! macros
+        // The string is directly in an EString inside an ECall to "print"
+        let body_expr = Expr::EBlock {
+            loc: loc(),
+            stmts: vec![Stmt::SExpr {
+                loc: loc(),
+                expr: Box::new(Expr::ECall {
+                    loc: loc(),
+                    name: "print".to_string(),
+                    args: vec![Expr::EString {
+                        loc: loc(),
+                        value: "\u{2550}\u{2550}\u{2550} Hello\u{2550}\u{2550}\u{2550}".to_string(),
+                    }],
+                }),
+            }],
+            result: None,
+        };
+
+        let defs = vec![Def::DFunc {
+            loc: loc(),
+            name: "main".to_string(),
+            params: vec![],
+            returns: None,
+            body: Box::new(body_expr),
+            safety: Safety::Safe,
+        }];
+
+        let [program, _header, _test] = build_ir(&defs);
+
+        // Check the correct UTF-8 bytes for ═ are present
+        let correct: &[u8] = &[0xe2, 0x95, 0x90];
+        let wrong_triple: &[u8] = &[0xc3, 0xa2, 0xc2, 0x95, 0xc2, 0x90];
+
+        assert!(
+            program.as_bytes().windows(3).any(|w| w == correct),
+            "program bytes should contain correct UTF-8 for ═"
+        );
+
+        assert!(
+            !program.as_bytes().windows(6).any(|w| w == wrong_triple),
+            "program bytes should NOT contain double-encoded UTF-8"
+        );
     }
 
     // ===== indent_str =====

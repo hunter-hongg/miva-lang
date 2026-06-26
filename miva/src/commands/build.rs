@@ -78,7 +78,7 @@ fn collect_imports_with_graph(
     if exists(_file)? {
         file = _file.to_string();
     } else if file_parts.is_empty() {
-        color::errize("cannot parse import file");
+        color::error("cannot parse import file");
         anyhow::bail!("parsing failed")
     } else {
         let first = *file_parts.get(0).unwrap_or(&"");
@@ -133,6 +133,39 @@ fn collect_imports_with_graph(
     Ok(())
 }
 
+/// Collect all macro definitions from all source files.
+///
+/// Runs the frontend on each file, parses the JSON AST, and extracts
+/// `DMacro` definitions into a shared `MacroTable`. This is called once
+/// before per-file compilation so that every file's macro expansion has
+/// access to macros defined anywhere in the project.
+fn collect_all_macros(
+    frontend: &str,
+    work_dir: &Option<String>,
+    files: &[String],
+) -> macro_expand::MacroTable {
+    let mut table = macro_expand::MacroTable::new();
+    for file in files {
+        match frontend::run_frontend(frontend, work_dir, file) {
+            Ok(json_str) => {
+                if let Ok(ast) = crate::json_ast::from_str(&json_str) {
+                    let file_macros = macro_expand::collect_macros(&ast.defs);
+                    for (name, def) in file_macros {
+                        table.entry(name).or_insert(def);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: failed to parse {} for macro collection: {}",
+                    file, e
+                );
+            }
+        }
+    }
+    table
+}
+
 fn make_cache_key(file: &str, std_path: &str) -> String {
     if let Some(rest) = file.strip_prefix(std_path) {
         rest.trim_start_matches('/').to_string()
@@ -171,6 +204,7 @@ fn compile_file_to_cpp(
     cache_dir: &Path,
     std_path: &str,
     _verbose: bool,
+    macro_table: &macro_expand::MacroTable,
 ) -> Result<(PathBuf, bool)> {
     let cache_key = make_cache_key(file, std_path);
     let cpp_path = cache_dir.join(format!("{}.cpp", cache_key));
@@ -186,7 +220,7 @@ fn compile_file_to_cpp(
     let ast = json_ast::from_str(&json_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse JSON AST from {}: {}", file, e))?;
 
-    let defs = macro_expand::expand_macros(&ast.defs)?;
+    let defs = macro_expand::expand_macros(&ast.defs, macro_table)?;
 
     let sem_errors = semantic::check_program(&defs);
     if !sem_errors.is_empty() {
@@ -327,8 +361,7 @@ fn compile_cpp_to_obj(
         .map_err(|e| anyhow::anyhow!("Failed to run g++: {}", e))?;
 
     if !compile_output.status.success() {
-        eprintln!("{}", "-".repeat(30));
-        eprintln!("{}", color::errize("g++ compilation failed"));
+        eprintln!("{}", color::error("g++ compilation failed"));
         clean::exec(false)?;
         std::process::exit(1);
     }
@@ -381,7 +414,7 @@ fn link_objects(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("{}", color::errize(&format!("linking failed:\n{}", stderr)));
+        eprintln!("{}", color::error(&format!("linking failed:\n{}", stderr)));
         std::process::exit(1);
     }
 
@@ -428,7 +461,7 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
 
     eprintln!(
         "{}",
-        color::infoize(&format!("building {} ({})", name, project_type))
+        color::info(&format!("building {} ({})", name, project_type))
     );
 
     let std_path_str = std_include_dir.to_string_lossy();
@@ -459,12 +492,25 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
         }
     }
 
+    // Phase 0: Collect macro definitions from all files (cross-file availability)
+    let macro_table = collect_all_macros(&frontend, &frontend_work_dir, &files);
+    let macro_count = macro_table.len();
+    if macro_count > 0 {
+        eprintln!(
+            "{}",
+            color::step(
+                "macros",
+                &format!("{} custom macro(s) collected", macro_count)
+            )
+        );
+    }
+
     // Phase 1: Compile each .miva to .cpp (content-hash based caching)
     let mut cpp_results: Vec<(String, PathBuf, bool)> = Vec::new();
     let mut recompiled_files: HashSet<String> = HashSet::new();
 
     for file in &files {
-        eprintln!("{}", color::logize(color::CYAN, "COMPILE", file));
+        eprintln!("{}", color::step("compile", file));
 
         let cache_key = make_cache_key(file, &std_path_str);
         let was_cached = !needs_rebuild_by_hash(file, &cache_dir, &cache_key);
@@ -476,6 +522,7 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
             &cache_dir,
             &std_path_str,
             verbose,
+            &macro_table,
         )?;
 
         if !was_cached {
@@ -532,8 +579,7 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
         obj_files.push(obj_path);
     }
 
-    eprintln!("{}", "-".repeat(30));
-    eprintln!("{}", color::logize(color::CYAN, "LINK", name));
+    eprintln!("{}", color::step("link", name));
 
     let _ = link_objects(&obj_files, name, &build_dir, project_type, release)?;
 
@@ -552,10 +598,7 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
         }
     }
 
-    println!(
-        "{}",
-        color::logize(color::GREEN, "SUCCEDD", "compilation succeeded"),
-    );
+    println!("{}", color::success("compilation finished"),);
 
     Ok(())
 }

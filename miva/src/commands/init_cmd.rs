@@ -74,6 +74,6 @@ pub fn exec(args: Args, _verbose: bool) -> Result<()> {
             .context("failed to write src/lib.miva")?;
     }
 
-    eprintln!("{}", color::infoize(format!("initialized {} project in {}", args.type_, args.name).as_str()));
+    eprintln!("{}", color::info(&format!("initialized {} project '{}'", args.type_, args.name)));
     Ok(())
 }

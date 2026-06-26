@@ -107,8 +107,8 @@ fn check_expr(expr: &Expr, modname: &str, warnings: &mut Vec<Warning>) {
                 check_expr(arg, modname, warnings);
             }
         }
-        Expr::EMacro { .. } => {
-            // No-op: macros are skipped
+        Expr::EMacro { .. } | Expr::EMacroVar { .. } => {
+            // No-op: macros/macro-vars are skipped
         }
         Expr::EBinOp { left, right, .. } => {
             check_expr(left, modname, warnings);
@@ -287,7 +287,8 @@ fn check_annotations(defs: &[Def]) -> Vec<Warning> {
                 | Def::SImport { loc, .. }
                 | Def::SImportAs { loc, .. }
                 | Def::SImportHere { loc, .. }
-                | Def::DImpl { loc, .. } => loc,
+                | Def::DImpl { loc, .. }
+                | Def::DMacro { loc, .. } => loc,
                 // DCMagical and DCIntro don't need annotations
                 Def::DCMagical { .. } | Def::DCIntro { .. } => {
                     prev = Some(cur);
@@ -310,7 +311,8 @@ fn check_annotations(defs: &[Def]) -> Vec<Warning> {
                 | Def::SImport { .. }
                 | Def::SImportAs { .. }
                 | Def::SImportHere { .. }
-                | Def::DImpl { .. } => false,
+                | Def::DImpl { .. }
+                | Def::DMacro { .. } => false,
                 // DCMagical/DCIntro already handled above (skipped)
                 Def::DCMagical { .. } | Def::DCIntro { .. } => unreachable!(),
             };
@@ -357,7 +359,8 @@ pub fn get_warnings(defs: &[Def]) -> Vec<Warning> {
             | Def::SImportHere { .. }
             | Def::DCMagical { .. }
             | Def::DCIntro { .. }
-            | Def::DImpl { .. } => {}
+            | Def::DImpl { .. }
+            | Def::DMacro { .. } => {}
         }
     }
 

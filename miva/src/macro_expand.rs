@@ -1,37 +1,80 @@
+use std::collections::HashMap;
+
 use crate::ast::*;
 use anyhow::{bail, Result};
 
-/// Expand all macros (`include_str!`, `prints!`, `printlns!`, `assert!`)
-/// in the given definition list.
+/// A macro definition collected from source.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct MacroDef {
+    pub name: String,
+    pub params: Vec<MacroParam>,
+    pub body: Box<Expr>,
+}
+
+/// Global macro table: short macro name → definition.
+pub type MacroTable = HashMap<String, MacroDef>;
+
+/// Collect `DMacro` definitions from a raw (pre-expansion) def list.
+pub fn collect_macros(defs: &[Def]) -> MacroTable {
+    let mut table = MacroTable::new();
+    for def in defs {
+        if let Def::DMacro { name, params, body, .. } = def {
+            table.insert(
+                name.clone(),
+                MacroDef {
+                    name: name.clone(),
+                    params: params.clone(),
+                    body: body.clone(),
+                },
+            );
+        }
+    }
+    table
+}
+
+/// Expand all macros (`include_str!`, `prints!`, `printlns!`, `assert!`,
+/// and user-defined custom macros) in the given definition list.
+///
+/// `macro_table` contains custom macro definitions collected from all files
+/// in the project. Built-in macros are always available.
 ///
 /// This is a pure AST → AST transformation that runs after JSON parsing
 /// and before semantic analysis. It recursively traverses all expressions,
 /// replacing `Expr::EMacro` nodes with their expanded forms.
-pub fn expand_macros(defs: &[Def]) -> Result<Vec<Def>> {
+/// `DMacro` definitions are removed from the output; `EMacroVar` nodes are
+/// only valid inside macro bodies and will be substituted.
+pub fn expand_macros(defs: &[Def], macro_table: &MacroTable) -> Result<Vec<Def>> {
     let mut addf: Vec<Def> = Vec::new();
 
     let res: Vec<Def> = defs
         .iter()
-        .map(|d| expand_def(d, &mut addf))
+        .map(|d| expand_def(d, &mut addf, macro_table))
         .collect::<Result<Vec<_>>>()?;
 
     // Inject accumulated imports after the first definition
     // (mirrors OCaml: `first :: (!addf @ rest)`)
-    Ok(if res.is_empty() {
+    let expanded = if res.is_empty() {
         addf
     } else {
         let mut result = vec![res[0].clone()];
         result.extend(addf);
         result.extend(res[1..].iter().cloned());
         result
-    })
+    };
+
+    // Filter out DMacro definitions (they've been collected and expanded)
+    Ok(expanded
+        .into_iter()
+        .filter(|d| !matches!(d, Def::DMacro { .. }))
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
 // Internal: definition-level recursion
 // ---------------------------------------------------------------------------
 
-fn expand_def(def: &Def, addf: &mut Vec<Def>) -> Result<Def> {
+fn expand_def(def: &Def, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Result<Def> {
     match def {
         Def::DFunc {
             loc,
@@ -45,15 +88,15 @@ fn expand_def(def: &Def, addf: &mut Vec<Def>) -> Result<Def> {
             name: name.clone(),
             params: params.clone(),
             returns: returns.clone(),
-            body: Box::new(expand_expr(body, addf)?),
+            body: Box::new(expand_expr(body, addf, macro_table)?),
             safety: safety.clone(),
         }),
         Def::DTest { loc, name, body } => Ok(Def::DTest {
             loc: loc.clone(),
             name: name.clone(),
-            body: Box::new(expand_expr(body, addf)?),
+            body: Box::new(expand_expr(body, addf, macro_table)?),
         }),
-        // DStruct, SImport, SExport, DModule, etc. pass through unchanged
+        // DStruct, SImport, SExport, DModule, DMacro, etc. pass through unchanged
         _ => Ok(def.clone()),
     }
 }
@@ -62,7 +105,7 @@ fn expand_def(def: &Def, addf: &mut Vec<Def>) -> Result<Def> {
 // Internal: statement-level recursion
 // ---------------------------------------------------------------------------
 
-fn expand_stmt(stmt: &Stmt, addf: &mut Vec<Def>) -> Result<Stmt> {
+fn expand_stmt(stmt: &Stmt, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Result<Stmt> {
     match stmt {
         Stmt::SLet {
             loc,
@@ -73,26 +116,26 @@ fn expand_stmt(stmt: &Stmt, addf: &mut Vec<Def>) -> Result<Stmt> {
             loc: loc.clone(),
             mutable: *mutable,
             name: name.clone(),
-            expr: Box::new(expand_expr(expr, addf)?),
+            expr: Box::new(expand_expr(expr, addf, macro_table)?),
         }),
         Stmt::SLetTyped { loc, name, typ, expr } => Ok(Stmt::SLetTyped {
             loc: loc.clone(),
             name: name.clone(),
             typ: typ.clone(),
-            expr: Box::new(expand_expr(expr, addf)?),
+            expr: Box::new(expand_expr(expr, addf, macro_table)?),
         }),
         Stmt::SAssign { loc, name, expr } => Ok(Stmt::SAssign {
             loc: loc.clone(),
             name: name.clone(),
-            expr: Box::new(expand_expr(expr, addf)?),
+            expr: Box::new(expand_expr(expr, addf, macro_table)?),
         }),
         Stmt::SReturn { loc, expr } => Ok(Stmt::SReturn {
             loc: loc.clone(),
-            expr: Box::new(expand_expr(expr, addf)?),
+            expr: Box::new(expand_expr(expr, addf, macro_table)?),
         }),
         Stmt::SExpr { loc, expr } => Ok(Stmt::SExpr {
             loc: loc.clone(),
-            expr: Box::new(expand_expr(expr, addf)?),
+            expr: Box::new(expand_expr(expr, addf, macro_table)?),
         }),
         // SCIntro and SEmpty carry no expressions
         Stmt::SCIntro { .. } | Stmt::SEmpty { .. } => Ok(stmt.clone()),
@@ -103,17 +146,20 @@ fn expand_stmt(stmt: &Stmt, addf: &mut Vec<Def>) -> Result<Stmt> {
 // Internal: expression-level recursion
 // ---------------------------------------------------------------------------
 
-fn expand_expr(expr: &Expr, addf: &mut Vec<Def>) -> Result<Expr> {
+fn expand_expr(expr: &Expr, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Result<Expr> {
     match expr {
         // ── Macro call ──────────────────────────────────────────────────
-        Expr::EMacro { loc, name, args } => expand_macro(loc, name, args, addf),
+        Expr::EMacro { loc, name, args } => expand_macro(loc, name, args, addf, macro_table),
 
         // ── Recursive (has sub-expressions) ─────────────────────────────
+        Expr::EMacroVar { .. } => {
+            bail!("macro variable outside macro body: EMacroVar should have been substituted");
+        }
         Expr::EStructLit { loc, name, fields } => {
             let expanded = fields
                 .iter()
                 .map(|f| {
-                    expand_expr(&f.value, addf)
+                    expand_expr(&f.value, addf, macro_table)
                         .map(|v| ValueField { name: f.name.clone(), value: v })
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -125,14 +171,14 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>) -> Result<Expr> {
         }
         Expr::EFieldAccess { loc, expr: e, field } => Ok(Expr::EFieldAccess {
             loc: loc.clone(),
-            expr: Box::new(expand_expr(e, addf)?),
+            expr: Box::new(expand_expr(e, addf, macro_table)?),
             field: field.clone(),
         }),
         Expr::EBinOp { loc, op, left, right } => Ok(Expr::EBinOp {
             loc: loc.clone(),
             op: op.clone(),
-            left: Box::new(expand_expr(left, addf)?),
-            right: Box::new(expand_expr(right, addf)?),
+            left: Box::new(expand_expr(left, addf, macro_table)?),
+            right: Box::new(expand_expr(right, addf, macro_table)?),
         }),
         Expr::EIf {
             loc,
@@ -141,11 +187,11 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>) -> Result<Expr> {
             else_,
         } => Ok(Expr::EIf {
             loc: loc.clone(),
-            cond: Box::new(expand_expr(cond, addf)?),
-            then: Box::new(expand_expr(then, addf)?),
+            cond: Box::new(expand_expr(cond, addf, macro_table)?),
+            then: Box::new(expand_expr(then, addf, macro_table)?),
             else_: else_
                 .as_ref()
-                .map(|e| expand_expr(e, addf).map(Box::new))
+                .map(|e| expand_expr(e, addf, macro_table).map(Box::new))
                 .transpose()?,
         }),
         Expr::EChoose {
@@ -158,25 +204,25 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>) -> Result<Expr> {
                 .iter()
                 .map(|c| {
                     Ok(WhenCase {
-                        when: Box::new(expand_expr(&c.when, addf)?),
-                        then: Box::new(expand_expr(&c.then, addf)?),
+                        when: Box::new(expand_expr(&c.when, addf, macro_table)?),
+                        then: Box::new(expand_expr(&c.then, addf, macro_table)?),
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
             Ok(Expr::EChoose {
                 loc: loc.clone(),
-                var: Box::new(expand_expr(var, addf)?),
+                var: Box::new(expand_expr(var, addf, macro_table)?),
                 cases,
                 otherwise: otherwise
                     .as_ref()
-                    .map(|e| expand_expr(e, addf).map(Box::new))
+                    .map(|e| expand_expr(e, addf, macro_table).map(Box::new))
                     .transpose()?,
             })
         }
         Expr::ECall { loc, name, args } => {
             let args = args
                 .iter()
-                .map(|a| expand_expr(a, addf))
+                .map(|a| expand_expr(a, addf, macro_table))
                 .collect::<Result<Vec<_>>>()?;
             Ok(Expr::ECall {
                 loc: loc.clone(),
@@ -186,27 +232,27 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>) -> Result<Expr> {
         }
         Expr::ECast { loc, expr: e, to } => Ok(Expr::ECast {
             loc: loc.clone(),
-            expr: Box::new(expand_expr(e, addf)?),
+            expr: Box::new(expand_expr(e, addf, macro_table)?),
             to: to.clone(),
         }),
         Expr::EBlock { loc, stmts, result } => {
             let stmts = stmts
                 .iter()
-                .map(|s| expand_stmt(s, addf))
+                .map(|s| expand_stmt(s, addf, macro_table))
                 .collect::<Result<Vec<_>>>()?;
             Ok(Expr::EBlock {
                 loc: loc.clone(),
                 stmts,
                 result: result
                     .as_ref()
-                    .map(|e| expand_expr(e, addf).map(Box::new))
+                    .map(|e| expand_expr(e, addf, macro_table).map(Box::new))
                     .transpose()?,
             })
         }
         Expr::EArrayLit { loc, values } => {
             let values = values
                 .iter()
-                .map(|v| expand_expr(v, addf))
+                .map(|v| expand_expr(v, addf, macro_table))
                 .collect::<Result<Vec<_>>>()?;
             Ok(Expr::EArrayLit {
                 loc: loc.clone(),
@@ -215,11 +261,11 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>) -> Result<Expr> {
         }
         Expr::EAddr { loc, expr: e } => Ok(Expr::EAddr {
             loc: loc.clone(),
-            expr: Box::new(expand_expr(e, addf)?),
+            expr: Box::new(expand_expr(e, addf, macro_table)?),
         }),
         Expr::EDeref { loc, expr: e } => Ok(Expr::EDeref {
             loc: loc.clone(),
-            expr: Box::new(expand_expr(e, addf)?),
+            expr: Box::new(expand_expr(e, addf, macro_table)?),
         }),
         Expr::EFor {
             loc,
@@ -229,17 +275,17 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>) -> Result<Expr> {
         } => Ok(Expr::EFor {
             loc: loc.clone(),
             var: var.clone(),
-            range: Box::new(expand_expr(range, addf)?),
-            body: Box::new(expand_expr(body, addf)?),
+            range: Box::new(expand_expr(range, addf, macro_table)?),
+            body: Box::new(expand_expr(body, addf, macro_table)?),
         }),
         Expr::ELoop { loc, body } => Ok(Expr::ELoop {
             loc: loc.clone(),
-            body: Box::new(expand_expr(body, addf)?),
+            body: Box::new(expand_expr(body, addf, macro_table)?),
         }),
         Expr::EWhile { loc, cond, body } => Ok(Expr::EWhile {
             loc: loc.clone(),
-            cond: Box::new(expand_expr(cond, addf)?),
-            body: Box::new(expand_expr(body, addf)?),
+            cond: Box::new(expand_expr(cond, addf, macro_table)?),
+            body: Box::new(expand_expr(body, addf, macro_table)?),
         }),
 
         // ── Leaf types (no sub-expressions) ─────────────────────────────
@@ -259,13 +305,223 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>) -> Result<Expr> {
 // Individual macro expansions
 // ---------------------------------------------------------------------------
 
-fn expand_macro(loc: &Loc, name: &str, args: &[Expr], addf: &mut Vec<Def>) -> Result<Expr> {
+fn expand_macro(
+    loc: &Loc,
+    name: &str,
+    args: &[Expr],
+    addf: &mut Vec<Def>,
+    macro_table: &MacroTable,
+) -> Result<Expr> {
+    // 1. Check built-in macros first
     match name {
-        "include_str" => expand_include_str(loc, args),
-        "prints" => expand_prints(loc, args, addf, false),
-        "printlns" => expand_prints(loc, args, addf, true),
-        "assert" => expand_assert(loc, args, addf),
-        _ => bail!("Unknown macro: {}", name),
+        "include_str" => return expand_include_str(loc, args),
+        "prints" => return expand_prints(loc, args, addf, false, macro_table),
+        "printlns" => return expand_prints(loc, args, addf, true, macro_table),
+        "assert" => return expand_assert(loc, args, addf, macro_table),
+        _ => {}
+    }
+
+    // 2. Check custom macro table
+    if let Some(macro_def) = macro_table.get(name) {
+        if args.len() != macro_def.params.len() {
+            bail!(
+                "macro '{}' takes {} arguments but {} were given",
+                name,
+                macro_def.params.len(),
+                args.len()
+            );
+        }
+        // Substitute EMacroVar placeholders in the body with actual arguments
+        let param_names: Vec<&str> = macro_def.params.iter().map(|p| p.name.as_str()).collect();
+        let substituted = substitute_macro_vars(&macro_def.body, args, &param_names);
+        // Recursively expand any macros in the expanded body
+        return expand_expr(&substituted, addf, macro_table);
+    }
+
+    // 3. Unknown macro
+    bail!("Unknown macro: {}", name);
+}
+
+/// Walk an expression tree and replace `EMacroVar { name, .. }` nodes
+/// with the corresponding argument expression from `args`.
+fn substitute_macro_vars(expr: &Expr, args: &[Expr], param_names: &[&str]) -> Expr {
+    match expr {
+        Expr::EMacroVar { name, .. } => {
+            // Find the index of this param name and return the corresponding arg
+            let idx = param_names
+                .iter()
+                .position(|n| *n == name)
+                .unwrap_or_else(|| panic!("macro variable ${} not found in parameter list", name));
+            args[idx].clone()
+        }
+        // Recursive cases
+        Expr::EStructLit { loc, name, fields } => Expr::EStructLit {
+            loc: loc.clone(),
+            name: name.clone(),
+            fields: fields
+                .iter()
+                .map(|f| ValueField {
+                    name: f.name.clone(),
+                    value: substitute_macro_vars(&f.value, args, param_names),
+                })
+                .collect(),
+        },
+        Expr::EFieldAccess { loc, expr: e, field } => Expr::EFieldAccess {
+            loc: loc.clone(),
+            expr: Box::new(substitute_macro_vars(e, args, param_names)),
+            field: field.clone(),
+        },
+        Expr::EBinOp { loc, op, left, right } => Expr::EBinOp {
+            loc: loc.clone(),
+            op: op.clone(),
+            left: Box::new(substitute_macro_vars(left, args, param_names)),
+            right: Box::new(substitute_macro_vars(right, args, param_names)),
+        },
+        Expr::EIf {
+            loc,
+            cond,
+            then,
+            else_,
+        } => Expr::EIf {
+            loc: loc.clone(),
+            cond: Box::new(substitute_macro_vars(cond, args, param_names)),
+            then: Box::new(substitute_macro_vars(then, args, param_names)),
+            else_: else_
+                .as_ref()
+                .map(|e| Box::new(substitute_macro_vars(e, args, param_names))),
+        },
+        Expr::EChoose {
+            loc,
+            var,
+            cases,
+            otherwise,
+        } => Expr::EChoose {
+            loc: loc.clone(),
+            var: Box::new(substitute_macro_vars(var, args, param_names)),
+            cases: cases
+                .iter()
+                .map(|c| WhenCase {
+                    when: Box::new(substitute_macro_vars(&c.when, args, param_names)),
+                    then: Box::new(substitute_macro_vars(&c.then, args, param_names)),
+                })
+                .collect(),
+            otherwise: otherwise
+                .as_ref()
+                .map(|e| Box::new(substitute_macro_vars(e, args, param_names))),
+        },
+        Expr::ECall { loc, name, args: cargs } => Expr::ECall {
+            loc: loc.clone(),
+            name: name.clone(),
+            args: cargs
+                .iter()
+                .map(|a| substitute_macro_vars(a, args, param_names))
+                .collect(),
+        },
+        Expr::EMacro { loc, name, args: margs } => Expr::EMacro {
+            loc: loc.clone(),
+            name: name.clone(),
+            args: margs
+                .iter()
+                .map(|a| substitute_macro_vars(a, args, param_names))
+                .collect(),
+        },
+        Expr::ECast { loc, expr: e, to } => Expr::ECast {
+            loc: loc.clone(),
+            expr: Box::new(substitute_macro_vars(e, args, param_names)),
+            to: to.clone(),
+        },
+        Expr::EBlock { loc, stmts, result } => Expr::EBlock {
+            loc: loc.clone(),
+            stmts: stmts
+                .iter()
+                .map(|s| substitute_stmt_vars(s, args, param_names))
+                .collect(),
+            result: result
+                .as_ref()
+                .map(|e| Box::new(substitute_macro_vars(e, args, param_names))),
+        },
+        Expr::EArrayLit { loc, values } => Expr::EArrayLit {
+            loc: loc.clone(),
+            values: values
+                .iter()
+                .map(|v| substitute_macro_vars(v, args, param_names))
+                .collect(),
+        },
+        Expr::EAddr { loc, expr: e } => Expr::EAddr {
+            loc: loc.clone(),
+            expr: Box::new(substitute_macro_vars(e, args, param_names)),
+        },
+        Expr::EDeref { loc, expr: e } => Expr::EDeref {
+            loc: loc.clone(),
+            expr: Box::new(substitute_macro_vars(e, args, param_names)),
+        },
+        Expr::EFor {
+            loc,
+            var,
+            range,
+            body,
+        } => Expr::EFor {
+            loc: loc.clone(),
+            var: var.clone(),
+            range: Box::new(substitute_macro_vars(range, args, param_names)),
+            body: Box::new(substitute_macro_vars(body, args, param_names)),
+        },
+        Expr::ELoop { loc, body } => Expr::ELoop {
+            loc: loc.clone(),
+            body: Box::new(substitute_macro_vars(body, args, param_names)),
+        },
+        Expr::EWhile { loc, cond, body } => Expr::EWhile {
+            loc: loc.clone(),
+            cond: Box::new(substitute_macro_vars(cond, args, param_names)),
+            body: Box::new(substitute_macro_vars(body, args, param_names)),
+        },
+        // Leaf types — no substitution needed
+        Expr::EInt { .. }
+        | Expr::EBool { .. }
+        | Expr::EFloat { .. }
+        | Expr::EChar { .. }
+        | Expr::EString { .. }
+        | Expr::EVar { .. }
+        | Expr::EMove { .. }
+        | Expr::EClone { .. }
+        | Expr::EVoid { .. }
+        => expr.clone(),
+    }
+}
+
+fn substitute_stmt_vars(stmt: &Stmt, args: &[Expr], param_names: &[&str]) -> Stmt {
+    match stmt {
+        Stmt::SLet {
+            loc,
+            mutable,
+            name,
+            expr,
+        } => Stmt::SLet {
+            loc: loc.clone(),
+            mutable: *mutable,
+            name: name.clone(),
+            expr: Box::new(substitute_macro_vars(expr, args, param_names)),
+        },
+        Stmt::SLetTyped { loc, name, typ, expr } => Stmt::SLetTyped {
+            loc: loc.clone(),
+            name: name.clone(),
+            typ: typ.clone(),
+            expr: Box::new(substitute_macro_vars(expr, args, param_names)),
+        },
+        Stmt::SAssign { loc, name, expr } => Stmt::SAssign {
+            loc: loc.clone(),
+            name: name.clone(),
+            expr: Box::new(substitute_macro_vars(expr, args, param_names)),
+        },
+        Stmt::SReturn { loc, expr } => Stmt::SReturn {
+            loc: loc.clone(),
+            expr: Box::new(substitute_macro_vars(expr, args, param_names)),
+        },
+        Stmt::SExpr { loc, expr } => Stmt::SExpr {
+            loc: loc.clone(),
+            expr: Box::new(substitute_macro_vars(expr, args, param_names)),
+        },
+        Stmt::SCIntro { .. } | Stmt::SEmpty { .. } => stmt.clone(),
     }
 }
 
@@ -295,7 +551,13 @@ fn expand_include_str(loc: &Loc, args: &[Expr]) -> Result<Expr> {
 /// print(s)
 /// ```
 /// `printlns!` adds an extra `print("\n")` after the block.
-fn expand_prints(loc: &Loc, args: &[Expr], addf: &mut Vec<Def>, add_newline: bool) -> Result<Expr> {
+fn expand_prints(
+    loc: &Loc,
+    args: &[Expr],
+    addf: &mut Vec<Def>,
+    add_newline: bool,
+    macro_table: &MacroTable,
+) -> Result<Expr> {
     // Side-effect: inject `import std/str` at file top
     addf.push(Def::SImport {
         loc: loc.clone(),
@@ -317,7 +579,7 @@ fn expand_prints(loc: &Loc, args: &[Expr], addf: &mut Vec<Def>, add_newline: boo
 
     // For each arg: s = s + string_from(arg) + " "
     for arg in args {
-        let expanded_arg = expand_expr(arg, addf)?;
+        let expanded_arg = expand_expr(arg, addf, macro_table)?;
         stmts.push(Stmt::SAssign {
             loc: loc.clone(),
             name: "s".to_string(),
@@ -384,10 +646,15 @@ fn expand_prints(loc: &Loc, args: &[Expr], addf: &mut Vec<Def>, add_newline: boo
 /// ```text
 /// if (expr == false) { panic("Assertion failed") }
 /// ```
-fn expand_assert(loc: &Loc, args: &[Expr], addf: &mut Vec<Def>) -> Result<Expr> {
+fn expand_assert(
+    loc: &Loc,
+    args: &[Expr],
+    addf: &mut Vec<Def>,
+    macro_table: &MacroTable,
+) -> Result<Expr> {
     match args {
         [e] => {
-            let expanded_cond = expand_expr(e, addf)?;
+            let expanded_cond = expand_expr(e, addf, macro_table)?;
             Ok(Expr::EBlock {
                 loc: loc.clone(),
                 stmts: vec![Stmt::SExpr {
@@ -467,7 +734,8 @@ mod tests {
             }],
         });
 
-        let result = expand_macros(&defs)?;
+        let macro_table = MacroTable::new();
+        let result = expand_macros(&defs, &macro_table)?;
 
         // Expect: DFunc + SImport("std/str")
         assert_eq!(result.len(), 2, "should inject std/str import");
@@ -514,7 +782,8 @@ mod tests {
             }],
         });
 
-        let result = expand_macros(&defs)?;
+        let macro_table = MacroTable::new();
+        let result = expand_macros(&defs, &macro_table)?;
         assert_eq!(result.len(), 2);
 
         match &result[0] {
@@ -550,7 +819,8 @@ mod tests {
             }],
         });
 
-        let result = expand_macros(&defs)?;
+        let macro_table = MacroTable::new();
+        let result = expand_macros(&defs, &macro_table)?;
         assert_eq!(result.len(), 1, "assert! injects no imports");
 
         match &result[0] {
@@ -611,7 +881,8 @@ mod tests {
             }],
         });
 
-        let result = expand_macros(&defs)?;
+        let macro_table = MacroTable::new();
+        let result = expand_macros(&defs, &macro_table)?;
         assert_eq!(result.len(), 1);
 
         match &result[0] {
@@ -646,7 +917,8 @@ mod tests {
             args: vec![],
         });
 
-        let result = expand_macros(&defs);
+        let macro_table = MacroTable::new();
+        let result = expand_macros(&defs, &macro_table);
         assert!(result.is_err(), "unknown macro should return an error");
         let err = result.unwrap_err();
         assert!(
@@ -676,7 +948,8 @@ mod tests {
             }],
         });
 
-        let result = expand_macros(&defs)?;
+        let macro_table = MacroTable::new();
+        let result = expand_macros(&defs, &macro_table)?;
         assert_eq!(result.len(), 2, "prints! injects std/str import");
 
         // The body should be a block (prints! expansion) where the assign
@@ -719,7 +992,8 @@ mod tests {
         };
 
         let defs = wrap_main(inner_block);
-        let result = expand_macros(&defs)?;
+        let macro_table = MacroTable::new();
+        let result = expand_macros(&defs, &macro_table)?;
         assert_eq!(result.len(), 1);
 
         // The assert! inside the block should expand to EBlock([SExpr(EIf{...})]).
@@ -764,7 +1038,8 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_empty_defs() -> Result<()> {
-        let result = expand_macros(&[])?;
+        let macro_table = MacroTable::new();
+        let result = expand_macros(&[], &macro_table)?;
         assert!(result.is_empty(), "empty defs -> empty result");
         Ok(())
     }
@@ -796,8 +1071,223 @@ mod tests {
             },
         ];
 
-        let result = expand_macros(&defs)?;
+        let macro_table = MacroTable::new();
+        let result = expand_macros(&defs, &macro_table)?;
         assert_eq!(result.len(), 2, "non-macro defs pass through");
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // custom macro — basic substitution
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_custom_macro_substitution() -> Result<()> {
+        // Define: macro double = ($x: int) => { $x + $x };
+        let macro_def = Def::DMacro {
+            loc: loc(1, 1),
+            name: "double".to_string(),
+            params: vec![MacroParam {
+                name: "x".to_string(),
+                typ: Typ::TInt,
+            }],
+            body: Box::new(Expr::EBinOp {
+                loc: loc(1, 1),
+                op: BinOp::Add,
+                left: Box::new(Expr::EMacroVar {
+                    loc: loc(1, 1),
+                    name: "x".to_string(),
+                }),
+                right: Box::new(Expr::EMacroVar {
+                    loc: loc(1, 1),
+                    name: "x".to_string(),
+                }),
+            }),
+        };
+
+        // Call: double!(5) inside a function
+        let call = wrap_main(Expr::EMacro {
+            loc: loc(2, 1),
+            name: "double".to_string(),
+            args: vec![Expr::EInt {
+                loc: loc(2, 10),
+                value: 5,
+            }],
+        });
+
+        let mut defs = vec![macro_def];
+        defs.extend(call);
+
+        let macro_table = collect_macros(&defs);
+        let result = expand_macros(&defs, &macro_table)?;
+
+        // DMacro should be filtered out; only DFunc remains
+        assert_eq!(result.len(), 1, "DMacro should be filtered out");
+        match &result[0] {
+            Def::DFunc { body, .. } => match body.as_ref() {
+                Expr::EBinOp { op: BinOp::Add, left, right, .. } => {
+                    // Both left and right should be the argument (5)
+                    assert!(
+                        matches!(left.as_ref(), Expr::EInt { value: 5, .. }),
+                        "left side should be substituted with arg 5"
+                    );
+                    assert!(
+                        matches!(right.as_ref(), Expr::EInt { value: 5, .. }),
+                        "right side should be substituted with arg 5"
+                    );
+                }
+                _ => panic!("body should be EBinOp(Add)"),
+            },
+            _ => panic!("first def should be DFunc"),
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // custom macro — multiple parameters
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_custom_macro_multiple_params() -> Result<()> {
+        // Define: macro add = ($a: int, $b: int) => { $a + $b };
+        let macro_def = Def::DMacro {
+            loc: loc(1, 1),
+            name: "add".to_string(),
+            params: vec![
+                MacroParam { name: "a".to_string(), typ: Typ::TInt },
+                MacroParam { name: "b".to_string(), typ: Typ::TInt },
+            ],
+            body: Box::new(Expr::EBinOp {
+                loc: loc(1, 1),
+                op: BinOp::Add,
+                left: Box::new(Expr::EMacroVar {
+                    loc: loc(1, 1),
+                    name: "a".to_string(),
+                }),
+                right: Box::new(Expr::EMacroVar {
+                    loc: loc(1, 1),
+                    name: "b".to_string(),
+                }),
+            }),
+        };
+
+        // Call: add!(3, 7)
+        let call = wrap_main(Expr::EMacro {
+            loc: loc(2, 1),
+            name: "add".to_string(),
+            args: vec![
+                Expr::EInt { loc: loc(2, 7), value: 3 },
+                Expr::EInt { loc: loc(2, 10), value: 7 },
+            ],
+        });
+
+        let mut defs = vec![macro_def];
+        defs.extend(call);
+
+        let macro_table = collect_macros(&defs);
+        let result = expand_macros(&defs, &macro_table)?;
+
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            Def::DFunc { body, .. } => match body.as_ref() {
+                Expr::EBinOp { op: BinOp::Add, left, right, .. } => {
+                    // First arg = 3
+                    assert!(
+                        matches!(left.as_ref(), Expr::EInt { value: 3, .. }),
+                        "first arg should be 3, got {:?}",
+                        left
+                    );
+                    // Second arg = 7
+                    assert!(
+                        matches!(right.as_ref(), Expr::EInt { value: 7, .. }),
+                        "second arg should be 7, got {:?}",
+                        right
+                    );
+                }
+                _ => panic!("body should be EBinOp(Add)"),
+            },
+            _ => panic!("first def should be DFunc"),
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // custom macro — wrong argument count
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_custom_macro_wrong_arg_count() {
+        let macro_def = Def::DMacro {
+            loc: loc(1, 1),
+            name: "f".to_string(),
+            params: vec![MacroParam { name: "x".to_string(), typ: Typ::TInt }],
+            body: Box::new(Expr::EMacroVar { loc: loc(1, 1), name: "x".to_string() }),
+        };
+        let call = wrap_main(Expr::EMacro {
+            loc: loc(2, 1),
+            name: "f".to_string(),
+            args: vec![], // 0 arguments, but expected 1
+        });
+
+        let mut defs = vec![macro_def];
+        defs.extend(call);
+
+        let macro_table = collect_macros(&defs);
+        let result = expand_macros(&defs, &macro_table);
+        assert!(result.is_err(), "wrong arg count should error");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("takes 1 arguments but 0 were given"),
+            "error should mention arg count mismatch"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // custom macro — macro inside macro body (nested expansion)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_custom_macro_nested_builtin() -> Result<()> {
+        // Define: macro show = ($v: int) => { prints!($v); };
+        let body = Expr::EMacro {
+            loc: loc(1, 1),
+            name: "prints".to_string(),
+            args: vec![Expr::EMacroVar {
+                loc: loc(1, 1),
+                name: "v".to_string(),
+            }],
+        };
+        let macro_def = Def::DMacro {
+            loc: loc(1, 1),
+            name: "show".to_string(),
+            params: vec![MacroParam { name: "v".to_string(), typ: Typ::TInt }],
+            body: Box::new(body),
+        };
+
+        let call = wrap_main(Expr::EMacro {
+            loc: loc(2, 1),
+            name: "show".to_string(),
+            args: vec![Expr::EInt { loc: loc(2, 8), value: 42 }],
+        });
+
+        let mut defs = vec![macro_def];
+        defs.extend(call);
+
+        let macro_table = collect_macros(&defs);
+        let result = expand_macros(&defs, &macro_table)?;
+
+        // After expansion: DMacro is filtered out. Prints! injects SImport into addf,
+        // which is inserted after the first non-DMacro def → [SImport, DFunc]
+        assert_eq!(result.len(), 2, "custom macro + prints! expansion");
+        match &result[0] {
+            Def::SImport { path, .. } => assert_eq!(path, "std/str"),
+            _ => panic!("first should be import from prints! expansion"),
+        }
+        match &result[1] {
+            Def::DFunc { body, .. } => match body.as_ref() {
+                Expr::EBlock { stmts, .. } => {
+                    assert!(!stmts.is_empty(), "show! should expand to a block");
+                }
+                _ => panic!("body should be EBlock"),
+            },
+            _ => panic!("second should be DFunc"),
+        }
         Ok(())
     }
 
@@ -815,7 +1305,8 @@ mod tests {
             }],
         });
 
-        let result = expand_macros(&defs);
+        let macro_table = MacroTable::new();
+        let result = expand_macros(&defs, &macro_table);
         assert!(result.is_err(), "include_str! on missing file should error");
     }
 }

@@ -115,6 +115,7 @@ fn loc_of(e: &Expr) -> Loc {
         | Expr::EWhile { loc, .. }
         | Expr::ELoop { loc, .. }
         | Expr::EFor { loc, .. } => loc.clone(),
+        | Expr::EMacroVar { loc, .. } => loc.clone(),
     }
 }
 
@@ -706,6 +707,7 @@ fn infer_type(
             (Typ::TNull, errs)
         }
         Expr::EMacro { .. } => (Typ::TNull, vec![]),
+        Expr::EMacroVar { .. } => unreachable!(),
     }
 }
 

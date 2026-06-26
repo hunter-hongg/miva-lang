@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn exe_dir() -> Option<PathBuf> {
-    env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
 pub fn find_frontend() -> Option<(String, Option<String>)> {
@@ -11,9 +13,11 @@ pub fn find_frontend() -> Option<(String, Option<String>)> {
 
     if let Some(ref dir) = base {
         let candidates = [
-            dir.join("miva-frontend"),
+            // First, check the canonical frontend-rs build location (relative to miva binary)
             dir.join("../../../miva-frontend-rs/target/debug/miva-frontend"),
             dir.join("../../../miva-frontend-rs/target/release/miva-frontend"),
+            // Then check for a frontend bundled alongside the miva binary
+            dir.join("miva-frontend"),
         ];
         for c in &candidates {
             if c.exists() {

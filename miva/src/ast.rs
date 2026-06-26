@@ -35,6 +35,13 @@ pub struct ValueField {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacroParam {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub typ: Typ,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhenCase {
     pub when: Box<Expr>,
     pub then: Box<Expr>,
@@ -153,6 +160,8 @@ pub enum Expr {
     ECall { loc: Loc, name: String, args: Vec<Expr> },
     #[serde(rename = "macro")]
     EMacro { loc: Loc, name: String, args: Vec<Expr> },
+    #[serde(rename = "macroVar")]
+    EMacroVar { loc: Loc, name: String },
     #[serde(rename = "cast")]
     ECast { loc: Loc, expr: Box<Expr>, #[serde(rename = "to")] to: Typ },
     #[serde(rename = "block")]
@@ -224,4 +233,6 @@ pub enum Def {
     DCIntro { loc: Loc, content: String },
     #[serde(rename = "impl")]
     DImpl { loc: Loc, #[serde(rename = "struct")] struct_name: String, impls: Vec<ImplExpr> },
+    #[serde(rename = "macro")]
+    DMacro { loc: Loc, name: String, params: Vec<MacroParam>, body: Box<Expr> },
 }

@@ -9,13 +9,12 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
     if !Path::new("miva.toml").exists() {
         eprintln!(
             "{}",
-            color::errize("project not initialized in this directory")
+            color::error("project not initialized in this directory")
         );
         std::process::exit(1);
     }
 
     build::exec(verbose, release)?;
-    eprintln!("{}", "-".repeat(30));
 
     let config = Config::load().ok_or_else(|| anyhow::anyhow!("failed to parse miva.toml"))?;
     let project = config
@@ -28,7 +27,7 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("missing project.type in miva.toml"))?;
 
     if project_type == "lib" {
-        eprintln!("{}", color::errize("cannot run a library project"));
+        eprintln!("{}", color::error("cannot run a library project"));
         std::process::exit(1);
     }
 

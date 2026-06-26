@@ -71,6 +71,6 @@ fn main() {
 
     if let Some(e) = res.err() {
         let err = e.to_string();
-        println!("{}", color::errize(&err));
+        eprintln!("{}", color::error(&err));
     }
 }

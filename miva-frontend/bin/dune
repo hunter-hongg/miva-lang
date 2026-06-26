@@ -1,3 +1,0 @@
-(executable
- (name main)
- (libraries mvp_frontend_lib))

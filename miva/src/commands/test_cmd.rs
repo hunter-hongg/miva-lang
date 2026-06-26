@@ -102,7 +102,7 @@ fn compile_test(
         let stderr = String::from_utf8_lossy(&out.stderr);
         eprintln!(
             "{}",
-            color::errize(&format!(
+            color::error(&format!(
                 "test compilation failed for {}:\n{}",
                 test_file.display(),
                 stderr
@@ -115,7 +115,6 @@ fn compile_test(
 
 pub fn exec(args: Args, verbose: bool) -> Result<()> {
     build::exec(verbose, false)?;
-    eprintln!("{}", "-".repeat(30));
 
     let cache_dir = env::get_cache_dir_rel(false);
     let std_include = env::get_std_include_dir();
@@ -124,7 +123,7 @@ pub fn exec(args: Args, verbose: bool) -> Result<()> {
 
     let test_files = find_test_files(&cache_dir, &args.files);
     if test_files.is_empty() {
-        eprintln!("{}", color::colorize(color::YELLOW, "no test files found"));
+        eprintln!("{}", color::warn("no test files found"));
         return Ok(());
     }
 
@@ -150,7 +149,7 @@ pub fn exec(args: Args, verbose: bool) -> Result<()> {
 
         let exe_path = PathBuf::from("/tmp").join(format!("{}.test", test_name));
 
-        eprintln!("{}", color::logize(color::CYAN, "TESTING", test_name));
+        eprintln!("{}", color::step("test", test_name));
 
         let ok = compile_test(
             test_file,
@@ -178,7 +177,7 @@ pub fn exec(args: Args, verbose: bool) -> Result<()> {
         if !stderr_output.is_empty() {
             eprint!(
                 "{}",
-                color::errize(&format!("test stderr [{}]: {}", test_name, stderr_output))
+                color::error(&format!("test stderr [{}]: {}", test_name, stderr_output))
             );
         }
 
@@ -194,19 +193,15 @@ pub fn exec(args: Args, verbose: bool) -> Result<()> {
     if total > 0 {
         println!(
             "{}",
-            color::logize(
-                color::CYAN,
-                "SUMMARY",
-                &format!("{}/{} passed, {}/{} failed", passed, total, failed, total)
-            )
+            color::info(&format!(
+                "{}/{} passed, {}/{} failed",
+                passed, total, failed, total
+            ))
         );
         if failed > 0 {
-            println!("{}", color::logize(color::RED, "ERROR", "test failed"))
+            println!("{}", color::error("test failed"))
         } else {
-            println!(
-                "{}",
-                color::logize(color::GREEN, "SUCCEED", "all tests passed")
-            )
+            println!("{}", color::success("all tests passed"))
         }
     }
 
