@@ -66,17 +66,31 @@ fn check_all_lower(loc: &Loc, name: &str, typ: &str) -> Option<Warning> {
 fn deprecated_func(name: &str, modname: &str) -> Option<String> {
     let msg = |dep: &str, replacement: &str, is_macro: bool| {
         let kind = if is_macro { "macro" } else { "function" };
-        format!("\"{}\" is deprecated, use {} \"{}\" instead", dep, kind, replacement)
+        format!(
+            "\"{}\" is deprecated, use {} \"{}\" instead",
+            dep, kind, replacement
+        )
     };
     let notrec = |dep: &str, replacement: &str, is_macro: bool| {
         let kind = if is_macro { "macro" } else { "function" };
-        format!("\"{}\" is not recommended, use {} \"{}\" instead", dep, kind, replacement)
+        format!(
+            "\"{}\" is not recommended, use {} \"{}\" instead",
+            dep, kind, replacement
+        )
     };
     let msg_if = |dep: &str, replacement: &str, is_macro: bool, exclude: &str| {
-        if modname == exclude { None } else { Some(msg(dep, replacement, is_macro)) }
+        if modname == exclude {
+            None
+        } else {
+            Some(msg(dep, replacement, is_macro))
+        }
     };
     let notrec_if = |dep: &str, replacement: &str, is_macro: bool, exclude: &str| {
-        if modname == exclude { None } else { Some(notrec(dep, replacement, is_macro)) }
+        if modname == exclude {
+            None
+        } else {
+            Some(notrec(dep, replacement, is_macro))
+        }
     };
 
     match name {
@@ -99,7 +113,12 @@ fn deprecated_func(name: &str, modname: &str) -> Option<String> {
 
 fn check_expr(expr: &Expr, modname: &str, warnings: &mut Vec<Warning>) {
     match expr {
-        Expr::ECall { loc, name, args } => {
+        Expr::ECall {
+            loc,
+            name,
+            type_args: _,
+            args,
+        } => {
             if let Some(msg) = deprecated_func(name, modname) {
                 warnings.push(Warning::new("W0002", loc, &msg));
             }
@@ -114,14 +133,21 @@ fn check_expr(expr: &Expr, modname: &str, warnings: &mut Vec<Warning>) {
             check_expr(left, modname, warnings);
             check_expr(right, modname, warnings);
         }
-        Expr::EIf { cond, then, else_, .. } => {
+        Expr::EIf {
+            cond, then, else_, ..
+        } => {
             check_expr(cond, modname, warnings);
             check_expr(then, modname, warnings);
             if let Some(e) = else_ {
                 check_expr(e, modname, warnings);
             }
         }
-        Expr::EChoose { var, cases, otherwise, .. } => {
+        Expr::EChoose {
+            var,
+            cases,
+            otherwise,
+            ..
+        } => {
             check_expr(var, modname, warnings);
             for case in cases {
                 check_expr(&case.when, modname, warnings);
@@ -186,13 +212,17 @@ fn check_expr(expr: &Expr, modname: &str, warnings: &mut Vec<Warning>) {
 
 fn check_stmt(stmt: &Stmt, modname: &str, warnings: &mut Vec<Warning>) {
     match stmt {
-        Stmt::SLet { loc, name, expr, .. } => {
+        Stmt::SLet {
+            loc, name, expr, ..
+        } => {
             if let Some(w) = check_snake(loc, name, "var") {
                 warnings.push(w);
             }
             check_expr(expr, modname, warnings);
         }
-        Stmt::SLetTyped { loc, name, expr, .. } => {
+        Stmt::SLetTyped {
+            loc, name, expr, ..
+        } => {
             if let Some(w) = check_snake(loc, name, "var") {
                 warnings.push(w);
             }
@@ -212,11 +242,7 @@ fn check_stmt(stmt: &Stmt, modname: &str, warnings: &mut Vec<Warning>) {
             let s = content.trim();
             let sd: Vec<&str> = s.split(':').collect();
             if sd.len() < 2 {
-                warnings.push(Warning::new(
-                    "W0003",
-                    loc,
-                    "intro comments isn't valid",
-                ));
+                warnings.push(Warning::new("W0003", loc, "intro comments isn't valid"));
             } else {
                 warnings.push(Warning::new(
                     "W0003",
@@ -339,7 +365,9 @@ pub fn get_warnings(defs: &[Def]) -> Vec<Warning> {
 
     for def in defs {
         match def {
-            Def::DFunc { loc, name, body, .. } => {
+            Def::DFunc {
+                loc, name, body, ..
+            } => {
                 if let Some(w) = check_snake(loc, name, "function") {
                     warnings.push(w);
                 }
@@ -393,6 +421,7 @@ mod tests {
         Def::DFunc {
             loc: loc(),
             name: name.to_string(),
+            type_params: vec![],
             params: Vec::new(),
             returns: None,
             body: Box::new(body),
@@ -404,6 +433,7 @@ mod tests {
         Def::DFunc {
             loc: l.clone(),
             name: name.to_string(),
+            type_params: vec![],
             params: Vec::new(),
             returns: None,
             body: Box::new(body),
@@ -460,7 +490,10 @@ mod tests {
                         loc: loc(),
                         mutable: false,
                         name: "BadVar".to_string(),
-                        expr: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                        expr: Box::new(Expr::EInt {
+                            loc: loc(),
+                            value: 1,
+                        }),
                     }],
                     result: Some(Box::new(Expr::EVoid { loc: loc() })),
                 },
@@ -493,7 +526,11 @@ mod tests {
     #[test]
     fn test_module_name_with_dots_and_lowercase_is_valid() {
         let warns = get_warnings(&[make_module("std.io.utils")]);
-        assert!(warns.is_empty(), "std.io.utils should be valid: {:?}", warns);
+        assert!(
+            warns.is_empty(),
+            "std.io.utils should be valid: {:?}",
+            warns
+        );
     }
 
     #[test]
@@ -504,7 +541,11 @@ mod tests {
         ];
         let warns = get_warnings(&defs);
         let snake_warns: Vec<_> = warns.iter().filter(|w| w.code == "W0001").collect();
-        assert!(snake_warns.is_empty(), "my_function should pass snake check: {:?}", snake_warns);
+        assert!(
+            snake_warns.is_empty(),
+            "my_function should pass snake check: {:?}",
+            snake_warns
+        );
     }
 
     #[test]
@@ -519,7 +560,10 @@ mod tests {
                         loc: loc(),
                         mutable: false,
                         name: "my_var".to_string(),
-                        expr: Box::new(Expr::EInt { loc: loc(), value: 42 }),
+                        expr: Box::new(Expr::EInt {
+                            loc: loc(),
+                            value: 42,
+                        }),
                     }],
                     result: Some(Box::new(Expr::EVoid { loc: loc() })),
                 },
@@ -528,7 +572,11 @@ mod tests {
         ];
         let warns = get_warnings(&defs);
         let snake_warns: Vec<_> = warns.iter().filter(|w| w.code == "W0001").collect();
-        assert!(snake_warns.is_empty(), "my_var should pass snake check: {:?}", snake_warns);
+        assert!(
+            snake_warns.is_empty(),
+            "my_var should pass snake check: {:?}",
+            snake_warns
+        );
     }
 
     // ------------------------------------------------------------------
@@ -544,6 +592,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "prints".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -565,6 +614,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "string_concat".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -586,6 +636,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "string_concat".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -593,7 +644,11 @@ mod tests {
         ];
         let warns = get_warnings(&defs);
         let dep_warns: Vec<_> = warns.iter().filter(|w| w.code == "W0002").collect();
-        assert!(dep_warns.is_empty(), "Should not warn inside std.str: {:?}", dep_warns);
+        assert!(
+            dep_warns.is_empty(),
+            "Should not warn inside std.str: {:?}",
+            dep_warns
+        );
     }
 
     #[test]
@@ -605,6 +660,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "ptr_alloc".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -625,6 +681,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "ptr_alloc".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -632,7 +689,11 @@ mod tests {
         ];
         let warns = get_warnings(&defs);
         let ptr_warns: Vec<_> = warns.iter().filter(|w| w.code == "W0002").collect();
-        assert!(ptr_warns.is_empty(), "Should not warn inside std.mem: {:?}", ptr_warns);
+        assert!(
+            ptr_warns.is_empty(),
+            "Should not warn inside std.mem: {:?}",
+            ptr_warns
+        );
     }
 
     #[test]
@@ -644,6 +705,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "print".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -651,7 +713,11 @@ mod tests {
         ];
         let warns = get_warnings(&defs);
         let dep_warns: Vec<_> = warns.iter().filter(|w| w.code == "W0002").collect();
-        assert!(dep_warns.is_empty(), "print should not trigger W0002: {:?}", dep_warns);
+        assert!(
+            dep_warns.is_empty(),
+            "print should not trigger W0002: {:?}",
+            dep_warns
+        );
     }
 
     #[test]
@@ -663,13 +729,13 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "print".to_string(),
-                    args: vec![
-                        Expr::ECall {
-                            loc: loc(),
-                            name: "prints".to_string(),
-                            args: vec![],
-                        },
-                    ],
+                    type_args: vec![],
+                    args: vec![Expr::ECall {
+                        loc: loc(),
+                        name: "prints".to_string(),
+                        type_args: vec![],
+                        args: vec![],
+                    }],
                 },
                 Safety::Safe,
             ),
@@ -708,12 +774,10 @@ mod tests {
                 "main",
                 Expr::EBlock {
                     loc: loc(),
-                    stmts: vec![
-                        Stmt::SCIntro {
-                            loc: loc(),
-                            content: "impl: some comment".to_string(),
-                        },
-                    ],
+                    stmts: vec![Stmt::SCIntro {
+                        loc: loc(),
+                        content: "impl: some comment".to_string(),
+                    }],
                     result: Some(Box::new(Expr::EVoid { loc: loc() })),
                 },
                 Safety::Safe,
@@ -733,12 +797,10 @@ mod tests {
                 "main",
                 Expr::EBlock {
                     loc: loc(),
-                    stmts: vec![
-                        Stmt::SCIntro {
-                            loc: loc(),
-                            content: "no_colon".to_string(),
-                        },
-                    ],
+                    stmts: vec![Stmt::SCIntro {
+                        loc: loc(),
+                        content: "no_colon".to_string(),
+                    }],
                     result: Some(Box::new(Expr::EVoid { loc: loc() })),
                 },
                 Safety::Safe,
@@ -764,6 +826,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "prints".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -788,13 +851,12 @@ mod tests {
                 "main",
                 Expr::EArrayLit {
                     loc: loc(),
-                    values: vec![
-                        Expr::ECall {
-                            loc: loc(),
-                            name: "string_concat".to_string(),
-                            args: vec![],
-                        },
-                    ],
+                    values: vec![Expr::ECall {
+                        loc: loc(),
+                        name: "string_concat".to_string(),
+                        type_args: vec![],
+                        args: vec![],
+                    }],
                 },
                 Safety::Safe,
             ),
@@ -816,9 +878,13 @@ mod tests {
                     left: Box::new(Expr::ECall {
                         loc: loc(),
                         name: "prints".to_string(),
+                        type_args: vec![],
                         args: vec![],
                     }),
-                    right: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                    right: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
                 },
                 Safety::Safe,
             ),
@@ -836,15 +902,20 @@ mod tests {
                 "main",
                 Expr::EIf {
                     loc: loc(),
-                    cond: Box::new(Expr::EBool { loc: loc(), value: true }),
+                    cond: Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }),
                     then: Box::new(Expr::ECall {
                         loc: loc(),
                         name: "prints".to_string(),
+                        type_args: vec![],
                         args: vec![],
                     }),
                     else_: Some(Box::new(Expr::ECall {
                         loc: loc(),
                         name: "printlns".to_string(),
+                        type_args: vec![],
                         args: vec![],
                     })),
                 },
@@ -864,10 +935,14 @@ mod tests {
                 "main",
                 Expr::EWhile {
                     loc: loc(),
-                    cond: Box::new(Expr::EBool { loc: loc(), value: true }),
+                    cond: Box::new(Expr::EBool {
+                        loc: loc(),
+                        value: true,
+                    }),
                     body: Box::new(Expr::ECall {
                         loc: loc(),
                         name: "string_concat".to_string(),
+                        type_args: vec![],
                         args: vec![],
                     }),
                 },
@@ -891,6 +966,7 @@ mod tests {
                     range: Box::new(Expr::ECall {
                         loc: loc(),
                         name: "prints".to_string(),
+                        type_args: vec![],
                         args: vec![],
                     }),
                     body: Box::new(Expr::EVoid { loc: loc() }),
@@ -914,6 +990,7 @@ mod tests {
                     expr: Box::new(Expr::ECall {
                         loc: loc(),
                         name: "prints".to_string(),
+                        type_args: vec![],
                         args: vec![],
                     }),
                     to: Typ::TInt,
@@ -937,6 +1014,7 @@ mod tests {
                     expr: Box::new(Expr::ECall {
                         loc: loc(),
                         name: "prints".to_string(),
+                        type_args: vec![],
                         args: vec![],
                     }),
                     field: "x".to_string(),
@@ -960,6 +1038,7 @@ mod tests {
                     expr: Box::new(Expr::ECall {
                         loc: loc(),
                         name: "prints".to_string(),
+                        type_args: vec![],
                         args: vec![],
                     }),
                 },
@@ -982,6 +1061,7 @@ mod tests {
                     expr: Box::new(Expr::ECall {
                         loc: loc(),
                         name: "prints".to_string(),
+                        type_args: vec![],
                         args: vec![],
                     }),
                 },
@@ -1001,18 +1081,26 @@ mod tests {
                 "main",
                 Expr::EChoose {
                     loc: loc(),
-                    var: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                    var: Box::new(Expr::EInt {
+                        loc: loc(),
+                        value: 1,
+                    }),
                     cases: vec![WhenCase {
-                        when: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                        when: Box::new(Expr::EInt {
+                            loc: loc(),
+                            value: 1,
+                        }),
                         then: Box::new(Expr::ECall {
                             loc: loc(),
                             name: "prints".to_string(),
+                            type_args: vec![],
                             args: vec![],
                         }),
                     }],
                     otherwise: Some(Box::new(Expr::ECall {
                         loc: loc(),
                         name: "printlns".to_string(),
+                        type_args: vec![],
                         args: vec![],
                     })),
                 },
@@ -1035,6 +1123,7 @@ mod tests {
                     body: Box::new(Expr::ECall {
                         loc: loc(),
                         name: "string_concat".to_string(),
+                        type_args: vec![],
                         args: vec![],
                     }),
                 },
@@ -1060,6 +1149,7 @@ mod tests {
                         value: Expr::ECall {
                             loc: loc(),
                             name: "prints".to_string(),
+                            type_args: vec![],
                             args: vec![],
                         },
                     }],
@@ -1085,6 +1175,7 @@ mod tests {
                         expr: Box::new(Expr::ECall {
                             loc: loc(),
                             name: "prints".to_string(),
+                            type_args: vec![],
                             args: vec![],
                         }),
                     }],
@@ -1111,6 +1202,7 @@ mod tests {
                         expr: Box::new(Expr::ECall {
                             loc: loc(),
                             name: "string_length".to_string(),
+                            type_args: vec![],
                             args: vec![],
                         }),
                     }],
@@ -1138,6 +1230,7 @@ mod tests {
                         expr: Box::new(Expr::ECall {
                             loc: loc(),
                             name: "prints".to_string(),
+                            type_args: vec![],
                             args: vec![],
                         }),
                     }],
@@ -1176,6 +1269,7 @@ mod tests {
                     Expr::ECall {
                         loc: loc(),
                         name: func_name.to_string(),
+                        type_args: vec![],
                         args: vec![],
                     },
                     Safety::Safe,
@@ -1234,7 +1328,12 @@ mod tests {
         let specific_loc = Loc { line: 42, col: 7 };
         let defs = vec![
             make_module("test"),
-            make_func_loc(specific_loc.clone(), "BadName", Expr::EVoid { loc: loc() }, Safety::Safe),
+            make_func_loc(
+                specific_loc.clone(),
+                "BadName",
+                Expr::EVoid { loc: loc() },
+                Safety::Safe,
+            ),
         ];
         let warns = get_warnings(&defs);
         assert!(warns[0].message.starts_with("[42:7]"));
@@ -1251,7 +1350,11 @@ mod tests {
             },
         ];
         let warns = get_warnings(&defs);
-        assert!(warns.is_empty(), "Struct defs should not generate warnings: {:?}", warns);
+        assert!(
+            warns.is_empty(),
+            "Struct defs should not generate warnings: {:?}",
+            warns
+        );
     }
 
     // ------------------------------------------------------------------
@@ -1327,7 +1430,10 @@ mod tests {
     }
 
     fn get_w3(defs: &[Def]) -> Vec<Warning> {
-        get_warnings(defs).into_iter().filter(|w| w.code == "W0003").collect()
+        get_warnings(defs)
+            .into_iter()
+            .filter(|w| w.code == "W0003")
+            .collect()
     }
 
     // --- No DCIntro before def (no warning) ---
@@ -1335,7 +1441,10 @@ mod tests {
     #[test]
     fn test_dcintro_no_annotation_before_def() {
         // No DCIntro, just a function — no annotation warning
-        let defs = vec![make_module("test"), make_safe_func("main", Expr::EVoid { loc: loc() })];
+        let defs = vec![
+            make_module("test"),
+            make_safe_func("main", Expr::EVoid { loc: loc() }),
+        ];
         let w3 = get_w3(&defs);
         assert!(w3.is_empty(), "No DCIntro = no W0003: {:?}", w3);
     }
@@ -1350,7 +1459,11 @@ mod tests {
             make_safe_func("main", Expr::EVoid { loc: loc() }),
         ];
         let w3 = get_w3(&defs);
-        assert!(w3.is_empty(), "usage before safe func should be valid: {:?}", w3);
+        assert!(
+            w3.is_empty(),
+            "usage before safe func should be valid: {:?}",
+            w3
+        );
     }
 
     #[test]
@@ -1361,7 +1474,11 @@ mod tests {
             make_safe_func("main", Expr::EVoid { loc: loc() }),
         ];
         let w3 = get_w3(&defs);
-        assert!(w3.is_empty(), "param before safe func should be valid: {:?}", w3);
+        assert!(
+            w3.is_empty(),
+            "param before safe func should be valid: {:?}",
+            w3
+        );
     }
 
     #[test]
@@ -1577,10 +1694,7 @@ mod tests {
 
     #[test]
     fn test_dcintro_before_module_always_warns() {
-        let defs = vec![
-            make_dcintro("usage: module info"),
-            make_module("test"),
-        ];
+        let defs = vec![make_dcintro("usage: module info"), make_module("test")];
         let w3 = get_w3(&defs);
         assert_eq!(w3.len(), 1, "DCIntro before module should warn");
     }
@@ -1589,7 +1703,10 @@ mod tests {
     fn test_dcintro_before_import_always_warns() {
         let defs = vec![
             make_dcintro("usage: import"),
-            Def::SImport { loc: loc(), path: "std/io".to_string() },
+            Def::SImport {
+                loc: loc(),
+                path: "std/io".to_string(),
+            },
         ];
         let w3 = get_w3(&defs);
         assert_eq!(w3.len(), 1, "DCIntro before import should warn");
@@ -1597,20 +1714,14 @@ mod tests {
 
     #[test]
     fn test_dcintro_before_export_always_warns() {
-        let defs = vec![
-            make_dcintro("usage: export"),
-            make_export_def("foo"),
-        ];
+        let defs = vec![make_dcintro("usage: export"), make_export_def("foo")];
         let w3 = get_w3(&defs);
         assert_eq!(w3.len(), 1, "DCIntro before export should warn");
     }
 
     #[test]
     fn test_dcintro_before_impl_always_warns() {
-        let defs = vec![
-            make_dcintro("usage: impl"),
-            make_impl_def(),
-        ];
+        let defs = vec![make_dcintro("usage: impl"), make_impl_def()];
         let w3 = get_w3(&defs);
         assert_eq!(w3.len(), 1, "DCIntro before impl should warn");
     }
@@ -1629,10 +1740,7 @@ mod tests {
 
     #[test]
     fn test_dcintro_before_dcintro_no_warning() {
-        let defs = vec![
-            make_dcintro("usage: first"),
-            make_dcintro("usage: second"),
-        ];
+        let defs = vec![make_dcintro("usage: first"), make_dcintro("usage: second")];
         let w3 = get_w3(&defs);
         assert!(w3.is_empty(), "DCIntro before DCIntro should not warn");
     }
@@ -1669,7 +1777,10 @@ mod tests {
             make_safe_func("main", Expr::EVoid { loc: loc() }),
         ];
         let w3 = get_w3(&defs);
-        assert!(w3.is_empty(), "whitespace-padded 'usage' should still be valid");
+        assert!(
+            w3.is_empty(),
+            "whitespace-padded 'usage' should still be valid"
+        );
     }
 
     // --- Multiple uses ---
@@ -1687,7 +1798,11 @@ mod tests {
             make_safe_func("get_x", Expr::EVoid { loc: loc() }),
         ];
         let w3 = get_w3(&defs);
-        assert!(w3.is_empty(), "all valid annotations should not warn: {:?}", w3);
+        assert!(
+            w3.is_empty(),
+            "all valid annotations should not warn: {:?}",
+            w3
+        );
     }
 
     #[test]
@@ -1696,11 +1811,15 @@ mod tests {
             make_module("test"),
             make_dcintro("usage: test case"),
             make_test_def("test_foo"),
-            make_dcintro("unsafe: raw op"),       // invalid for safe func
+            make_dcintro("unsafe: raw op"), // invalid for safe func
             make_safe_func("main", Expr::EVoid { loc: loc() }),
         ];
         let w3 = get_w3(&defs);
-        assert_eq!(w3.len(), 1, "one invalid annotation should produce one warning");
+        assert_eq!(
+            w3.len(),
+            1,
+            "one invalid annotation should produce one warning"
+        );
     }
 
     #[test]
@@ -1708,9 +1827,9 @@ mod tests {
         // unsafe is invalid before struct, but param is valid before safe func
         let defs = vec![
             make_module("test"),
-            make_dcintro("unsafe: raw"),            // invalid for struct
+            make_dcintro("unsafe: raw"), // invalid for struct
             make_struct_def("Point"),
-            make_dcintro("param: input"),           // valid for safe func
+            make_dcintro("param: input"), // valid for safe func
             make_safe_func("process", Expr::EVoid { loc: loc() }),
         ];
         let w3 = get_w3(&defs);

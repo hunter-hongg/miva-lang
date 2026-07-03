@@ -2,6 +2,89 @@ use crate::ast::*;
 use crate::error::Error;
 use std::collections::HashMap;
 
+// ── Generic type helpers ────────────────────────────────────────────────
+
+/// Convert TStruct references to TGenericParam when they match a type parameter name.
+fn normalize_typ(typ: &Typ, type_params: &[String]) -> Typ {
+    match typ {
+        Typ::TStruct { name, .. } if type_params.contains(name) => {
+            Typ::TGenericParam { name: name.clone() }
+        }
+        Typ::TArray { of } => Typ::TArray {
+            of: Box::new(normalize_typ(of, type_params)),
+        },
+        Typ::TPtr { to } => Typ::TPtr {
+            to: Box::new(normalize_typ(to, type_params)),
+        },
+        Typ::TBox { of } => Typ::TBox {
+            of: Box::new(normalize_typ(of, type_params)),
+        },
+        _ => typ.clone(),
+    }
+}
+
+fn normalize_params(params: &[Param], type_params: &[String]) -> Vec<Param> {
+    params
+        .iter()
+        .map(|p| {
+            let (name, typ, is_ref) = match p {
+                Param::PRef { name, typ } => (name.clone(), typ.clone(), true),
+                Param::POwn { name, typ } => (name.clone(), typ.clone(), false),
+            };
+            let norm_typ = normalize_typ(&typ, type_params);
+            if is_ref {
+                Param::PRef {
+                    name,
+                    typ: norm_typ,
+                }
+            } else {
+                Param::POwn {
+                    name,
+                    typ: norm_typ,
+                }
+            }
+        })
+        .collect()
+}
+
+/// Resolve type variables to concrete types using a substitution map.
+fn resolve_type(typ: &Typ, subst: &HashMap<String, Typ>) -> Typ {
+    match typ {
+        Typ::TGenericParam { name } => subst.get(name).cloned().unwrap_or(Typ::TInvalid),
+        Typ::TArray { of } => Typ::TArray {
+            of: Box::new(resolve_type(of, subst)),
+        },
+        Typ::TPtr { to } => Typ::TPtr {
+            to: Box::new(resolve_type(to, subst)),
+        },
+        Typ::TBox { of } => Typ::TBox {
+            of: Box::new(resolve_type(of, subst)),
+        },
+        _ => typ.clone(),
+    }
+}
+
+/// Infer type param bindings from actual argument types.
+fn infer_type_from_arg(param_typ: &Typ, arg_typ: &Typ, subst: &mut HashMap<String, Typ>) {
+    match (param_typ, arg_typ) {
+        (Typ::TGenericParam { name }, _) => {
+            if !subst.contains_key(name) {
+                subst.insert(name.clone(), arg_typ.clone());
+            }
+        }
+        (Typ::TArray { of: pof }, Typ::TArray { of: aof }) => {
+            infer_type_from_arg(pof, aof, subst);
+        }
+        (Typ::TPtr { to: pto }, Typ::TPtr { to: ato }) => {
+            infer_type_from_arg(pto, ato, subst);
+        }
+        (Typ::TBox { of: pof }, Typ::TBox { of: aof }) => {
+            infer_type_from_arg(pof, aof, subst);
+        }
+        _ => {}
+    }
+}
+
 struct TypeEnv {
     vars: HashMap<String, Typ>,
 }
@@ -12,6 +95,7 @@ fn types_equal(a: &Typ, b: &Typ) -> bool {
         (Typ::TArray { of: o1 }, Typ::TArray { of: o2 }) => types_equal(o1, o2),
         (Typ::TPtr { to: t1 }, Typ::TPtr { to: t2 }) => types_equal(t1, t2),
         (Typ::TBox { of: o1 }, Typ::TBox { of: o2 }) => types_equal(o1, o2),
+        (Typ::TGenericParam { name: n1 }, Typ::TGenericParam { name: n2 }) => n1 == n2,
         _ => a == b,
     }
 }
@@ -35,23 +119,38 @@ fn builtin_return_typ(name: &str) -> Option<Typ> {
     }
 }
 
-fn build_func_sigs(defs: &[Def]) -> HashMap<String, (Vec<Param>, Option<Typ>)> {
+fn build_func_sigs(defs: &[Def]) -> HashMap<String, (Vec<String>, Vec<Param>, Option<Typ>)> {
     let mut sigs = HashMap::new();
     for def in defs {
         match def {
             Def::DFunc {
                 name,
+                type_params,
                 params,
                 returns,
                 ..
+            } => {
+                // Normalize generic types so func_sigs contains TGenericParam
+                // instead of TStruct for generic type parameter names
+                let normalized_type_params = type_params.clone();
+                let normalized_params = normalize_params(params, type_params);
+                let normalized_returns = returns.as_ref().map(|r| normalize_typ(r, type_params));
+                sigs.insert(
+                    name.clone(),
+                    (
+                        normalized_type_params,
+                        normalized_params,
+                        normalized_returns,
+                    ),
+                );
             }
-            | Def::DCFuncUnsafe {
+            Def::DCFuncUnsafe {
                 name,
                 params,
                 returns,
                 ..
             } => {
-                sigs.insert(name.clone(), (params.clone(), returns.clone()));
+                sigs.insert(name.clone(), (vec![], params.clone(), returns.clone()));
             }
             _ => {}
         }
@@ -71,7 +170,7 @@ fn build_struct_map(defs: &[Def]) -> HashMap<String, Vec<FieldDef>> {
 
 fn require_type(
     env: &mut TypeEnv,
-    func_sigs: &HashMap<String, (Vec<Param>, Option<Typ>)>,
+    func_sigs: &HashMap<String, (Vec<String>, Vec<Param>, Option<Typ>)>,
     structs: &HashMap<String, Vec<FieldDef>>,
     func_return: &Option<Typ>,
     e: &Expr,
@@ -115,13 +214,13 @@ fn loc_of(e: &Expr) -> Loc {
         | Expr::EWhile { loc, .. }
         | Expr::ELoop { loc, .. }
         | Expr::EFor { loc, .. } => loc.clone(),
-        | Expr::EMacroVar { loc, .. } => loc.clone(),
+        Expr::EMacroVar { loc, .. } => loc.clone(),
     }
 }
 
 fn infer_type(
     env: &mut TypeEnv,
-    func_sigs: &HashMap<String, (Vec<Param>, Option<Typ>)>,
+    func_sigs: &HashMap<String, (Vec<String>, Vec<Param>, Option<Typ>)>,
     structs: &HashMap<String, Vec<FieldDef>>,
     func_return: &Option<Typ>,
     e: &Expr,
@@ -373,7 +472,12 @@ fn infer_type(
                 (tmp_typ.get(0).unwrap_or(&Typ::TInvalid).clone(), errs)
             }
         }
-        Expr::ECall { name, args, loc } => {
+        Expr::ECall {
+            name,
+            type_args,
+            args,
+            loc,
+        } => {
             let mut errs = vec![];
             let mut arg_types = vec![];
             for arg in args {
@@ -383,7 +487,10 @@ fn infer_type(
             }
 
             let user_func = func_sigs.get(name.as_str());
-            let ret_typ = if let Some((params, ret)) = user_func {
+            let ret_typ = if let Some((fn_type_params, params, ret)) = user_func {
+                // Build type substitution: generic param -> concrete type
+                let mut type_subst: HashMap<String, Typ> = HashMap::new();
+
                 if params.len() != args.len() {
                     errs.push(Error::new(
                         "E0016",
@@ -396,24 +503,95 @@ fn infer_type(
                         ),
                     ));
                 } else {
-                    for (i, (param, arg_t)) in params.iter().zip(arg_types.iter()).enumerate() {
-                        let param_t = match param {
-                            Param::PRef { typ, .. } | Param::POwn { typ, .. } => typ,
-                        };
-                        if !types_equal(param_t, arg_t) {
+                    // Apply explicit type args if provided
+                    if !type_args.is_empty() {
+                        if type_args.len() != fn_type_params.len() {
                             errs.push(Error::new(
                                 "E0016",
                                 loc,
                                 &format!(
-                                    "argument {} to function '{}' has wrong type",
-                                    i + 1,
-                                    name
+                                    "function '{}' takes {} type arguments but got {}",
+                                    name,
+                                    fn_type_params.len(),
+                                    type_args.len()
                                 ),
                             ));
+                        } else {
+                            for (tp, ta) in fn_type_params.iter().zip(type_args.iter()) {
+                                type_subst.insert(tp.clone(), ta.clone());
+                            }
+                        }
+                    }
+
+                    // Infer remaining or all type params from args
+                    if !fn_type_params.is_empty() {
+                        for (idx, (param, arg_t)) in params.iter().zip(arg_types.iter()).enumerate()
+                        {
+                            let param_t = match param {
+                                Param::PRef { typ, .. } | Param::POwn { typ, .. } => typ,
+                            };
+                            if !type_args.is_empty() {
+                                // With explicit type args, check compatibility
+                                let resolved = resolve_type(param_t, &type_subst);
+                                if !types_equal(&resolved, arg_t) {
+                                    errs.push(Error::new(
+                                        "E0016",
+                                        loc,
+                                        &format!(
+                                            "argument {} to function '{}' has wrong type",
+                                            idx + 1,
+                                            name
+                                        ),
+                                    ));
+                                }
+                            } else {
+                                // Infer type params from argument
+                                infer_type_from_arg(param_t, arg_t, &mut type_subst);
+                            }
+                        }
+                        // Check for type consistency (all args must agree)
+                        for (idx, (param, arg_t)) in params.iter().zip(arg_types.iter()).enumerate()
+                        {
+                            let param_t = match param {
+                                Param::PRef { typ, .. } | Param::POwn { typ, .. } => typ,
+                            };
+                            let resolved = resolve_type(param_t, &type_subst);
+                            if !types_equal(&resolved, arg_t) {
+                                errs.push(Error::new(
+                                    "E0016",
+                                    loc,
+                                    &format!(
+                                        "argument {} to function '{}' has wrong type",
+                                        idx + 1,
+                                        name
+                                    ),
+                                ));
+                            }
+                        }
+                    } else {
+                        // Non-generic function: check types directly
+                        for (i, (param, arg_t)) in params.iter().zip(arg_types.iter()).enumerate() {
+                            let param_t = match param {
+                                Param::PRef { typ, .. } | Param::POwn { typ, .. } => typ,
+                            };
+                            if !types_equal(param_t, arg_t) {
+                                errs.push(Error::new(
+                                    "E0016",
+                                    loc,
+                                    &format!(
+                                        "argument {} to function '{}' has wrong type",
+                                        i + 1,
+                                        name
+                                    ),
+                                ));
+                            }
                         }
                     }
                 }
-                ret.clone().unwrap_or(Typ::TNull)
+                // Resolve return type using substitution
+                ret.as_ref()
+                    .map(|rt| resolve_type(rt, &type_subst))
+                    .unwrap_or(Typ::TNull)
             } else {
                 match name.as_str() {
                     "box_new" => {
@@ -601,7 +779,12 @@ fn infer_type(
                         errs.extend(se);
                         env.vars.insert(name.clone(), t);
                     }
-                    Stmt::SLetTyped { name, typ, expr, loc } => {
+                    Stmt::SLetTyped {
+                        name,
+                        typ,
+                        expr,
+                        loc,
+                    } => {
                         let (t, se) = require_type(env, func_sigs, structs, func_return, expr);
                         errs.extend(se);
                         if !types_equal(typ, &t) {
@@ -720,6 +903,7 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
         match def {
             Def::DFunc {
                 name: _,
+                type_params,
                 params,
                 returns,
                 body,
@@ -728,7 +912,13 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
                 let mut env = TypeEnv {
                     vars: HashMap::new(),
                 };
-                for p in params {
+                let normalized_params = if !type_params.is_empty() {
+                    normalize_params(params, type_params)
+                } else {
+                    params.clone()
+                };
+                let normalized_returns = returns.as_ref().map(|r| normalize_typ(r, type_params));
+                for p in &normalized_params {
                     match p {
                         Param::PRef { name, typ } | Param::POwn { name, typ } => {
                             env.vars.insert(name.clone(), typ.clone());
@@ -736,9 +926,9 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
                     }
                 }
                 let (body_t, mut fun_errs) =
-                    infer_type(&mut env, &func_sigs, &structs, returns, body);
+                    infer_type(&mut env, &func_sigs, &structs, &normalized_returns, body);
                 errs.append(&mut fun_errs);
-                if let Some(ref rt) = returns {
+                if let Some(ref rt) = normalized_returns {
                     if !matches!(body_t, Typ::TNull) && !types_equal(rt, &body_t) {
                         errs.push(Error::new(
                             "E0017",
@@ -790,6 +980,7 @@ mod tests {
         Def::DFunc {
             loc: loc(),
             name: name.to_string(),
+            type_params: vec![],
             params,
             returns,
             body: Box::new(body),
@@ -1044,6 +1235,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "needs_int".to_string(),
+                    type_args: vec![],
                     args: vec![Expr::EBool {
                         loc: loc(),
                         value: true,
@@ -1084,6 +1276,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "two_args".to_string(),
+                    type_args: vec![],
                     args: vec![Expr::EInt {
                         loc: loc(),
                         value: 1,
@@ -1135,6 +1328,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "add".to_string(),
+                    type_args: vec![],
                     args: vec![
                         Expr::EInt {
                             loc: loc(),
@@ -1890,5 +2084,134 @@ mod tests {
             "return bool from int function should error"
         );
         assert!(errs.iter().any(|e| e.code == "E0017"));
+    }
+
+    #[test]
+    fn test_generic_identity_call() {
+        let defs = vec![
+            make_module("test"),
+            Def::DFunc {
+                loc: loc(),
+                name: "identity".to_string(),
+                type_params: vec!["T".to_string()],
+                params: vec![Param::POwn {
+                    name: "x".to_string(),
+                    typ: Typ::TGenericParam {
+                        name: "T".to_string(),
+                    },
+                }],
+                returns: Some(Typ::TGenericParam {
+                    name: "T".to_string(),
+                }),
+                body: Box::new(Expr::EVar {
+                    loc: loc(),
+                    name: "x".to_string(),
+                }),
+                safety: Safety::Safe,
+            },
+            make_func(
+                "main",
+                vec![],
+                None,
+                Expr::ECall {
+                    loc: loc(),
+                    name: "identity".to_string(),
+                    type_args: vec![Typ::TInt],
+                    args: vec![Expr::EInt {
+                        loc: loc(),
+                        value: 42,
+                    }],
+                },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(errs.is_empty(), "expected no type errors, got: {:?}", errs);
+    }
+
+    #[test]
+    fn test_generic_inference_no_type_args() {
+        let defs = vec![
+            make_module("test"),
+            Def::DFunc {
+                loc: loc(),
+                name: "identity".to_string(),
+                type_params: vec!["T".to_string()],
+                params: vec![Param::POwn {
+                    name: "x".to_string(),
+                    typ: Typ::TGenericParam {
+                        name: "T".to_string(),
+                    },
+                }],
+                returns: Some(Typ::TGenericParam {
+                    name: "T".to_string(),
+                }),
+                body: Box::new(Expr::EVar {
+                    loc: loc(),
+                    name: "x".to_string(),
+                }),
+                safety: Safety::Safe,
+            },
+            make_func(
+                "main",
+                vec![],
+                None,
+                Expr::ECall {
+                    loc: loc(),
+                    name: "identity".to_string(),
+                    type_args: vec![],
+                    args: vec![Expr::EInt {
+                        loc: loc(),
+                        value: 42,
+                    }],
+                },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(errs.is_empty(), "expected no type errors, got: {:?}", errs);
+    }
+
+    #[test]
+    fn test_generic_type_arg_mismatch() {
+        let defs = vec![
+            make_module("test"),
+            Def::DFunc {
+                loc: loc(),
+                name: "identity".to_string(),
+                type_params: vec!["T".to_string()],
+                params: vec![Param::POwn {
+                    name: "x".to_string(),
+                    typ: Typ::TGenericParam {
+                        name: "T".to_string(),
+                    },
+                }],
+                returns: Some(Typ::TGenericParam {
+                    name: "T".to_string(),
+                }),
+                body: Box::new(Expr::EVar {
+                    loc: loc(),
+                    name: "x".to_string(),
+                }),
+                safety: Safety::Safe,
+            },
+            make_func(
+                "main",
+                vec![],
+                None,
+                Expr::ECall {
+                    loc: loc(),
+                    name: "identity".to_string(),
+                    type_args: vec![Typ::TInt],
+                    args: vec![Expr::EString {
+                        loc: loc(),
+                        value: "hello".to_string(),
+                    }],
+                },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(!errs.is_empty(), "expected type mismatch error");
     }
 }

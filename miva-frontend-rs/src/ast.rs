@@ -35,19 +35,27 @@ pub enum Typ {
     #[serde(rename = "string")]
     TString,
     #[serde(rename = "array")]
-    TArray { #[serde(rename = "of")] of: Box<Typ> },
+    TArray {
+        #[serde(rename = "of")]
+        of: Box<Typ>,
+    },
     #[serde(rename = "struct")]
     TStruct { name: String, fields: Vec<FieldDef> },
     #[serde(rename = "ptr")]
     TPtr { to: Box<Typ> },
     #[serde(rename = "box")]
-    TBox { #[serde(rename = "of")] of: Box<Typ> },
+    TBox {
+        #[serde(rename = "of")]
+        of: Box<Typ>,
+    },
     #[serde(rename = "null")]
     TNull,
     #[serde(rename = "ptrany")]
     TPtrAny,
     #[serde(rename = "invalid")]
     TInvalid,
+    #[serde(rename = "genericParam")]
+    TGenericParam { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -79,9 +87,17 @@ pub enum BinOp {
 #[serde(tag = "kind")]
 pub enum Param {
     #[serde(rename = "ref")]
-    PRef { name: String, #[serde(rename = "type")] typ: Typ },
+    PRef {
+        name: String,
+        #[serde(rename = "type")]
+        typ: Typ,
+    },
     #[serde(rename = "own")]
-    POwn { name: String, #[serde(rename = "type")] typ: Typ },
+    POwn {
+        name: String,
+        #[serde(rename = "type")]
+        typ: Typ,
+    },
 }
 
 // ── Statements ────────────────────────────────────────────────────────────
@@ -111,24 +127,13 @@ pub enum Stmt {
         expr: Box<Expr>,
     },
     #[serde(rename = "return")]
-    SReturn {
-        loc: Loc,
-        expr: Box<Expr>,
-    },
+    SReturn { loc: Loc, expr: Box<Expr> },
     #[serde(rename = "expr")]
-    SExpr {
-        loc: Loc,
-        expr: Box<Expr>,
-    },
+    SExpr { loc: Loc, expr: Box<Expr> },
     #[serde(rename = "cIntro")]
-    SCIntro {
-        loc: Loc,
-        content: String,
-    },
+    SCIntro { loc: Loc, content: String },
     #[serde(rename = "empty")]
-    SEmpty {
-        loc: Loc,
-    },
+    SEmpty { loc: Loc },
 }
 
 // ── Impl helpers ──────────────────────────────────────────────────────────
@@ -215,6 +220,8 @@ pub enum Expr {
     ECall {
         loc: Loc,
         name: String,
+        #[serde(default)]
+        type_args: Vec<Typ>,
         args: Vec<Expr>,
     },
     #[serde(rename = "macro")]
@@ -312,6 +319,8 @@ pub enum Def {
     DFunc {
         loc: Loc,
         name: String,
+        #[serde(default)]
+        type_params: Vec<String>,
         params: Vec<Param>,
         #[serde(default)]
         returns: Option<Typ>,

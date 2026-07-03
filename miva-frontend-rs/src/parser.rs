@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::lexer::{Lexer, Token, offset_to_line_col};
+use crate::lexer::{offset_to_line_col, Lexer, Token};
 use crate::util;
 
 /// Recursive descent parser for Miva.
@@ -12,7 +12,12 @@ pub struct Parser<'input> {
 
 impl<'input> Parser<'input> {
     pub fn new(lexer: Lexer<'input>, input: &'input str, file_name: &'input str) -> Self {
-        Parser { lexer, input, file_name, peeked: None }
+        Parser {
+            lexer,
+            input,
+            file_name,
+            peeked: None,
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────
@@ -26,7 +31,9 @@ impl<'input> Parser<'input> {
         if let Some(peeked) = self.peeked.take() {
             peeked.ok_or_else(|| "unexpected EOF".to_string())
         } else {
-            self.lexer.next().unwrap_or(Err("unexpected EOF".to_string()))
+            self.lexer
+                .next()
+                .unwrap_or(Err("unexpected EOF".to_string()))
         }
     }
 
@@ -46,7 +53,9 @@ impl<'input> Parser<'input> {
         if &tok != expected {
             return Err(format!(
                 "Expected {:?}, found {:?} at {}",
-                expected, tok, self.loc(start).line
+                expected,
+                tok,
+                self.loc(start).line
             ));
         }
         Ok((start, end))
@@ -71,10 +80,10 @@ impl<'input> Parser<'input> {
     fn expect_int_lit(&mut self) -> Result<(i64, usize), String> {
         let (start, tok, _) = self.advance()?;
         match tok {
-            Token::IntLit(s) => {
-                s.parse::<i64>().map(|v| (v, start))
-                    .map_err(|e| format!("Invalid integer literal '{}': {}", s, e))
-            }
+            Token::IntLit(s) => s
+                .parse::<i64>()
+                .map(|v| (v, start))
+                .map_err(|e| format!("Invalid integer literal '{}': {}", s, e)),
             _ => Err(format!("Expected integer literal, found {:?}", tok)),
         }
     }
@@ -126,18 +135,45 @@ impl<'input> Parser<'input> {
         let (start, tok, _) = self.advance()?;
         let name = match tok {
             Token::Ident(s) => s.to_string(),
-            _ => return Err(format!("Expected identifier at start of definition, found {:?}", tok)),
+            _ => {
+                return Err(format!(
+                    "Expected identifier at start of definition, found {:?}",
+                    tok
+                ))
+            }
+        };
+
+        // Check for generic type parameters: name[T, U] =
+        let type_params = if self.peek_token()? == Some(&Token::LBracket) {
+            self.advance()?; // consume "["
+            let mut params = Vec::new();
+            loop {
+                let (pname, _) = self.expect_ident()?;
+                params.push(pname);
+                if self.peek_token()? == Some(&Token::Comma) {
+                    self.advance()?;
+                } else {
+                    break;
+                }
+            }
+            self.expect(&Token::RBracket)?;
+            params
+        } else {
+            vec![]
         };
 
         self.expect(&Token::Eq)?;
 
         // Check for struct
         if self.peek_token()? == Some(&Token::Struct) {
+            if !type_params.is_empty() {
+                return Err("structs cannot have generic type parameters yet".to_string());
+            }
             return self.parse_struct_body(name, start);
         }
 
         // Must be a function
-        self.parse_func_body(name, start, Safety::Safe)
+        self.parse_func_body(name, type_params, start, Safety::Safe)
     }
 
     fn parse_struct_body(&mut self, name: String, start: usize) -> Result<Def, String> {
@@ -148,7 +184,10 @@ impl<'input> Parser<'input> {
             let (field_name, start) = self.expect_ident()?;
             self.expect(&Token::Colon)?;
             let typ = self.parse_typ()?;
-            fields.push(FieldDef { name: field_name, typ });
+            fields.push(FieldDef {
+                name: field_name,
+                typ,
+            });
             // optional comma
             if self.peek_token()? == Some(&Token::Comma) {
                 self.advance()?;
@@ -162,7 +201,13 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn parse_func_body(&mut self, name: String, start: usize, safety: Safety) -> Result<Def, String> {
+    fn parse_func_body(
+        &mut self,
+        name: String,
+        type_params: Vec<String>,
+        start: usize,
+        safety: Safety,
+    ) -> Result<Def, String> {
         let params = self.parse_func_params()?;
         let returns = if self.peek_token()? == Some(&Token::Colon) {
             self.advance()?; // consume ":"
@@ -175,6 +220,7 @@ impl<'input> Parser<'input> {
         Ok(Def::DFunc {
             loc: self.loc(start),
             name,
+            type_params,
             params,
             returns,
             body: Box::new(body),
@@ -184,17 +230,50 @@ impl<'input> Parser<'input> {
 
     fn parse_func_unsafe(&mut self) -> Result<Def, String> {
         let start = self.advance()?.0; // consume "unsafe"
-        // skip newlines between unsafe and name
         let (name, _) = self.expect_ident()?;
+        let type_params = if self.peek_token()? == Some(&Token::LBracket) {
+            self.advance()?;
+            let mut params = Vec::new();
+            loop {
+                let (pname, _) = self.expect_ident()?;
+                params.push(pname);
+                if self.peek_token()? == Some(&Token::Comma) {
+                    self.advance()?;
+                } else {
+                    break;
+                }
+            }
+            self.expect(&Token::RBracket)?;
+            params
+        } else {
+            vec![]
+        };
         self.expect(&Token::Eq)?;
-        self.parse_func_body(name, start, Safety::Unsafe)
+        self.parse_func_body(name, type_params, start, Safety::Unsafe)
     }
 
     fn parse_func_trusted(&mut self) -> Result<Def, String> {
         let start = self.advance()?.0; // consume "trusted"
         let (name, _) = self.expect_ident()?;
+        let type_params = if self.peek_token()? == Some(&Token::LBracket) {
+            self.advance()?;
+            let mut params = Vec::new();
+            loop {
+                let (pname, _) = self.expect_ident()?;
+                params.push(pname);
+                if self.peek_token()? == Some(&Token::Comma) {
+                    self.advance()?;
+                } else {
+                    break;
+                }
+            }
+            self.expect(&Token::RBracket)?;
+            params
+        } else {
+            vec![]
+        };
         self.expect(&Token::Eq)?;
-        self.parse_func_body(name, start, Safety::Trusted)
+        self.parse_func_body(name, type_params, start, Safety::Trusted)
     }
 
     fn parse_c_func(&mut self) -> Result<Def, String> {
@@ -256,7 +335,10 @@ impl<'input> Parser<'input> {
         let start = self.advance()?.0;
         let (sym, _) = self.expect_ident()?;
         self.expect(&Token::Semi)?;
-        Ok(Def::SExport { loc: self.loc(start), symbol: sym })
+        Ok(Def::SExport {
+            loc: self.loc(start),
+            symbol: sym,
+        })
     }
 
     fn parse_import(&mut self) -> Result<Def, String> {
@@ -264,7 +346,10 @@ impl<'input> Parser<'input> {
         let (path, _) = self.expect_str_lit()?;
         if self.peek_token()? == Some(&Token::Semi) {
             self.advance()?;
-            return Ok(Def::SImport { loc: self.loc(start), path });
+            return Ok(Def::SImport {
+                loc: self.loc(start),
+                path,
+            });
         }
         // "as"
         self.expect_keyword(&Token::As)?;
@@ -272,7 +357,10 @@ impl<'input> Parser<'input> {
         if self.peek_token()? == Some(&Token::Dot) {
             self.advance()?; // "."
             self.expect(&Token::Semi)?;
-            return Ok(Def::SImportHere { loc: self.loc(start), path });
+            return Ok(Def::SImportHere {
+                loc: self.loc(start),
+                path,
+            });
         }
         // "as" ident (or ident.ident...)
         let mut parts = vec![self.expect_ident()?.0];
@@ -307,10 +395,16 @@ impl<'input> Parser<'input> {
                         _ => unreachable!(),
                     };
                     let (func, _) = self.expect_ident()?;
-                    impls.push(ImplExpr { op, func, loc: self.loc(s) });
+                    impls.push(ImplExpr {
+                        op,
+                        func,
+                        loc: self.loc(s),
+                    });
                     s
                 }
-                _ => return Err("Expected operator keyword (op_add, etc.) in impl block".to_string()),
+                _ => {
+                    return Err("Expected operator keyword (op_add, etc.) in impl block".to_string())
+                }
             };
             if self.peek_token()? == Some(&Token::Comma) {
                 self.advance()?;
@@ -366,7 +460,10 @@ impl<'input> Parser<'input> {
     fn parse_intro_def(&mut self) -> Result<Def, String> {
         let (start, tok, _) = self.advance()?;
         match tok {
-            Token::Intro(s) => Ok(Def::DCIntro { loc: self.loc(start), content: s.to_string() }),
+            Token::Intro(s) => Ok(Def::DCIntro {
+                loc: self.loc(start),
+                content: s.to_string(),
+            }),
             _ => Err("Expected intro directive".to_string()),
         }
     }
@@ -374,7 +471,10 @@ impl<'input> Parser<'input> {
     fn parse_magical_def(&mut self) -> Result<Def, String> {
         let (start, tok, _) = self.advance()?;
         match tok {
-            Token::Magical(s) => Ok(Def::DCMagical { loc: self.loc(start), content: s.to_string() }),
+            Token::Magical(s) => Ok(Def::DCMagical {
+                loc: self.loc(start),
+                content: s.to_string(),
+            }),
             _ => Err("Expected magical directive".to_string()),
         }
     }
@@ -424,13 +524,34 @@ impl<'input> Parser<'input> {
 
     fn parse_typ(&mut self) -> Result<Typ, String> {
         match self.peek_token()? {
-            Some(&Token::Int) => { self.advance()?; Ok(Typ::TInt) }
-            Some(&Token::Bool) => { self.advance()?; Ok(Typ::TBool) }
-            Some(&Token::Float32) => { self.advance()?; Ok(Typ::TFloat32) }
-            Some(&Token::Float64) => { self.advance()?; Ok(Typ::TFloat64) }
-            Some(&Token::Char) => { self.advance()?; Ok(Typ::TChar) }
-            Some(&Token::String) => { self.advance()?; Ok(Typ::TString) }
-            Some(&Token::Ptrany) => { self.advance()?; Ok(Typ::TPtrAny) }
+            Some(&Token::Int) => {
+                self.advance()?;
+                Ok(Typ::TInt)
+            }
+            Some(&Token::Bool) => {
+                self.advance()?;
+                Ok(Typ::TBool)
+            }
+            Some(&Token::Float32) => {
+                self.advance()?;
+                Ok(Typ::TFloat32)
+            }
+            Some(&Token::Float64) => {
+                self.advance()?;
+                Ok(Typ::TFloat64)
+            }
+            Some(&Token::Char) => {
+                self.advance()?;
+                Ok(Typ::TChar)
+            }
+            Some(&Token::String) => {
+                self.advance()?;
+                Ok(Typ::TString)
+            }
+            Some(&Token::Ptrany) => {
+                self.advance()?;
+                Ok(Typ::TPtrAny)
+            }
             Some(&Token::Ptr) => {
                 self.advance()?;
                 self.expect(&Token::Lt)?;
@@ -454,7 +575,10 @@ impl<'input> Parser<'input> {
             Some(&Token::Ident(_)) => {
                 // Type path (struct type)
                 let name = self.parse_type_path()?;
-                Ok(Typ::TStruct { name, fields: vec![] })
+                Ok(Typ::TStruct {
+                    name,
+                    fields: vec![],
+                })
             }
             Some(tok) => Err(format!("Expected type, found {:?}", tok)),
             None => Err("Expected type, found EOF".to_string()),
@@ -487,13 +611,18 @@ impl<'input> Parser<'input> {
             Some(Token::For) => return self.parse_for_stmt(),
             Some(Token::Semi) => {
                 let start = self.advance()?.0;
-                return Ok(Stmt::SEmpty { loc: self.loc(start) });
+                return Ok(Stmt::SEmpty {
+                    loc: self.loc(start),
+                });
             }
             Some(Token::Intro(_)) => {
                 let (start, tok, _) = self.advance()?;
                 if let Token::Intro(s) = tok {
                     self.expect(&Token::Semi)?;
-                    return Ok(Stmt::SCIntro { loc: self.loc(start), content: s.to_string() });
+                    return Ok(Stmt::SCIntro {
+                        loc: self.loc(start),
+                        content: s.to_string(),
+                    });
                 }
             }
             _ => {} // fall through
@@ -511,27 +640,45 @@ impl<'input> Parser<'input> {
                     self.advance()?; // ":="
                     let expr = self.parse_expr()?;
                     self.expect(&Token::Semi)?;
-                    Ok(Stmt::SLet { loc: self.loc(start), mutable: false, name, expr: Box::new(expr) })
+                    Ok(Stmt::SLet {
+                        loc: self.loc(start),
+                        mutable: false,
+                        name,
+                        expr: Box::new(expr),
+                    })
                 }
                 Some(&Token::Eq) => {
                     self.advance()?; // "="
                     let expr = self.parse_expr()?;
                     self.expect(&Token::Semi)?;
-                    Ok(Stmt::SAssign { loc: self.loc(start), name, expr: Box::new(expr) })
+                    Ok(Stmt::SAssign {
+                        loc: self.loc(start),
+                        name,
+                        expr: Box::new(expr),
+                    })
                 }
                 _ => {
                     // Expression starting with ident — continue parsing call/macro/field suffixes
-                    let mut expr = Expr::EVar { loc: self.loc(start), name };
+                    let mut expr = Expr::EVar {
+                        loc: self.loc(start),
+                        name,
+                    };
                     expr = self.parse_call_suffix(expr)?;
                     self.expect(&Token::Semi)?;
-                    Ok(Stmt::SExpr { loc: self.loc(start), expr: Box::new(expr) })
+                    Ok(Stmt::SExpr {
+                        loc: self.loc(start),
+                        expr: Box::new(expr),
+                    })
                 }
             }
         } else {
             // Non-ident statement — parse as expression statement
             let expr = self.parse_expr()?;
             self.expect(&Token::Semi)?;
-            Ok(Stmt::SExpr { loc: Loc::new(0, 0), expr: Box::new(expr) })
+            Ok(Stmt::SExpr {
+                loc: Loc::new(0, 0),
+                expr: Box::new(expr),
+            })
         }
     }
 
@@ -569,20 +716,61 @@ impl<'input> Parser<'input> {
         if self.peek_token()? == Some(&Token::Semi) {
             self.advance()?;
             let loc = self.loc(start);
-            return Ok(Stmt::SReturn { loc: loc.clone(), expr: Box::new(Expr::EVoid { loc }) });
+            return Ok(Stmt::SReturn {
+                loc: loc.clone(),
+                expr: Box::new(Expr::EVoid { loc }),
+            });
         }
         let expr = self.parse_expr()?;
         self.expect(&Token::Semi)?;
-        Ok(Stmt::SReturn { loc: self.loc(start), expr: Box::new(expr) })
+        Ok(Stmt::SReturn {
+            loc: self.loc(start),
+            expr: Box::new(expr),
+        })
     }
 
     // (parse_let_or_assign_or_expr removed — logic inlined into parse_stmt)
 
     /// Parse call/macro/field suffixes starting from an already-known expression.
     fn parse_call_suffix(&mut self, mut expr: Expr) -> Result<Expr, String> {
-
         loop {
             match self.peek_token()? {
+                // Generic type arguments + call: name[Type1, Type2](args)
+                Some(&Token::LBracket) => {
+                    self.advance()?; // "["
+                    let mut type_args = Vec::new();
+                    loop {
+                        type_args.push(self.parse_typ()?);
+                        if self.peek_token()? == Some(&Token::Comma) {
+                            self.advance()?;
+                        } else {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RBracket)?;
+                    // Must be followed by (args)
+                    self.expect(&Token::LParen)?;
+                    let mut args = Vec::new();
+                    if self.peek_token()? != Some(&Token::RParen) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if self.peek_token()? == Some(&Token::Comma) {
+                                self.advance()?;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(&Token::RParen)?;
+                    let call_path = extract_call_path_from_expr(&expr);
+                    let processed = util::process_call_path(&call_path);
+                    expr = Expr::ECall {
+                        loc: Loc::new(0, 0),
+                        name: processed,
+                        type_args,
+                        args,
+                    };
+                }
                 // Function call: expr(args)
                 Some(&Token::LParen) => {
                     self.advance()?;
@@ -603,6 +791,7 @@ impl<'input> Parser<'input> {
                     expr = Expr::ECall {
                         loc: Loc::new(0, 0),
                         name: processed,
+                        type_args: vec![],
                         args,
                     };
                 }
@@ -676,7 +865,11 @@ impl<'input> Parser<'input> {
             expr: Box::new(util::build_if_chain(
                 loc.clone(),
                 cond,
-                Expr::EBlock { loc: loc.clone(), stmts, result: res },
+                Expr::EBlock {
+                    loc: loc.clone(),
+                    stmts,
+                    result: res,
+                },
                 elifs,
                 else_,
             )),
@@ -694,7 +887,14 @@ impl<'input> Parser<'input> {
             let stmts = self.parse_stmt_list()?;
             let res = self.parse_opt_expr()?;
             self.expect(&Token::RBrace)?;
-            elifs.push((cond, Expr::EBlock { loc: self.loc(start_e), stmts, result: res }));
+            elifs.push((
+                cond,
+                Expr::EBlock {
+                    loc: self.loc(start_e),
+                    stmts,
+                    result: res,
+                },
+            ));
         }
         Ok(elifs)
     }
@@ -706,7 +906,11 @@ impl<'input> Parser<'input> {
             let stmts = self.parse_stmt_list()?;
             let res = self.parse_opt_expr()?;
             self.expect(&Token::RBrace)?;
-            Ok(Some(Expr::EBlock { loc: self.loc(start_e), stmts, result: res }))
+            Ok(Some(Expr::EBlock {
+                loc: self.loc(start_e),
+                stmts,
+                result: res,
+            }))
         } else {
             Ok(None)
         }
@@ -728,7 +932,11 @@ impl<'input> Parser<'input> {
             expr: Box::new(Expr::EWhile {
                 loc: loc.clone(),
                 cond: Box::new(cond),
-                body: Box::new(Expr::EBlock { loc: loc.clone(), stmts, result: res }),
+                body: Box::new(Expr::EBlock {
+                    loc: loc.clone(),
+                    stmts,
+                    result: res,
+                }),
             }),
         })
     }
@@ -745,7 +953,11 @@ impl<'input> Parser<'input> {
             loc: loc.clone(),
             expr: Box::new(Expr::ELoop {
                 loc: loc.clone(),
-                body: Box::new(Expr::EBlock { loc: loc.clone(), stmts, result: res }),
+                body: Box::new(Expr::EBlock {
+                    loc: loc.clone(),
+                    stmts,
+                    result: res,
+                }),
             }),
         })
     }
@@ -769,7 +981,11 @@ impl<'input> Parser<'input> {
                 loc: loc.clone(),
                 var,
                 range: Box::new(range),
-                body: Box::new(Expr::EBlock { loc: loc.clone(), stmts, result: res }),
+                body: Box::new(Expr::EBlock {
+                    loc: loc.clone(),
+                    stmts,
+                    result: res,
+                }),
             }),
         })
     }
@@ -859,12 +1075,18 @@ impl<'input> Parser<'input> {
             Some(&Token::Addr) => {
                 let start = self.advance()?.0;
                 let e = self.parse_unary_or_primary()?;
-                return Ok(Expr::EAddr { loc: self.loc(start), expr: Box::new(e) });
+                return Ok(Expr::EAddr {
+                    loc: self.loc(start),
+                    expr: Box::new(e),
+                });
             }
             Some(&Token::Deref) => {
                 let start = self.advance()?.0;
                 let e = self.parse_unary_or_primary()?;
-                return Ok(Expr::EDeref { loc: self.loc(start), expr: Box::new(e) });
+                return Ok(Expr::EDeref {
+                    loc: self.loc(start),
+                    expr: Box::new(e),
+                });
             }
             _ => {}
         }
@@ -882,8 +1104,13 @@ impl<'input> Parser<'input> {
             Some(&Token::IntLit(_)) => {
                 let (start, tok, _) = self.advance()?;
                 if let Token::IntLit(s) = tok {
-                    let v = s.parse::<i64>().map_err(|e| format!("Invalid int: {}", e))?;
-                    Ok(Expr::EInt { loc: self.loc(start), value: v })
+                    let v = s
+                        .parse::<i64>()
+                        .map_err(|e| format!("Invalid int: {}", e))?;
+                    Ok(Expr::EInt {
+                        loc: self.loc(start),
+                        value: v,
+                    })
                 } else {
                     unreachable!()
                 }
@@ -891,8 +1118,13 @@ impl<'input> Parser<'input> {
             Some(&Token::FloatLit(_)) => {
                 let (start, tok, _) = self.advance()?;
                 if let Token::FloatLit(s) = tok {
-                    let v = s.parse::<f64>().map_err(|e| format!("Invalid float: {}", e))?;
-                    Ok(Expr::EFloat { loc: self.loc(start), value: v })
+                    let v = s
+                        .parse::<f64>()
+                        .map_err(|e| format!("Invalid float: {}", e))?;
+                    Ok(Expr::EFloat {
+                        loc: self.loc(start),
+                        value: v,
+                    })
                 } else {
                     unreachable!()
                 }
@@ -900,7 +1132,10 @@ impl<'input> Parser<'input> {
             Some(&Token::CharLit(_)) => {
                 let (start, tok, _) = self.advance()?;
                 if let Token::CharLit(s) = tok {
-                    Ok(Expr::EChar { loc: self.loc(start), value: util::process_escapes(s) })
+                    Ok(Expr::EChar {
+                        loc: self.loc(start),
+                        value: util::process_escapes(s),
+                    })
                 } else {
                     unreachable!()
                 }
@@ -909,7 +1144,10 @@ impl<'input> Parser<'input> {
                 let (start, tok, _) = self.advance()?;
                 if let Token::StringLit(s) = tok {
                     let processed = util::process_escapes(s);
-                    Ok(Expr::EString { loc: self.loc(start), value: processed })
+                    Ok(Expr::EString {
+                        loc: self.loc(start),
+                        value: processed,
+                    })
                 } else {
                     unreachable!()
                 }
@@ -917,7 +1155,10 @@ impl<'input> Parser<'input> {
             Some(&Token::BoolLit(v)) => {
                 let (start, tok, _) = self.advance()?;
                 if let Token::BoolLit(v) = tok {
-                    Ok(Expr::EBool { loc: self.loc(start), value: v })
+                    Ok(Expr::EBool {
+                        loc: self.loc(start),
+                        value: v,
+                    })
                 } else {
                     unreachable!()
                 }
@@ -929,22 +1170,34 @@ impl<'input> Parser<'input> {
                     _ => unreachable!(),
                 };
                 // Check for move/clone prefix (these are separate keywords in Miva)
-                Ok(Expr::EVar { loc: self.loc(start), name })
+                Ok(Expr::EVar {
+                    loc: self.loc(start),
+                    name,
+                })
             }
             Some(&Token::Dollar) => {
                 let start = self.advance()?.0; // consume "$"
                 let (name, _) = self.expect_ident()?;
-                Ok(Expr::EMacroVar { loc: self.loc(start), name })
+                Ok(Expr::EMacroVar {
+                    loc: self.loc(start),
+                    name,
+                })
             }
             Some(&Token::Move) => {
                 let start = self.advance()?.0;
                 let (name, _) = self.expect_ident()?;
-                Ok(Expr::EMove { loc: self.loc(start), name })
+                Ok(Expr::EMove {
+                    loc: self.loc(start),
+                    name,
+                })
             }
             Some(&Token::Clone) => {
                 let start = self.advance()?.0;
                 let (name, _) = self.expect_ident()?;
-                Ok(Expr::EClone { loc: self.loc(start), name })
+                Ok(Expr::EClone {
+                    loc: self.loc(start),
+                    name,
+                })
             }
             Some(&Token::LParen) => {
                 self.advance()?;
@@ -957,7 +1210,11 @@ impl<'input> Parser<'input> {
                 let stmts = self.parse_stmt_list()?;
                 let res = self.parse_opt_expr()?;
                 self.expect(&Token::RBrace)?;
-                Ok(Expr::EBlock { loc: self.loc(start), stmts, result: res })
+                Ok(Expr::EBlock {
+                    loc: self.loc(start),
+                    stmts,
+                    result: res,
+                })
             }
             Some(&Token::LBracket) => {
                 let start = self.advance()?.0;
@@ -973,14 +1230,13 @@ impl<'input> Parser<'input> {
                     }
                 }
                 self.expect(&Token::RBracket)?;
-                Ok(Expr::EArrayLit { loc: self.loc(start), values })
+                Ok(Expr::EArrayLit {
+                    loc: self.loc(start),
+                    values,
+                })
             }
-            Some(&Token::Struct) => {
-                self.parse_struct_init_expr()
-            }
-            Some(&Token::Choose) => {
-                self.parse_choose_expr()
-            }
+            Some(&Token::Struct) => self.parse_struct_init_expr(),
+            Some(&Token::Choose) => self.parse_choose_expr(),
             Some(tok) => Err(format!("Unexpected token in expression: {:?}", tok)),
             None => Err("Unexpected EOF in expression".to_string()),
         }
@@ -995,13 +1251,20 @@ impl<'input> Parser<'input> {
             let (name, _) = self.expect_ident()?;
             self.expect(&Token::Eq)?;
             let value = self.parse_expr()?;
-            fields.push(ValueField { name: name.to_string(), value });
+            fields.push(ValueField {
+                name: name.to_string(),
+                value,
+            });
             if self.peek_token()? == Some(&Token::Comma) {
                 self.advance()?;
             }
         }
         self.expect(&Token::RBrace)?;
-        Ok(Expr::EStructLit { loc: self.loc(start), name: path, fields })
+        Ok(Expr::EStructLit {
+            loc: self.loc(start),
+            name: path,
+            fields,
+        })
     }
 
     fn parse_choose_expr(&mut self) -> Result<Expr, String> {
@@ -1036,7 +1299,11 @@ impl<'input> Parser<'input> {
         self.expect(&Token::RBrace)?;
         Ok(WhenCase {
             when: Box::new(value),
-            then: Box::new(Expr::EBlock { loc: self.loc(s), stmts, result: res }),
+            then: Box::new(Expr::EBlock {
+                loc: self.loc(s),
+                stmts,
+                result: res,
+            }),
         })
     }
 
@@ -1047,7 +1314,11 @@ impl<'input> Parser<'input> {
             let stmts = self.parse_stmt_list()?;
             let res = self.parse_opt_expr()?;
             self.expect(&Token::RBrace)?;
-            Ok(Some(Box::new(Expr::EBlock { loc: self.loc(s), stmts, result: res })))
+            Ok(Some(Box::new(Expr::EBlock {
+                loc: self.loc(s),
+                stmts,
+                result: res,
+            })))
         } else {
             Ok(None)
         }
@@ -1060,7 +1331,11 @@ fn extract_call_path_from_expr(expr: &Expr) -> String {
     match expr {
         Expr::EFieldAccess { expr: e, field, .. } => {
             let p = extract_call_path_from_expr(e);
-            if p.is_empty() { field.clone() } else { format!("{}.{}", p, field) }
+            if p.is_empty() {
+                field.clone()
+            } else {
+                format!("{}.{}", p, field)
+            }
         }
         Expr::EVar { name, .. } => name.clone(),
         _ => String::new(),

@@ -12,14 +12,28 @@ pub fn find_frontend() -> Option<(String, Option<String>)> {
     let base = exe_dir();
 
     if let Some(ref dir) = base {
+        // Platform-specific suffixes used when miva is installed via miver
+        let platform_names = [
+            "miva-frontend",
+            "miva-frontend-linux",
+            "miva-frontend-macos",
+            "miva-frontend-windows.exe",
+        ];
+
         let candidates = [
             // First, check the canonical frontend-rs build location (relative to miva binary)
             dir.join("../../../miva-frontend-rs/target/debug/miva-frontend"),
             dir.join("../../../miva-frontend-rs/target/release/miva-frontend"),
-            // Then check for a frontend bundled alongside the miva binary
-            dir.join("miva-frontend"),
         ];
         for c in &candidates {
+            if c.exists() {
+                return Some((c.to_string_lossy().to_string(), None));
+            }
+        }
+
+        // Check for frontend bundled alongside the miva binary (with platform suffixes)
+        for name in &platform_names {
+            let c = dir.join(name);
             if c.exists() {
                 return Some((c.to_string_lossy().to_string(), None));
             }

@@ -35,6 +35,7 @@ const BUILTIN_FUNCTIONS: &[(&str, Safety)] = &[
 #[derive(Debug, Clone)]
 pub struct FunctionEntry {
     pub name: String,
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub return_typ: Option<Typ>,
     #[allow(dead_code)]
@@ -90,13 +91,24 @@ impl SymbolTable {
                 }
                 Def::DFunc {
                     name,
+                    type_params,
                     params,
                     returns,
                     safety,
                     loc,
                     ..
+                } => {
+                    table.register_function(
+                        name,
+                        type_params,
+                        params,
+                        returns,
+                        safety,
+                        loc,
+                        &mut errors,
+                    );
                 }
-                | Def::DCFuncUnsafe {
+                Def::DCFuncUnsafe {
                     name,
                     params,
                     returns,
@@ -104,7 +116,7 @@ impl SymbolTable {
                     loc,
                     ..
                 } => {
-                    table.register_function(name, params, returns, safety, loc, &mut errors);
+                    table.register_function(name, &[], params, returns, safety, loc, &mut errors);
                 }
                 Def::DStruct { name, fields, loc } => {
                     table.register_struct(name, fields, loc, &mut errors);
@@ -137,6 +149,7 @@ impl SymbolTable {
                 table.function_index.insert(name.to_string(), idx);
                 table.functions.push(FunctionEntry {
                     name: name.to_string(),
+                    type_params: vec![],
                     params: Vec::new(),
                     return_typ: None,
                     safety: safety.clone(),
@@ -150,6 +163,7 @@ impl SymbolTable {
     fn register_function(
         &mut self,
         name: &str,
+        type_params: &[String],
         params: &[Param],
         return_typ: &Option<Typ>,
         safety: &Safety,
@@ -168,6 +182,7 @@ impl SymbolTable {
         }
         self.functions.push(FunctionEntry {
             name: name.to_string(),
+            type_params: type_params.to_vec(),
             params: params.to_vec(),
             return_typ: return_typ.clone(),
             safety: safety.clone(),
@@ -225,6 +240,7 @@ mod tests {
         Def::DFunc {
             loc: loc(),
             name: name.to_string(),
+            type_params: Vec::new(),
             params: Vec::new(),
             returns: None,
             body: Box::new(Expr::EVoid { loc: loc() }),
@@ -435,6 +451,7 @@ mod tests {
         let def = Def::DFunc {
             loc: loc(),
             name: "add".to_string(),
+            type_params: vec![],
             params: vec![
                 Param::POwn {
                     name: "a".to_string(),

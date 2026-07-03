@@ -77,6 +77,8 @@ pub enum Typ {
     TPtrAny,
     #[serde(rename = "invalid")]
     TInvalid,
+    #[serde(rename = "genericParam")]
+    TGenericParam { name: String },
 }
 
 #[allow(dead_code)]
@@ -99,9 +101,17 @@ pub enum BinOp {
 #[serde(tag = "kind")]
 pub enum Param {
     #[serde(rename = "ref")]
-    PRef { name: String, #[serde(rename = "type")] typ: Typ },
+    PRef {
+        name: String,
+        #[serde(rename = "type")]
+        typ: Typ,
+    },
     #[serde(rename = "own")]
-    POwn { name: String, #[serde(rename = "type")] typ: Typ },
+    POwn {
+        name: String,
+        #[serde(rename = "type")]
+        typ: Typ,
+    },
 }
 
 #[allow(dead_code)]
@@ -110,11 +120,26 @@ pub enum Param {
 #[serde(tag = "kind")]
 pub enum Stmt {
     #[serde(rename = "let")]
-    SLet { loc: Loc, mutable: bool, name: String, expr: Box<Expr> },
+    SLet {
+        loc: Loc,
+        mutable: bool,
+        name: String,
+        expr: Box<Expr>,
+    },
     #[serde(rename = "letTyped")]
-    SLetTyped { loc: Loc, name: String, #[serde(rename = "type")] typ: Typ, expr: Box<Expr> },
+    SLetTyped {
+        loc: Loc,
+        name: String,
+        #[serde(rename = "type")]
+        typ: Typ,
+        expr: Box<Expr>,
+    },
     #[serde(rename = "assign")]
-    SAssign { loc: Loc, name: String, expr: Box<Expr> },
+    SAssign {
+        loc: Loc,
+        name: String,
+        expr: Box<Expr>,
+    },
     #[serde(rename = "return")]
     SReturn { loc: Loc, expr: Box<Expr> },
     #[serde(rename = "expr")]
@@ -147,25 +172,70 @@ pub enum Expr {
     #[serde(rename = "clone")]
     EClone { loc: Loc, name: String },
     #[serde(rename = "structLit")]
-    EStructLit { loc: Loc, name: String, fields: Vec<ValueField> },
+    EStructLit {
+        loc: Loc,
+        name: String,
+        fields: Vec<ValueField>,
+    },
     #[serde(rename = "fieldAccess")]
-    EFieldAccess { loc: Loc, expr: Box<Expr>, field: String },
+    EFieldAccess {
+        loc: Loc,
+        expr: Box<Expr>,
+        field: String,
+    },
     #[serde(rename = "binOp")]
-    EBinOp { loc: Loc, op: BinOp, left: Box<Expr>, right: Box<Expr> },
+    EBinOp {
+        loc: Loc,
+        op: BinOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
     #[serde(rename = "if")]
-    EIf { loc: Loc, cond: Box<Expr>, then: Box<Expr>, #[serde(rename = "else", default)] else_: Option<Box<Expr>> },
+    EIf {
+        loc: Loc,
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        #[serde(rename = "else", default)]
+        else_: Option<Box<Expr>>,
+    },
     #[serde(rename = "choose")]
-    EChoose { loc: Loc, var: Box<Expr>, cases: Vec<WhenCase>, #[serde(default)] otherwise: Option<Box<Expr>> },
+    EChoose {
+        loc: Loc,
+        var: Box<Expr>,
+        cases: Vec<WhenCase>,
+        #[serde(default)]
+        otherwise: Option<Box<Expr>>,
+    },
     #[serde(rename = "call")]
-    ECall { loc: Loc, name: String, args: Vec<Expr> },
+    ECall {
+        loc: Loc,
+        name: String,
+        #[serde(default)]
+        type_args: Vec<Typ>,
+        args: Vec<Expr>,
+    },
     #[serde(rename = "macro")]
-    EMacro { loc: Loc, name: String, args: Vec<Expr> },
+    EMacro {
+        loc: Loc,
+        name: String,
+        args: Vec<Expr>,
+    },
     #[serde(rename = "macroVar")]
     EMacroVar { loc: Loc, name: String },
     #[serde(rename = "cast")]
-    ECast { loc: Loc, expr: Box<Expr>, #[serde(rename = "to")] to: Typ },
+    ECast {
+        loc: Loc,
+        expr: Box<Expr>,
+        #[serde(rename = "to")]
+        to: Typ,
+    },
     #[serde(rename = "block")]
-    EBlock { loc: Loc, stmts: Vec<Stmt>, #[serde(default)] result: Option<Box<Expr>> },
+    EBlock {
+        loc: Loc,
+        stmts: Vec<Stmt>,
+        #[serde(default)]
+        result: Option<Box<Expr>>,
+    },
     #[serde(rename = "arrayLit")]
     EArrayLit { loc: Loc, values: Vec<Expr> },
     #[serde(rename = "void")]
@@ -175,11 +245,20 @@ pub enum Expr {
     #[serde(rename = "deref")]
     EDeref { loc: Loc, expr: Box<Expr> },
     #[serde(rename = "while")]
-    EWhile { loc: Loc, cond: Box<Expr>, body: Box<Expr> },
+    EWhile {
+        loc: Loc,
+        cond: Box<Expr>,
+        body: Box<Expr>,
+    },
     #[serde(rename = "loop")]
     ELoop { loc: Loc, body: Box<Expr> },
     #[serde(rename = "for")]
-    EFor { loc: Loc, var: String, range: Box<Expr>, body: Box<Expr> },
+    EFor {
+        loc: Loc,
+        var: String,
+        range: Box<Expr>,
+        body: Box<Expr>,
+    },
 }
 
 #[allow(dead_code)]
@@ -210,13 +289,39 @@ pub struct ImplExpr {
 #[serde(tag = "kind")]
 pub enum Def {
     #[serde(rename = "struct")]
-    DStruct { loc: Loc, name: String, fields: Vec<FieldDef> },
+    DStruct {
+        loc: Loc,
+        name: String,
+        fields: Vec<FieldDef>,
+    },
     #[serde(rename = "func")]
-    DFunc { loc: Loc, name: String, params: Vec<Param>, #[serde(default)] returns: Option<Typ>, body: Box<Expr>, safety: Safety },
+    DFunc {
+        loc: Loc,
+        name: String,
+        #[serde(default)]
+        type_params: Vec<String>,
+        params: Vec<Param>,
+        #[serde(default)]
+        returns: Option<Typ>,
+        body: Box<Expr>,
+        safety: Safety,
+    },
     #[serde(rename = "cFunc")]
-    DCFuncUnsafe { loc: Loc, name: String, params: Vec<Param>, #[serde(default)] returns: Option<Typ>, code: String, safety: Safety },
+    DCFuncUnsafe {
+        loc: Loc,
+        name: String,
+        params: Vec<Param>,
+        #[serde(default)]
+        returns: Option<Typ>,
+        code: String,
+        safety: Safety,
+    },
     #[serde(rename = "test")]
-    DTest { loc: Loc, name: String, body: Box<Expr> },
+    DTest {
+        loc: Loc,
+        name: String,
+        body: Box<Expr>,
+    },
     #[serde(rename = "module")]
     DModule { loc: Loc, name: String },
     #[serde(rename = "export")]
@@ -224,7 +329,11 @@ pub enum Def {
     #[serde(rename = "import")]
     SImport { loc: Loc, path: String },
     #[serde(rename = "importAs")]
-    SImportAs { loc: Loc, path: String, alias: String },
+    SImportAs {
+        loc: Loc,
+        path: String,
+        alias: String,
+    },
     #[serde(rename = "importHere")]
     SImportHere { loc: Loc, path: String },
     #[serde(rename = "cMagical")]
@@ -232,7 +341,17 @@ pub enum Def {
     #[serde(rename = "cIntro")]
     DCIntro { loc: Loc, content: String },
     #[serde(rename = "impl")]
-    DImpl { loc: Loc, #[serde(rename = "struct")] struct_name: String, impls: Vec<ImplExpr> },
+    DImpl {
+        loc: Loc,
+        #[serde(rename = "struct")]
+        struct_name: String,
+        impls: Vec<ImplExpr>,
+    },
     #[serde(rename = "macro")]
-    DMacro { loc: Loc, name: String, params: Vec<MacroParam>, body: Box<Expr> },
+    DMacro {
+        loc: Loc,
+        name: String,
+        params: Vec<MacroParam>,
+        body: Box<Expr>,
+    },
 }

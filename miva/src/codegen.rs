@@ -17,6 +17,7 @@ fn cxx_escape_string(s: &str) -> String {
     while let Some(c) = chars.next() {
         match c {
             '"' => out.push_str("\\\""),
+            '\'' => out.push_str("\\'"),
             '\\' => {
                 // Check if next char forms a known C++ escape sequence
                 match chars.clone().next() {
@@ -58,6 +59,7 @@ fn cxx_type(typ: &Typ) -> String {
         Typ::TNull => "void".into(),
         Typ::TPtrAny => "mvp_builtin_ptrany".into(),
         Typ::TInvalid => "invalid".into(),
+        Typ::TGenericParam { name } => name.clone(),
     }
 }
 
@@ -197,7 +199,7 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
             if *value { "true" } else { "false" }
         ),
         Expr::EFloat { value, .. } => format!("mvp_builtin_float({})", value.to_string()),
-        Expr::EChar { value, .. } => format!("'{}'", cxx_escape_string(value)),
+        Expr::EChar { value, .. } => format!("mvp_builtin_byte('{}')", cxx_escape_string(value)),
         Expr::EString { value, .. } => {
             format!("mvp_builtin_string(\"{}\")", cxx_escape_string(value))
         }
@@ -220,7 +222,12 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
         Expr::EFor {
             var, range, body, ..
         } => cxx_for(var, range, body, depth),
-        Expr::ECall { name, args, .. } => cxx_call(name, args, depth),
+        Expr::ECall {
+            name,
+            type_args,
+            args,
+            ..
+        } => cxx_call(name, args, type_args, depth),
         Expr::ECast { expr, to, .. } => {
             format!("static_cast<{}>({})", cxx_type(to), cxx_expr(expr, depth))
         }
@@ -256,9 +263,20 @@ fn cxx_binop(op: &BinOp, left: &Expr, right: &Expr, depth: usize) -> String {
     )
 }
 
-fn cxx_call(name: &str, args: &[Expr], depth: usize) -> String {
+fn cxx_call(name: &str, args: &[Expr], type_args: &[Typ], depth: usize) -> String {
     let args_strs: Vec<_> = args.iter().map(|a| cxx_expr(a, depth)).collect();
-    format!("{}({})", map_builtin(name), args_strs.join(", "))
+    let type_arg_str = if type_args.is_empty() {
+        String::new()
+    } else {
+        let tas: Vec<_> = type_args.iter().map(cxx_type).collect();
+        format!("<{}>", tas.join(", "))
+    };
+    format!(
+        "{}{}({})",
+        map_builtin(name),
+        type_arg_str,
+        args_strs.join(", ")
+    )
 }
 
 fn cxx_if(cond: &Expr, then: &Expr, else_: &Option<Box<Expr>>, depth: usize) -> String {
@@ -427,6 +445,7 @@ fn cxx_def(def: &Def, depth: usize) -> String {
         Def::DStruct { name, fields, .. } => cxx_struct_def(name, fields, ind, inner),
         Def::DFunc {
             name,
+            type_params,
             params,
             returns,
             body,
@@ -441,11 +460,12 @@ fn cxx_def(def: &Def, depth: usize) -> String {
         } => cxx_cfunc(name, params, returns, code, ind),
         Def::DFunc {
             name,
+            type_params,
             params,
             returns,
             body,
             ..
-        } => cxx_normal_func(name, params, returns, body, ind, inner),
+        } => cxx_normal_func(name, type_params, params, returns, body, ind, inner),
         Def::DImpl {
             struct_name, impls, ..
         } => cxx_impl(struct_name, impls, ind),
@@ -513,6 +533,7 @@ fn cxx_cfunc(
 
 fn cxx_normal_func(
     name: &str,
+    type_params: &[String],
     params: &[Param],
     returns: &Option<Typ>,
     body: &Expr,
@@ -522,8 +543,18 @@ fn cxx_normal_func(
     let param_strs: Vec<_> = params.iter().map(cxx_param).collect();
     let ret_type = returns.as_ref().map_or("mvp_builtin_unit".into(), cxx_type);
     let signature = format!("{} {}({})", ret_type, name, param_strs.join(", "));
+    let template_header = if type_params.is_empty() {
+        String::new()
+    } else {
+        let params_str = type_params
+            .iter()
+            .map(|tp| format!("typename {}", tp))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{}template<{}>\n", ind, params_str)
+    };
 
-    match body {
+    let body_str = match body {
         Expr::EBlock { .. } => {
             let flow = analyze_block(body, 0, &ret_type).unwrap_or(BlockFlow {
                 stmts: vec![],
@@ -555,7 +586,8 @@ fn cxx_normal_func(
                 )
             }
         }
-    }
+    };
+    format!("{}{}", template_header, body_str)
 }
 
 fn cxx_impl(struct_name: &str, impls: &[ImplExpr], ind: String) -> String {
@@ -880,6 +912,7 @@ mod tests {
                 expr: Box::new(Expr::ECall {
                     loc: loc(),
                     name: "print".to_string(),
+                    type_args: vec![],
                     args: vec![Expr::EString {
                         loc: loc(),
                         value: "\u{2550}\u{2550}\u{2550} Hello\u{2550}\u{2550}\u{2550}".to_string(),
@@ -892,6 +925,7 @@ mod tests {
         let defs = vec![Def::DFunc {
             loc: loc(),
             name: "main".to_string(),
+            type_params: vec![],
             params: vec![],
             returns: None,
             body: Box::new(body_expr),
@@ -1331,7 +1365,7 @@ mod tests {
             loc: loc(),
             value: "a".into(),
         };
-        assert_eq!(cxx_expr(&e, 0), "'a'");
+        assert_eq!(cxx_expr(&e, 0), "mvp_builtin_byte('a')");
     }
 
     #[test]
@@ -1543,6 +1577,7 @@ mod tests {
         let e = Expr::ECall {
             loc: loc(),
             name: "println".into(),
+            type_args: vec![],
             args: vec![],
         };
         assert_eq!(cxx_expr(&e, 0), "mvp_println()");
@@ -1553,6 +1588,7 @@ mod tests {
         let e = Expr::ECall {
             loc: loc(),
             name: "printlns".into(),
+            type_args: vec![],
             args: vec![Expr::EString {
                 loc: loc(),
                 value: "hi".into(),
@@ -1566,6 +1602,7 @@ mod tests {
         let e = Expr::ECall {
             loc: loc(),
             name: "myfunc".into(),
+            type_args: vec![],
             args: vec![
                 Expr::EInt {
                     loc: loc(),
@@ -1588,6 +1625,7 @@ mod tests {
         let e = Expr::ECall {
             loc: loc(),
             name: "math.add".into(),
+            type_args: vec![],
             args: vec![],
         };
         assert_eq!(cxx_expr(&e, 0), "math::add()");
@@ -1893,6 +1931,7 @@ mod tests {
                     expr: Box::new(Expr::ECall {
                         loc: loc(),
                         name: "println".into(),
+                        type_args: vec![],
                         args: vec![Expr::EVar {
                             loc: loc(),
                             name: "x".into(),
@@ -1966,6 +2005,7 @@ mod tests {
             expr: Box::new(Expr::ECall {
                 loc: loc(),
                 name: "println".into(),
+                type_args: vec![],
                 args: vec![],
             }),
         };
@@ -2154,6 +2194,7 @@ mod tests {
         let def = Def::DFunc {
             loc: loc(),
             name: "main".into(),
+            type_params: vec![],
             params: vec![],
             returns: None,
             body: Box::new(Expr::EVoid { loc: loc() }),
@@ -2167,6 +2208,7 @@ mod tests {
         let def = Def::DFunc {
             loc: loc(),
             name: "foo".into(),
+            type_params: vec![],
             params: vec![],
             returns: None,
             body: Box::new(Expr::EVoid { loc: loc() }),
@@ -2240,6 +2282,7 @@ mod tests {
         let body = Expr::ECall {
             loc: loc(),
             name: "println".into(),
+            type_args: vec![],
             args: vec![],
         };
         let result = cxx_main_func("".into(), 0, &body);
@@ -2289,6 +2332,7 @@ mod tests {
                 expr: Box::new(Expr::ECall {
                     loc: loc(),
                     name: "println".into(),
+                    type_args: vec![],
                     args: vec![Expr::EString {
                         loc: loc(),
                         value: "hi".into(),
@@ -2297,7 +2341,7 @@ mod tests {
             }],
             result: None,
         };
-        let result = cxx_normal_func("greet", &[], &None, &body, "".into(), 0);
+        let result = cxx_normal_func("greet", &[], &[], &None, &body, "".into(), 0);
         assert!(result.contains("mvp_builtin_unit greet()"));
         assert!(result.contains("mvp_println(mvp_builtin_string(\"hi\"))"));
         assert!(result.contains("return mvp_builtin_void"));
@@ -2313,7 +2357,7 @@ mod tests {
                 value: 42,
             })),
         };
-        let result = cxx_normal_func("answer", &[], &Some(Typ::TInt), &body, "".into(), 0);
+        let result = cxx_normal_func("answer", &[], &[], &Some(Typ::TInt), &body, "".into(), 0);
         assert!(result.contains("mvp_builtin_int answer()"));
         assert!(result.contains("return static_cast<mvp_builtin_int>(42)"));
     }
@@ -2323,9 +2367,10 @@ mod tests {
         let body = Expr::ECall {
             loc: loc(),
             name: "println".into(),
+            type_args: vec![],
             args: vec![],
         };
-        let result = cxx_normal_func("do_it", &[], &None, &body, "".into(), 0);
+        let result = cxx_normal_func("do_it", &[], &[], &None, &body, "".into(), 0);
         assert_eq!(
             result,
             " mvp_builtin_unit do_it() { mvp_println(); return mvp_builtin_void; }\n\n"
@@ -2338,7 +2383,7 @@ mod tests {
             loc: loc(),
             value: 99,
         };
-        let result = cxx_normal_func("get_val", &[], &Some(Typ::TInt), &body, "".into(), 0);
+        let result = cxx_normal_func("get_val", &[], &[], &Some(Typ::TInt), &body, "".into(), 0);
         assert_eq!(
             result,
             " mvp_builtin_int get_val() { return static_cast<mvp_builtin_int>(99); }\n\n"
@@ -2560,6 +2605,7 @@ mod tests {
         let defs = vec![Def::DFunc {
             loc: loc(),
             name: "foo".into(),
+            type_params: vec![],
             params: vec![],
             returns: None,
             body: Box::new(Expr::EVoid { loc: loc() }),
@@ -2575,6 +2621,7 @@ mod tests {
         let defs = vec![Def::DFunc {
             loc: loc(),
             name: "main".into(),
+            type_params: vec![],
             params: vec![],
             returns: None,
             body: Box::new(Expr::EBlock {
@@ -2599,6 +2646,7 @@ mod tests {
             Def::DFunc {
                 loc: loc(),
                 name: "main".into(),
+                type_params: vec![],
                 params: vec![],
                 returns: None,
                 body: Box::new(Expr::EBlock {
@@ -2640,6 +2688,7 @@ mod tests {
             Def::DFunc {
                 loc: loc(),
                 name: "add".into(),
+                type_params: vec![],
                 params: vec![
                     Param::POwn {
                         name: "a".into(),
@@ -2842,7 +2891,7 @@ mod tests {
             loc: loc(),
             value: 0,
         };
-        let result = cxx_normal_func("noop", &params, &None, &body, "".into(), 0);
+        let result = cxx_normal_func("noop", &[], &params, &None, &body, "".into(), 0);
         assert!(result.contains("mvp_builtin_unit noop(mvp_builtin_int a, mvp_builtin_int b)"));
     }
 

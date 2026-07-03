@@ -19,7 +19,10 @@ pub type MacroTable = HashMap<String, MacroDef>;
 pub fn collect_macros(defs: &[Def]) -> MacroTable {
     let mut table = MacroTable::new();
     for def in defs {
-        if let Def::DMacro { name, params, body, .. } = def {
+        if let Def::DMacro {
+            name, params, body, ..
+        } = def
+        {
             table.insert(
                 name.clone(),
                 MacroDef {
@@ -79,6 +82,7 @@ fn expand_def(def: &Def, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Resul
         Def::DFunc {
             loc,
             name,
+            type_params,
             params,
             returns,
             body,
@@ -86,6 +90,7 @@ fn expand_def(def: &Def, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Resul
         } => Ok(Def::DFunc {
             loc: loc.clone(),
             name: name.clone(),
+            type_params: type_params.clone(),
             params: params.clone(),
             returns: returns.clone(),
             body: Box::new(expand_expr(body, addf, macro_table)?),
@@ -118,7 +123,12 @@ fn expand_stmt(stmt: &Stmt, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Re
             name: name.clone(),
             expr: Box::new(expand_expr(expr, addf, macro_table)?),
         }),
-        Stmt::SLetTyped { loc, name, typ, expr } => Ok(Stmt::SLetTyped {
+        Stmt::SLetTyped {
+            loc,
+            name,
+            typ,
+            expr,
+        } => Ok(Stmt::SLetTyped {
             loc: loc.clone(),
             name: name.clone(),
             typ: typ.clone(),
@@ -159,8 +169,10 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Re
             let expanded = fields
                 .iter()
                 .map(|f| {
-                    expand_expr(&f.value, addf, macro_table)
-                        .map(|v| ValueField { name: f.name.clone(), value: v })
+                    expand_expr(&f.value, addf, macro_table).map(|v| ValueField {
+                        name: f.name.clone(),
+                        value: v,
+                    })
                 })
                 .collect::<Result<Vec<_>>>()?;
             Ok(Expr::EStructLit {
@@ -169,12 +181,21 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Re
                 fields: expanded,
             })
         }
-        Expr::EFieldAccess { loc, expr: e, field } => Ok(Expr::EFieldAccess {
+        Expr::EFieldAccess {
+            loc,
+            expr: e,
+            field,
+        } => Ok(Expr::EFieldAccess {
             loc: loc.clone(),
             expr: Box::new(expand_expr(e, addf, macro_table)?),
             field: field.clone(),
         }),
-        Expr::EBinOp { loc, op, left, right } => Ok(Expr::EBinOp {
+        Expr::EBinOp {
+            loc,
+            op,
+            left,
+            right,
+        } => Ok(Expr::EBinOp {
             loc: loc.clone(),
             op: op.clone(),
             left: Box::new(expand_expr(left, addf, macro_table)?),
@@ -219,7 +240,12 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Re
                     .transpose()?,
             })
         }
-        Expr::ECall { loc, name, args } => {
+        Expr::ECall {
+            loc,
+            name,
+            type_args,
+            args,
+        } => {
             let args = args
                 .iter()
                 .map(|a| expand_expr(a, addf, macro_table))
@@ -227,6 +253,7 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Re
             Ok(Expr::ECall {
                 loc: loc.clone(),
                 name: name.clone(),
+                type_args: type_args.clone(),
                 args,
             })
         }
@@ -366,12 +393,21 @@ fn substitute_macro_vars(expr: &Expr, args: &[Expr], param_names: &[&str]) -> Ex
                 })
                 .collect(),
         },
-        Expr::EFieldAccess { loc, expr: e, field } => Expr::EFieldAccess {
+        Expr::EFieldAccess {
+            loc,
+            expr: e,
+            field,
+        } => Expr::EFieldAccess {
             loc: loc.clone(),
             expr: Box::new(substitute_macro_vars(e, args, param_names)),
             field: field.clone(),
         },
-        Expr::EBinOp { loc, op, left, right } => Expr::EBinOp {
+        Expr::EBinOp {
+            loc,
+            op,
+            left,
+            right,
+        } => Expr::EBinOp {
             loc: loc.clone(),
             op: op.clone(),
             left: Box::new(substitute_macro_vars(left, args, param_names)),
@@ -409,15 +445,25 @@ fn substitute_macro_vars(expr: &Expr, args: &[Expr], param_names: &[&str]) -> Ex
                 .as_ref()
                 .map(|e| Box::new(substitute_macro_vars(e, args, param_names))),
         },
-        Expr::ECall { loc, name, args: cargs } => Expr::ECall {
+        Expr::ECall {
+            loc,
+            name,
+            type_args: _,
+            args: cargs,
+        } => Expr::ECall {
             loc: loc.clone(),
             name: name.clone(),
+            type_args: vec![],
             args: cargs
                 .iter()
                 .map(|a| substitute_macro_vars(a, args, param_names))
                 .collect(),
         },
-        Expr::EMacro { loc, name, args: margs } => Expr::EMacro {
+        Expr::EMacro {
+            loc,
+            name,
+            args: margs,
+        } => Expr::EMacro {
             loc: loc.clone(),
             name: name.clone(),
             args: margs
@@ -484,8 +530,7 @@ fn substitute_macro_vars(expr: &Expr, args: &[Expr], param_names: &[&str]) -> Ex
         | Expr::EVar { .. }
         | Expr::EMove { .. }
         | Expr::EClone { .. }
-        | Expr::EVoid { .. }
-        => expr.clone(),
+        | Expr::EVoid { .. } => expr.clone(),
     }
 }
 
@@ -502,7 +547,12 @@ fn substitute_stmt_vars(stmt: &Stmt, args: &[Expr], param_names: &[&str]) -> Stm
             name: name.clone(),
             expr: Box::new(substitute_macro_vars(expr, args, param_names)),
         },
-        Stmt::SLetTyped { loc, name, typ, expr } => Stmt::SLetTyped {
+        Stmt::SLetTyped {
+            loc,
+            name,
+            typ,
+            expr,
+        } => Stmt::SLetTyped {
             loc: loc.clone(),
             name: name.clone(),
             typ: typ.clone(),
@@ -596,6 +646,7 @@ fn expand_prints(
                     right: Box::new(Expr::ECall {
                         loc: loc.clone(),
                         name: "string_from".to_string(),
+                        type_args: vec![],
                         args: vec![expanded_arg],
                     }),
                 }),
@@ -613,6 +664,7 @@ fn expand_prints(
         expr: Box::new(Expr::ECall {
             loc: loc.clone(),
             name: "print".to_string(),
+            type_args: vec![],
             args: vec![Expr::EVar {
                 loc: loc.clone(),
                 name: "s".to_string(),
@@ -627,6 +679,7 @@ fn expand_prints(
             expr: Box::new(Expr::ECall {
                 loc: loc.clone(),
                 name: "print".to_string(),
+                type_args: vec![],
                 args: vec![Expr::EString {
                     loc: loc.clone(),
                     value: "\\n".to_string(),
@@ -677,6 +730,7 @@ fn expand_assert(
                                 expr: Box::new(Expr::ECall {
                                     loc: loc.clone(),
                                     name: "panic".to_string(),
+                                    type_args: vec![],
                                     args: vec![Expr::EString {
                                         loc: loc.clone(),
                                         value: "Assertion failed".to_string(),
@@ -713,6 +767,7 @@ mod tests {
         vec![Def::DFunc {
             loc: loc(1, 1),
             name: "main".to_string(),
+            type_params: vec![],
             params: vec![],
             returns: None,
             body: Box::new(body),
@@ -742,7 +797,11 @@ mod tests {
 
         match &result[0] {
             Def::DFunc { body, .. } => match body.as_ref() {
-                Expr::EBlock { stmts, result: None, .. } => {
+                Expr::EBlock {
+                    stmts,
+                    result: None,
+                    ..
+                } => {
                     assert_eq!(stmts.len(), 3, "block: let, assign, print");
                     // First stmt: let s = ""
                     assert!(
@@ -842,7 +901,9 @@ mod tests {
                                 );
                                 // then: block with panic call
                                 match then.as_ref() {
-                                    Expr::EBlock { stmts: then_stmts, .. } => {
+                                    Expr::EBlock {
+                                        stmts: then_stmts, ..
+                                    } => {
                                         assert_eq!(then_stmts.len(), 1);
                                     }
                                     _ => panic!("then should be EBlock"),
@@ -891,8 +952,7 @@ mod tests {
                     // The value should be the escaped file content.
                     // "hello\nworld" after escape_default → "hello\\nworld"
                     assert_eq!(
-                        value,
-                        "hello\\nworld",
+                        value, "hello\\nworld",
                         "include_str content should be escaped"
                     );
                 }
@@ -959,7 +1019,10 @@ mod tests {
         match &result[0] {
             Def::DFunc { body, .. } => match body.as_ref() {
                 Expr::EBlock { stmts, .. } => {
-                    assert!(!stmts.is_empty(), "nested macro expansion should produce stmts");
+                    assert!(
+                        !stmts.is_empty(),
+                        "nested macro expansion should produce stmts"
+                    );
                 }
                 _ => panic!("body should be EBlock"),
             },
@@ -1007,10 +1070,14 @@ mod tests {
                         Stmt::SExpr { expr, .. } => {
                             // The assert! expands to an EBlock wrapping the EIf
                             match expr.as_ref() {
-                                Expr::EBlock { stmts: inner_stmts, .. } => {
+                                Expr::EBlock {
+                                    stmts: inner_stmts, ..
+                                } => {
                                     assert_eq!(inner_stmts.len(), 1);
                                     match &inner_stmts[0] {
-                                        Stmt::SExpr { expr: inner_expr, .. } => {
+                                        Stmt::SExpr {
+                                            expr: inner_expr, ..
+                                        } => {
                                             assert!(
                                                 matches!(inner_expr.as_ref(), Expr::EIf { .. }),
                                                 "inner expr should be EIf after assert! expansion"
@@ -1061,6 +1128,7 @@ mod tests {
             Def::DFunc {
                 loc: loc(2, 1),
                 name: "foo".to_string(),
+                type_params: vec![],
                 params: vec![],
                 returns: None,
                 body: Box::new(Expr::EInt {
@@ -1124,7 +1192,12 @@ mod tests {
         assert_eq!(result.len(), 1, "DMacro should be filtered out");
         match &result[0] {
             Def::DFunc { body, .. } => match body.as_ref() {
-                Expr::EBinOp { op: BinOp::Add, left, right, .. } => {
+                Expr::EBinOp {
+                    op: BinOp::Add,
+                    left,
+                    right,
+                    ..
+                } => {
                     // Both left and right should be the argument (5)
                     assert!(
                         matches!(left.as_ref(), Expr::EInt { value: 5, .. }),
@@ -1152,8 +1225,14 @@ mod tests {
             loc: loc(1, 1),
             name: "add".to_string(),
             params: vec![
-                MacroParam { name: "a".to_string(), typ: Typ::TInt },
-                MacroParam { name: "b".to_string(), typ: Typ::TInt },
+                MacroParam {
+                    name: "a".to_string(),
+                    typ: Typ::TInt,
+                },
+                MacroParam {
+                    name: "b".to_string(),
+                    typ: Typ::TInt,
+                },
             ],
             body: Box::new(Expr::EBinOp {
                 loc: loc(1, 1),
@@ -1174,8 +1253,14 @@ mod tests {
             loc: loc(2, 1),
             name: "add".to_string(),
             args: vec![
-                Expr::EInt { loc: loc(2, 7), value: 3 },
-                Expr::EInt { loc: loc(2, 10), value: 7 },
+                Expr::EInt {
+                    loc: loc(2, 7),
+                    value: 3,
+                },
+                Expr::EInt {
+                    loc: loc(2, 10),
+                    value: 7,
+                },
             ],
         });
 
@@ -1188,7 +1273,12 @@ mod tests {
         assert_eq!(result.len(), 1);
         match &result[0] {
             Def::DFunc { body, .. } => match body.as_ref() {
-                Expr::EBinOp { op: BinOp::Add, left, right, .. } => {
+                Expr::EBinOp {
+                    op: BinOp::Add,
+                    left,
+                    right,
+                    ..
+                } => {
                     // First arg = 3
                     assert!(
                         matches!(left.as_ref(), Expr::EInt { value: 3, .. }),
@@ -1217,8 +1307,14 @@ mod tests {
         let macro_def = Def::DMacro {
             loc: loc(1, 1),
             name: "f".to_string(),
-            params: vec![MacroParam { name: "x".to_string(), typ: Typ::TInt }],
-            body: Box::new(Expr::EMacroVar { loc: loc(1, 1), name: "x".to_string() }),
+            params: vec![MacroParam {
+                name: "x".to_string(),
+                typ: Typ::TInt,
+            }],
+            body: Box::new(Expr::EMacroVar {
+                loc: loc(1, 1),
+                name: "x".to_string(),
+            }),
         };
         let call = wrap_main(Expr::EMacro {
             loc: loc(2, 1),
@@ -1234,7 +1330,8 @@ mod tests {
         assert!(result.is_err(), "wrong arg count should error");
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("takes 1 arguments but 0 were given"),
+            err.to_string()
+                .contains("takes 1 arguments but 0 were given"),
             "error should mention arg count mismatch"
         );
     }
@@ -1256,14 +1353,20 @@ mod tests {
         let macro_def = Def::DMacro {
             loc: loc(1, 1),
             name: "show".to_string(),
-            params: vec![MacroParam { name: "v".to_string(), typ: Typ::TInt }],
+            params: vec![MacroParam {
+                name: "v".to_string(),
+                typ: Typ::TInt,
+            }],
             body: Box::new(body),
         };
 
         let call = wrap_main(Expr::EMacro {
             loc: loc(2, 1),
             name: "show".to_string(),
-            args: vec![Expr::EInt { loc: loc(2, 8), value: 42 }],
+            args: vec![Expr::EInt {
+                loc: loc(2, 8),
+                value: 42,
+            }],
         });
 
         let mut defs = vec![macro_def];

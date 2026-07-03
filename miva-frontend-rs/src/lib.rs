@@ -3,8 +3,8 @@ pub mod lexer;
 pub mod parser;
 pub mod util;
 
-use parser::Parser;
 use lexer::Lexer;
+use parser::Parser;
 
 /// Parse Miva source text into a list of definitions.
 ///
@@ -27,6 +27,7 @@ pub fn parse_to_json(input: &str, file_name: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::ast::*;
     use super::*;
 
     #[test]
@@ -127,5 +128,78 @@ main = () => {
 }"#;
         let defs = parse(input, "test.miva").unwrap();
         assert_eq!(defs.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_generic_func() {
+        let input = "identity[T] = (x: T): T => x";
+        let defs = parse(input, "test.miva").unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Def::DFunc {
+                name,
+                type_params,
+                params,
+                returns,
+                ..
+            } => {
+                assert_eq!(name, "identity");
+                assert_eq!(type_params, &vec!["T".to_string()]);
+                assert_eq!(params.len(), 1);
+                assert!(returns.is_some());
+            }
+            _ => panic!("expected DFunc"),
+        }
+    }
+
+    #[test]
+    fn test_parse_generic_call() {
+        let input = r#"
+module main;
+main = () => {
+  identity[int](42);
+}"#;
+        let defs = parse(input, "test.miva").unwrap();
+        // Find the identity[int](42) call inside main
+        let main_def = &defs[1];
+        match main_def {
+            Def::DFunc { body, .. } => match body.as_ref() {
+                Expr::EBlock { stmts, .. } => match &stmts[0] {
+                    Stmt::SExpr { expr, .. } => match expr.as_ref() {
+                        Expr::ECall {
+                            name,
+                            type_args,
+                            args,
+                            ..
+                        } => {
+                            assert_eq!(name, "identity");
+                            assert_eq!(type_args.len(), 1);
+                            assert!(matches!(type_args[0], Typ::TInt));
+                            assert_eq!(args.len(), 1);
+                        }
+                        _ => panic!("expected ECall"),
+                    },
+                    _ => panic!("expected SExpr"),
+                },
+                _ => panic!("expected EBlock"),
+            },
+            _ => panic!("expected DFunc"),
+        }
+    }
+
+    #[test]
+    fn test_parse_generic_multi_param() {
+        let input = "pair[T, U] = (a: T, b: U): bool => true";
+        let defs = parse(input, "test.miva").unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Def::DFunc {
+                name, type_params, ..
+            } => {
+                assert_eq!(name, "pair");
+                assert_eq!(type_params, &vec!["T".to_string(), "U".to_string()]);
+            }
+            _ => panic!("expected DFunc"),
+        }
     }
 }

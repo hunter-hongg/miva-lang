@@ -35,7 +35,8 @@ fn is_copy_type(types: &HashMap<String, Vec<FieldDef>>, t: &Typ) -> bool {
         | Typ::TBox { .. }
         | Typ::TNull
         | Typ::TInvalid
-        | Typ::TPtrAny => false,
+        | Typ::TPtrAny
+        | Typ::TGenericParam { .. } => false,
         Typ::TStruct { name, .. } => {
             if let Some(fields) = types.get(name) {
                 fields.iter().all(|f| is_copy_type(types, &f.typ))
@@ -121,7 +122,12 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
                 ));
             }
         }
-        Expr::ECall { loc, name, args } => {
+        Expr::ECall {
+            loc,
+            name,
+            type_args: _,
+            args,
+        } => {
             match symbol_table.get_function_safety(name) {
                 Some(Safety::Unsafe) => {
                     errs.push(Error::new(
@@ -274,7 +280,12 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
                             },
                         );
                     }
-                    Stmt::SLetTyped { loc, name, typ, expr } => {
+                    Stmt::SLetTyped {
+                        loc,
+                        name,
+                        typ,
+                        expr,
+                    } => {
                         errs.extend(check_expr(ctx, symbol_table, expr));
                         ctx.vars.insert(
                             name.clone(),
@@ -592,6 +603,7 @@ mod tests {
         Def::DFunc {
             loc: loc(),
             name: name.to_string(),
+            type_params: vec![],
             params,
             returns: None,
             body: Box::new(body),
@@ -699,6 +711,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "nonexistent_func".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -725,6 +738,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "dangerous".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -936,6 +950,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "trusted_func".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -964,6 +979,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "safe_func".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -1516,6 +1532,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "helper".to_string(),
+                    type_args: vec![],
                     args: vec![
                         Expr::EVar {
                             loc: loc(),
@@ -1554,6 +1571,7 @@ mod tests {
                     Expr::ECall {
                         loc: loc(),
                         name: builtin.to_string(),
+                        type_args: vec![],
                         args: vec![],
                     },
                     Safety::Safe,
@@ -1583,6 +1601,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "ptr_set".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
@@ -1605,6 +1624,7 @@ mod tests {
                 Expr::ECall {
                     loc: loc(),
                     name: "print".to_string(),
+                    type_args: vec![],
                     args: vec![],
                 },
                 Safety::Safe,
