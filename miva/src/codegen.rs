@@ -53,7 +53,20 @@ fn cxx_type(typ: &Typ) -> String {
         Typ::TChar => "mvp_builtin_byte".into(),
         Typ::TString => "mvp_builtin_string".into(),
         Typ::TArray { of } => format!("std::vector<{}>", cxx_type(of)),
-        Typ::TStruct { name, .. } => name.clone(),
+        Typ::TStruct {
+            name, type_args, ..
+        } => {
+            if type_args.is_empty() {
+                name.clone()
+            } else {
+                let args_str = type_args
+                    .iter()
+                    .map(cxx_type)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}<{}>", name, args_str)
+            }
+        }
         Typ::TPtr { to } => format!("{}*", cxx_type(to)),
         Typ::TBox { of } => format!("mvp_builtin_box<{}>", cxx_type(of)),
         Typ::TNull => "void".into(),
@@ -207,7 +220,12 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
         Expr::EMove { name, .. } => format!("std::move({})", name),
         Expr::EClone { name, .. } => format!("decltype({})({})", name, name),
 
-        Expr::EStructLit { name, fields, .. } => cxx_struct_lit(name, fields, depth),
+        Expr::EStructLit {
+            name,
+            fields,
+            type_args,
+            ..
+        } => cxx_struct_lit(name, type_args, fields, depth),
         Expr::EFieldAccess { expr, field, .. } => {
             format!("{}.{}", cxx_expr(expr, depth), field)
         }
@@ -312,9 +330,19 @@ fn cxx_for(var: &str, range: &Expr, body: &Expr, depth: usize) -> String {
     )
 }
 
-fn cxx_struct_lit(name: &str, fields: &[ValueField], depth: usize) -> String {
+fn cxx_struct_lit(name: &str, type_args: &[Typ], fields: &[ValueField], depth: usize) -> String {
+    let type_name = if type_args.is_empty() {
+        name.to_string()
+    } else {
+        let args_str = type_args
+            .iter()
+            .map(cxx_type)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{}<{}>", name, args_str)
+    };
     if fields.is_empty() {
-        format!("{}{{}}", name)
+        format!("{}{{}}", type_name)
     } else {
         let temp = "__temp";
         let inits: Vec<_> = fields
@@ -323,7 +351,7 @@ fn cxx_struct_lit(name: &str, fields: &[ValueField], depth: usize) -> String {
             .collect();
         format!(
             "([&]() {{ {} {}={{}}; {}; return {}; }}())",
-            name,
+            type_name,
             temp,
             inits.join("; "),
             temp
@@ -442,7 +470,12 @@ fn cxx_def(def: &Def, depth: usize) -> String {
     let ind = indent_str(depth);
     let inner = depth + 1;
     match def {
-        Def::DStruct { name, fields, .. } => cxx_struct_def(name, fields, ind, inner),
+        Def::DStruct {
+            name,
+            fields,
+            type_params,
+            ..
+        } => cxx_struct_def(name, type_params, fields, ind, inner),
         Def::DFunc {
             name,
             type_params,
@@ -481,12 +514,31 @@ fn cxx_def(def: &Def, depth: usize) -> String {
     }
 }
 
-fn cxx_struct_def(name: &str, fields: &[FieldDef], ind: String, inner: usize) -> String {
+fn cxx_struct_def(
+    name: &str,
+    type_params: &[String],
+    fields: &[FieldDef],
+    ind: String,
+    inner: usize,
+) -> String {
     let field_strs: String = fields
         .iter()
         .map(|f| format!("{}{} {};\n", indent_str(inner), cxx_type(&f.typ), f.name))
         .collect();
-    format!("struct {} {{\n{}{}}};\n\n", name, field_strs, ind)
+    let template_header = if type_params.is_empty() {
+        String::new()
+    } else {
+        let params_str = type_params
+            .iter()
+            .map(|tp| format!("typename {}", tp))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{}template<{}>\n", ind, params_str)
+    };
+    format!(
+        "{}struct {} {{\n{}{}}};\n\n",
+        template_header, name, field_strs, ind
+    )
 }
 
 fn cxx_main_func(ind: String, inner: usize, body: &Expr) -> String {
@@ -646,13 +698,33 @@ fn cxx_include_here(path: &str) -> String {
     if path.starts_with("c:") {
         include
     } else {
-        let parts: Vec<&str> = path.split('/').collect();
-        if let Some(head) = parts.first() {
-            format!("{}using namespace {};\n", include, head.replace('.', "::"))
-        } else {
+        let ns = import_path_to_namespace(path);
+        if ns.is_empty() {
             include
+        } else {
+            format!("{}using namespace {};\n", include, ns)
         }
     }
+}
+
+/// Resolve an import path to its C++ namespace name.
+///
+/// Examples:
+///   - `"ged/func"`   (project "ged")    → `"func"`
+///   - `"std/str"`    (external)          → `"mvp_std::str"`
+///   - `"c:stdio.h"`  (C header)          → `""`
+fn import_path_to_namespace(path: &str) -> String {
+    if path.starts_with("c:") {
+        return String::new();
+    }
+    if let Some(proj_name) = crate::config::Config::project_name() {
+        if let Some(remaining) = path.strip_prefix(&format!("{}/", proj_name)) {
+            // Project-internal: "ged/func" → module "func" → "func"
+            return cxx_module(&remaining.replace('/', "."));
+        }
+    }
+    // External library: "std/str" → module "std.str" → "mvp_std::str"
+    cxx_module(&path.replace('/', "."))
 }
 
 fn generate_test(defs: &[Def]) -> String {
@@ -753,14 +825,52 @@ fn collect_exported_rec(
             }
             Def::SExport { symbol, .. } => {
                 let decl = if let Some(s) = sym.lookup_struct(symbol) {
-                    let field_strs: String = s
-                        .fields
-                        .iter()
-                        .map(|f| format!("  {} {};\n", cxx_type(&f.typ), f.name))
-                        .collect();
-                    format!("struct {} {{\n{}}};\n\n", s.name, field_strs)
+                    // Check if this is a generic struct by looking it up in defs
+                    if let Some(dfunc) = find_struct_def(defs, symbol) {
+                        dfunc
+                    } else {
+                        let field_strs: String = s
+                            .fields
+                            .iter()
+                            .map(|f| format!("  {} {};\n", cxx_type(&f.typ), f.name))
+                            .collect();
+                        format!("struct {} {{\n{}}};\n\n", s.name, field_strs)
+                    }
                 } else if let Some(f) = sym.lookup_function(symbol) {
-                    cxx_func_decl(&f.name, &f.params, &f.return_typ)
+                    if f.type_params.is_empty() {
+                        // Non-generic: declaration only (definition lives in .cpp)
+                        cxx_func_decl(&f.name, &f.params, &f.return_typ)
+                    } else {
+                        // Generic (template): must emit full definition in header
+                        // C++ requires template definitions to be visible at point of use
+                        find_func_def(defs, symbol)
+                            .map(|dfunc| match dfunc {
+                                Def::DFunc {
+                                    name,
+                                    type_params,
+                                    params,
+                                    returns,
+                                    body,
+                                    ..
+                                } => cxx_normal_func(
+                                    name,
+                                    type_params,
+                                    params,
+                                    returns,
+                                    body,
+                                    String::new(),
+                                    1,
+                                ),
+                                _ => {
+                                    eprintln!("Warning: unexpected def type for exported generic function '{}'", symbol);
+                                    String::new()
+                                }
+                            })
+                            .unwrap_or_else(|| {
+                                eprintln!("Warning: could not find definition for exported generic function '{}'", symbol);
+                                String::new()
+                            })
+                    }
                 } else {
                     String::new()
                 };
@@ -769,6 +879,48 @@ fn collect_exported_rec(
             _ => {}
         }
     }
+}
+
+/// Search through defs for a DFunc definition matching the given name.
+/// This handles both flat defs and module-wrapped defs.
+fn find_func_def<'a>(defs: &'a [Def], name: &str) -> Option<&'a Def> {
+    for def in defs.iter() {
+        match def {
+            Def::DFunc { name: n, .. } if n == name => return Some(def),
+            Def::DModule { .. } => {
+                // Recurse into module contents (skip the DModule itself)
+                if let Some(found) = find_func_def(&defs[1..], name) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Search through defs for a DStruct definition matching the given name.
+/// Returns the cxx_struct_def output or None if not found.
+fn find_struct_def(defs: &[Def], name: &str) -> Option<String> {
+    for def in defs.iter() {
+        match def {
+            Def::DStruct {
+                name: n,
+                fields,
+                type_params,
+                ..
+            } if n == name => {
+                return Some(cxx_struct_def(name, type_params, fields, String::new(), 1));
+            }
+            Def::DModule { .. } => {
+                if let Some(found) = find_struct_def(&defs[1..], name) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 struct ScopeParts {
@@ -813,7 +965,7 @@ fn generate_with_scope(defs: &[Def], module: Option<&str>) -> ScopeParts {
                 };
                 main_functions.push_str(&global_main);
             }
-            Def::SImport { path, .. } => includes.push_str(&cxx_include_path(path)),
+            Def::SImport { path, .. } => includes.push_str(&cxx_include_here(path)),
             Def::SImportAs { path, .. } => includes.push_str(&cxx_include_path(path)),
             Def::SImportHere { path, .. } => includes.push_str(&cxx_include_here(path)),
             _ => defs_str.push_str(&cxx_def(def, 0)),
@@ -1025,6 +1177,7 @@ mod tests {
         let typ = Typ::TStruct {
             name: "Point".into(),
             fields: vec![],
+            type_args: vec![],
         };
         assert_eq!(cxx_type(&typ), "Point");
     }
@@ -2223,8 +2376,8 @@ mod tests {
             loc: loc(),
             name: "Foo".into(),
             fields: vec![],
+            type_params: vec![],
         };
-        assert!(!is_main_func(&def));
     }
 
     // ===== cxx_struct_def =====
@@ -2731,6 +2884,7 @@ mod tests {
             name: "Point".into(),
             fields: vec![
                 FieldDef {
+                    type_params: vec![],
                     name: "x".into(),
                     typ: Typ::TInt,
                 },

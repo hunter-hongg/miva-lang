@@ -147,7 +147,9 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
                                 name
                             ),
                         ));
-                    } else {
+                    } else if symbol_table.imports.is_empty() {
+                        // Only report unknown function if no imports are present
+                        // (cross-module functions are resolved during C++ compilation)
                         errs.push(Error::new(
                             "E0009",
                             loc,

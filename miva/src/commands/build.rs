@@ -361,7 +361,16 @@ fn compile_cpp_to_obj(
         .map_err(|e| anyhow::anyhow!("Failed to run g++: {}", e))?;
 
     if !compile_output.status.success() {
+        let stderr = String::from_utf8_lossy(&compile_output.stderr);
         eprintln!("{}", color::error("g++ compilation failed"));
+        if verbose {
+            eprintln!("{}", stderr);
+        } else {
+            // Always show at least some error output
+            for line in stderr.lines().take(5) {
+                eprintln!("{}", line);
+            }
+        }
         clean::exec(false)?;
         std::process::exit(1);
     }

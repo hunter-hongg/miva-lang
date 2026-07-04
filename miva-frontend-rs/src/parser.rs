@@ -166,17 +166,19 @@ impl<'input> Parser<'input> {
 
         // Check for struct
         if self.peek_token()? == Some(&Token::Struct) {
-            if !type_params.is_empty() {
-                return Err("structs cannot have generic type parameters yet".to_string());
-            }
-            return self.parse_struct_body(name, start);
+            return self.parse_struct_body(name, type_params, start);
         }
 
         // Must be a function
         self.parse_func_body(name, type_params, start, Safety::Safe)
     }
 
-    fn parse_struct_body(&mut self, name: String, start: usize) -> Result<Def, String> {
+    fn parse_struct_body(
+        &mut self,
+        name: String,
+        type_params: Vec<String>,
+        start: usize,
+    ) -> Result<Def, String> {
         self.advance()?; // consume "struct"
         self.expect(&Token::LBrace)?;
         let mut fields = Vec::new();
@@ -198,6 +200,7 @@ impl<'input> Parser<'input> {
             loc: self.loc(start),
             name,
             fields,
+            type_params,
         })
     }
 
@@ -573,11 +576,28 @@ impl<'input> Parser<'input> {
                 Ok(Typ::TArray { of: Box::new(t) })
             }
             Some(&Token::Ident(_)) => {
-                // Type path (struct type)
+                // Type path (struct type), possibly with generic args
                 let name = self.parse_type_path()?;
+                let type_args = if self.peek_token()? == Some(&Token::LBracket) {
+                    self.advance()?; // consume "["
+                    let mut args = Vec::new();
+                    loop {
+                        args.push(self.parse_typ()?);
+                        if self.peek_token()? == Some(&Token::Comma) {
+                            self.advance()?;
+                        } else {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RBracket)?;
+                    args
+                } else {
+                    vec![]
+                };
                 Ok(Typ::TStruct {
                     name,
                     fields: vec![],
+                    type_args,
                 })
             }
             Some(tok) => Err(format!("Expected type, found {:?}", tok)),
@@ -1245,6 +1265,23 @@ impl<'input> Parser<'input> {
     fn parse_struct_init_expr(&mut self) -> Result<Expr, String> {
         let start = self.advance()?.0; // "struct"
         let path = self.parse_type_path()?;
+        // Optional generic type args: Pair[T, U]
+        let _type_args = if self.peek_token()? == Some(&Token::LBracket) {
+            self.advance()?; // "["
+            let mut args = Vec::new();
+            loop {
+                args.push(self.parse_typ()?);
+                if self.peek_token()? == Some(&Token::Comma) {
+                    self.advance()?;
+                } else {
+                    break;
+                }
+            }
+            self.expect(&Token::RBracket)?;
+            args
+        } else {
+            vec![]
+        };
         self.expect(&Token::LBrace)?;
         let mut fields = Vec::new();
         while self.peek_token()? != Some(&Token::RBrace) {
@@ -1264,6 +1301,7 @@ impl<'input> Parser<'input> {
             loc: self.loc(start),
             name: path,
             fields,
+            type_args: _type_args,
         })
     }
 

@@ -46,6 +46,7 @@ pub struct FunctionEntry {
 pub struct StructEntry {
     pub name: String,
     pub fields: Vec<FieldDef>,
+    pub type_params: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -118,8 +119,13 @@ impl SymbolTable {
                 } => {
                     table.register_function(name, &[], params, returns, safety, loc, &mut errors);
                 }
-                Def::DStruct { name, fields, loc } => {
-                    table.register_struct(name, fields, loc, &mut errors);
+                Def::DStruct {
+                    name,
+                    fields,
+                    type_params,
+                    loc,
+                } => {
+                    table.register_struct(name, type_params, fields, loc, &mut errors);
                 }
                 Def::SExport { symbol, .. } => {
                     if table.function_index.contains_key(symbol)
@@ -192,6 +198,7 @@ impl SymbolTable {
     fn register_struct(
         &mut self,
         name: &str,
+        type_params: &[String],
         fields: &[FieldDef],
         loc: &Loc,
         errors: &mut Vec<Error>,
@@ -208,6 +215,7 @@ impl SymbolTable {
         }
         self.structs.push(StructEntry {
             name: name.to_string(),
+            type_params: type_params.to_vec(),
             fields: fields.to_vec(),
         });
     }
@@ -253,6 +261,7 @@ mod tests {
             loc: loc(),
             name: name.to_string(),
             fields: Vec::new(),
+            type_params: Vec::new(),
         }
     }
 
@@ -487,6 +496,7 @@ mod tests {
                     typ: Typ::TInt,
                 },
             ],
+            type_params: Vec::new(),
         };
         let st = SymbolTable::build(&[def]);
         assert_eq!(st.structs[0].fields.len(), 2);
@@ -663,6 +673,7 @@ mod tests {
             loc: loc(),
             name: "Empty".to_string(),
             fields: Vec::new(),
+            type_params: Vec::new(),
         };
         let st = SymbolTable::build(&[def]);
         assert_eq!(st.structs.len(), 1);

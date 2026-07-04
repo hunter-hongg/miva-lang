@@ -165,7 +165,12 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Re
         Expr::EMacroVar { .. } => {
             bail!("macro variable outside macro body: EMacroVar should have been substituted");
         }
-        Expr::EStructLit { loc, name, fields } => {
+        Expr::EStructLit {
+            loc,
+            name,
+            fields,
+            type_args,
+        } => {
             let expanded = fields
                 .iter()
                 .map(|f| {
@@ -179,6 +184,7 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Re
                 loc: loc.clone(),
                 name: name.clone(),
                 fields: expanded,
+                type_args: type_args.clone(),
             })
         }
         Expr::EFieldAccess {
@@ -382,7 +388,12 @@ fn substitute_macro_vars(expr: &Expr, args: &[Expr], param_names: &[&str]) -> Ex
             args[idx].clone()
         }
         // Recursive cases
-        Expr::EStructLit { loc, name, fields } => Expr::EStructLit {
+        Expr::EStructLit {
+            loc,
+            name,
+            fields,
+            type_args,
+        } => Expr::EStructLit {
             loc: loc.clone(),
             name: name.clone(),
             fields: fields
@@ -392,6 +403,7 @@ fn substitute_macro_vars(expr: &Expr, args: &[Expr], param_names: &[&str]) -> Ex
                     value: substitute_macro_vars(&f.value, args, param_names),
                 })
                 .collect(),
+            type_args: type_args.clone(),
         },
         Expr::EFieldAccess {
             loc,
@@ -1124,6 +1136,7 @@ mod tests {
                     name: "x".to_string(),
                     typ: Typ::TInt,
                 }],
+                type_params: vec![],
             },
             Def::DFunc {
                 loc: loc(2, 1),

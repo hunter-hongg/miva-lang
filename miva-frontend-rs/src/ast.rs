@@ -40,7 +40,12 @@ pub enum Typ {
         of: Box<Typ>,
     },
     #[serde(rename = "struct")]
-    TStruct { name: String, fields: Vec<FieldDef> },
+    TStruct {
+        name: String,
+        fields: Vec<FieldDef>,
+        #[serde(default)]
+        type_args: Vec<Typ>,
+    },
     #[serde(rename = "ptr")]
     TPtr { to: Box<Typ> },
     #[serde(rename = "box")]
@@ -185,6 +190,8 @@ pub enum Expr {
         loc: Loc,
         name: String,
         fields: Vec<ValueField>,
+        #[serde(default)]
+        type_args: Vec<Typ>,
     },
     #[serde(rename = "fieldAccess")]
     EFieldAccess {
@@ -314,6 +321,8 @@ pub enum Def {
         loc: Loc,
         name: String,
         fields: Vec<FieldDef>,
+        #[serde(default)]
+        type_params: Vec<String>,
     },
     #[serde(rename = "func")]
     DFunc {
