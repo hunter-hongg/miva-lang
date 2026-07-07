@@ -42,6 +42,7 @@ fn toml_content(name: &str, type_: &str) -> String {
     format!(
         "[project]
 name = \"{name}\"
+version = \"0.1.0\"
 type = \"{type_}\"
 
 [env]

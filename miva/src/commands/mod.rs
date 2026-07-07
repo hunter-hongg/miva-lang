@@ -10,3 +10,4 @@ pub mod run;
 pub mod sin_build;
 pub mod sin_run;
 pub mod test_cmd;
+pub mod lock;

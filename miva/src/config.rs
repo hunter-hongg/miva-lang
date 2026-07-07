@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+use std::collections::HashMap;
 
 use serde::Deserialize;
 
@@ -6,6 +6,8 @@ use serde::Deserialize;
 pub struct Config {
     #[serde(default)]
     pub project: Option<ProjectConfig>,
+    #[serde(default)]
+    pub dependencies: Option<HashMap<String, String>>,
     #[serde(default)]
     pub env: Option<EnvConfig>,
 }
@@ -15,6 +17,7 @@ pub struct ProjectConfig {
     pub name: Option<String>,
     #[serde(rename = "type")]
     pub project_type: Option<String>,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -28,5 +31,9 @@ impl Config {
 
     pub fn project_name() -> Option<String> {
         Self::load()?.project?.name
+    }
+
+    pub fn dependencies(&self) -> HashMap<String, String> {
+        self.dependencies.clone().unwrap_or_default()
     }
 }

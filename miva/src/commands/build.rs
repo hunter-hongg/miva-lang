@@ -1,11 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::exists;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Result;
 
-use super::{color, dependency_graph::DependencyGraph, env, frontend};
+use super::{color, dependency_graph::DependencyGraph, env, frontend, lock};
 use crate::codegen;
 use crate::commands::clean;
 use crate::config::Config;
@@ -71,6 +71,7 @@ fn collect_imports_with_graph(
     std_path: &str,
     graph: &mut DependencyGraph,
     name: &str,
+    deps: &HashMap<String, String>,
 ) -> Result<()> {
     let mut file_parts: Vec<_> = file.split('/').collect();
     let _file = file;
@@ -87,7 +88,15 @@ fn collect_imports_with_graph(
             _ if first == name => {
                 file = "src/".to_string() + file_parts.join("/").as_str() + ".miva";
             }
+            _ if deps.contains_key(&first.to_string()) => {
+                let version = &deps[&first.to_string()];
+                let inc = format!("{}", env::get_std_include_dir().display());
+                file = inc + "/" + first + "-" + version + "/src/" + file_parts.join("/").as_str() + ".miva";
+            }
             _ => {
+                if !deps.is_empty() {
+                    anyhow::bail!("import '{}' references library '{}' which is not declared in [dependencies]", _file, first);
+                }
                 let inc = format!("{}", env::get_std_include_dir().display());
                 file = inc + "/" + first + "/src/" + file_parts.join("/").as_str() + ".miva";
             }
@@ -100,10 +109,10 @@ fn collect_imports_with_graph(
 
     let file = file.as_str();
     let dep_path = dep_cache_path(cache_dir, file, std_path);
-    let deps = read_dep_cache(&dep_path, file);
+    let deps_list = read_dep_cache(&dep_path, file);
 
-    let import_paths: Vec<String> = if let Some(deps) = deps {
-        deps
+    let import_paths: Vec<String> = if let Some(deps_list) = deps_list {
+        deps_list
     } else {
         let json_str = frontend::run_frontend(frontend, work_dir, file)?;
         let ast = json_ast::from_str(&json_str)
@@ -126,7 +135,7 @@ fn collect_imports_with_graph(
     for path in &import_paths {
         graph.add_dependency(file, path);
         collect_imports_with_graph(
-            frontend, work_dir, path, visited, cache_dir, std_path, graph, name,
+            frontend, work_dir, path, visited, cache_dir, std_path, graph, name, deps,
         )?;
     }
 
@@ -322,13 +331,17 @@ fn compile_cpp_to_obj(
     project_type: &str,
     release: bool,
     verbose: bool,
+    extra_includes: &[PathBuf],
 ) -> Result<PathBuf> {
     let obj_path = cpp_path.with_extension("o");
 
     let opt_flag = if release { "-O2" } else { "-g" };
     let pic_flag = if project_type == "lib" { "-fPIC" } else { "" };
     let inc_flags = env::get_include_flags();
-    let include = include_flag(&[cache_dir, std_include, build_dir]);
+    let mut include = include_flag(&[cache_dir, std_include, build_dir]);
+    for extra in extra_includes {
+        include.push(format!("-I{}", extra.to_string_lossy()));
+    }
 
     let mut args = vec![
         opt_flag,
@@ -475,6 +488,18 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
 
     let std_path_str = std_include_dir.to_string_lossy();
 
+    // Resolve dependencies
+    let declared = config.dependencies();
+    let deps = if declared.is_empty() {
+        HashMap::new()
+    } else {
+        lock::resolve(&declared, &std_include_dir)?
+    };
+
+    if !deps.is_empty() {
+        eprintln!("  {}", color::info(&format!("dependencies: {}", deps.iter().map(|(n, v)| format!("{}={}", n, v)).collect::<Vec<_>>().join(", "))));
+    }
+
     // Build dependency graph while collecting source files
     let mut visited = HashSet::new();
     let mut graph = DependencyGraph::new();
@@ -487,10 +512,16 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
         &std_path_str,
         &mut graph,
         &name,
+        &deps,
     )?;
 
     let mut files: Vec<String> = Vec::new();
-    let std_str = std_include_dir.join("std/src/str.miva");
+    let std_str = if let Some(std_ver) = deps.get("std") {
+        let ver_dir = format!("std-{}", std_ver);
+        std_include_dir.join(ver_dir).join("src/str.miva")
+    } else {
+        std_include_dir.join("std/src/str.miva")
+    };
     if std_str.exists() {
         files.push(std_str.to_string_lossy().to_string());
     }
@@ -555,19 +586,35 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
     // If nothing was recompiled, check if .o files exist for all cpp files
     let all_cached = need_compile_bin.is_empty();
 
+    // Create cache symlinks for versioned dep includes
+    // e.g., <cache_dir>/std -> <cache_dir>/std-0.1.0 so #include <std/src/...> resolves
+    for (dep_name, dep_ver) in &deps {
+        let versioned_cache = cache_dir.join(format!("{}-{}", dep_name, dep_ver));
+        let unversioned_link = cache_dir.join(dep_name);
+        if versioned_cache.exists() && !unversioned_link.exists() {
+            std::os::unix::fs::symlink(
+                versioned_cache.strip_prefix(&cache_dir).unwrap_or(&versioned_cache),
+                &unversioned_link,
+            )?;
+        }
+    }
+
     // Phase 2: Compile .cpp to .o
     let mut obj_files: Vec<PathBuf> = Vec::new();
 
+    let mut dep_include_dirs: Vec<PathBuf> = Vec::new();
+    for (dep_name, dep_ver) in &deps {
+        dep_include_dirs.push(std_include_dir.join(format!("{}-{}", dep_name, dep_ver)));
+    }
+
     for (file, cpp_path, _) in &cpp_results {
         if all_cached {
-            // All files cached, use mtime check for .o
             let obj_path = cpp_path.with_extension("o");
             if obj_path.exists() {
                 obj_files.push(obj_path);
                 continue;
             }
         } else if !need_compile_bin.contains(file) {
-            // This file wasn't recompiled and isn't a dependent of a changed file
             let obj_path = cpp_path.with_extension("o");
             if obj_path.exists() {
                 obj_files.push(obj_path);
@@ -583,6 +630,7 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
             project_type,
             release,
             verbose,
+            &dep_include_dirs,
         )?;
 
         obj_files.push(obj_path);
