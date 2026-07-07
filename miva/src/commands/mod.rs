@@ -5,6 +5,7 @@ pub mod dep;
 pub mod dependency_graph;
 pub mod env;
 pub mod frontend;
+pub mod get_cmd;
 pub mod init_cmd;
 pub mod run;
 pub mod sin_build;

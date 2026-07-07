@@ -12,7 +12,7 @@ mod typecheck;
 mod warning;
 
 use clap::Parser;
-use commands::{build, clean, dep, init_cmd, run, sin_build, sin_run, test_cmd};
+use commands::{build, clean, dep, get_cmd, init_cmd, run, sin_build, sin_run, test_cmd};
 
 use crate::commands::color;
 
@@ -49,6 +49,8 @@ enum Command {
     /// Compile and run an Miva program
     #[command(name = "sin-run")]
     SinRun(sin_run::Args),
+    /// Install a library from a GitHub repository
+    Get(get_cmd::Args),
     /// Show complete dependency graph starting from main.miva
     Dep,
     /// Run all tests in the Miva project or specific files
@@ -65,6 +67,7 @@ fn main() {
         Command::Clean => clean::exec(cli.verbose),
         Command::SinBuild(args) => sin_build::exec(args, cli.verbose),
         Command::SinRun(args) => sin_run::exec(args, cli.verbose),
+        Command::Get(args) => get_cmd::exec(args, cli.verbose),
         Command::Dep => dep::exec(cli.verbose),
         Command::Test(args) => test_cmd::exec(args, cli.verbose),
     };
