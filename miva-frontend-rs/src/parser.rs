@@ -841,15 +841,81 @@ impl<'input> Parser<'input> {
                         args,
                     };
                 }
-                // Field access: expr.field
+                // Field access or method call: expr.field or expr.method(args)
                 Some(&Token::Dot) => {
                     self.advance()?;
-                    let (field, _) = self.expect_ident()?;
-                    expr = Expr::EFieldAccess {
-                        loc: Loc::new(0, 0),
-                        expr: Box::new(expr),
-                        field,
-                    };
+                    let (method, _) = self.expect_ident()?;
+                    match self.peek_token()? {
+                        // Method call with type args: expr.method[T, U](args)
+                        Some(&Token::LBracket)
+                            if !matches!(&expr, Expr::EFieldAccess { .. }) =>
+                        {
+                            self.advance()?;
+                            let mut type_args = Vec::new();
+                            loop {
+                                type_args.push(self.parse_typ()?);
+                                if self.peek_token()? == Some(&Token::Comma) {
+                                    self.advance()?;
+                                } else {
+                                    break;
+                                }
+                            }
+                            self.expect(&Token::RBracket)?;
+                            self.expect(&Token::LParen)?;
+                            let mut args = Vec::new();
+                            if self.peek_token()? != Some(&Token::RParen) {
+                                loop {
+                                    args.push(self.parse_expr()?);
+                                    if self.peek_token()? == Some(&Token::Comma) {
+                                        self.advance()?;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                            self.expect(&Token::RParen)?;
+                            expr = Expr::EMethodCall {
+                                loc: Loc::new(0, 0),
+                                expr: Box::new(expr),
+                                method,
+                                type_args,
+                                args,
+                            };
+                        }
+                        // Method call: expr.method(args)
+                        Some(&Token::LParen)
+                            if !matches!(&expr, Expr::EFieldAccess { .. }) =>
+                        {
+                            self.advance()?;
+                            let mut args = Vec::new();
+                            if self.peek_token()? != Some(&Token::RParen) {
+                                loop {
+                                    args.push(self.parse_expr()?);
+                                    if self.peek_token()? == Some(&Token::Comma) {
+                                        self.advance()?;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                            self.expect(&Token::RParen)?;
+                            expr = Expr::EMethodCall {
+                                loc: Loc::new(0, 0),
+                                expr: Box::new(expr),
+                                method,
+                                type_args: vec![],
+                                args,
+                            };
+                        }
+                        // Regular field access: expr.field (also handles module paths like a.b(c))
+                        _ => {
+                            expr = Expr::EFieldAccess {
+                                loc: Loc::new(0, 0),
+                                expr: Box::new(expr),
+                                field: method,
+                            };
+                        }
+                    }
                 }
                 // Cast: expr as Type
                 Some(&Token::As) => {

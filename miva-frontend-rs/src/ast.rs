@@ -231,6 +231,15 @@ pub enum Expr {
         type_args: Vec<Typ>,
         args: Vec<Expr>,
     },
+    #[serde(rename = "methodCall")]
+    EMethodCall {
+        loc: Loc,
+        expr: Box<Expr>,
+        method: String,
+        #[serde(default)]
+        type_args: Vec<Typ>,
+        args: Vec<Expr>,
+    },
     #[serde(rename = "macro")]
     EMacro {
         loc: Loc,

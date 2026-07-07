@@ -196,6 +196,27 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Re
             expr: Box::new(expand_expr(e, addf, macro_table)?),
             field: field.clone(),
         }),
+        Expr::EMethodCall {
+            loc,
+            expr: e,
+            method,
+            type_args,
+            args,
+        } => {
+            let expanded_receiver = expand_expr(e, addf, macro_table)?;
+            let expanded_args = args
+                .iter()
+                .map(|a| expand_expr(a, addf, macro_table))
+                .collect::<Result<Vec<_>>>()?;
+            let mut new_args = vec![expanded_receiver];
+            new_args.extend(expanded_args);
+            Ok(Expr::ECall {
+                loc: loc.clone(),
+                name: method.clone(),
+                type_args: type_args.clone(),
+                args: new_args,
+            })
+        }
         Expr::EBinOp {
             loc,
             op,
@@ -414,6 +435,27 @@ fn substitute_macro_vars(expr: &Expr, args: &[Expr], param_names: &[&str]) -> Ex
             expr: Box::new(substitute_macro_vars(e, args, param_names)),
             field: field.clone(),
         },
+        Expr::EMethodCall {
+            loc,
+            expr: e,
+            method,
+            type_args,
+            args: method_args,
+        } => {
+            let expanded_receiver = substitute_macro_vars(e, args, param_names);
+            let expanded_args: Vec<Expr> = method_args
+                .iter()
+                .map(|a| substitute_macro_vars(a, args, param_names))
+                .collect();
+            let mut new_args = vec![expanded_receiver];
+            new_args.extend(expanded_args);
+            Expr::ECall {
+                loc: loc.clone(),
+                name: method.clone(),
+                type_args: type_args.clone(),
+                args: new_args,
+            }
+        }
         Expr::EBinOp {
             loc,
             op,

@@ -389,6 +389,7 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
         | Expr::EMacro { .. }
         | Expr::EMacroVar { .. }
         | Expr::EAddr { .. } => {}
+        Expr::EMethodCall { .. } => unreachable!(),
     }
 
     errs

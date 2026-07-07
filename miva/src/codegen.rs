@@ -262,6 +262,7 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
         Expr::EDeref { expr, .. } => format!("*({})", cxx_expr(expr, depth)),
         Expr::EMacro { .. } => String::new(),
         Expr::EMacroVar { .. } => unreachable!(),
+        Expr::EMethodCall { .. } => unreachable!(),
     }
 }
 
