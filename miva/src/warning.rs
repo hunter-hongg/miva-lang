@@ -8,15 +8,41 @@ use crate::symbol_table::SymbolTable;
 pub struct Warning {
     pub code: String,
     pub message: String,
+    pub loc: Loc,
 }
 
 impl Warning {
     fn new(code: &str, loc: &Loc, msg: &str) -> Self {
         Warning {
             code: code.to_string(),
-            message: format!("[{}:{}] {}", loc.line, loc.col, msg),
+            message: msg.to_string(),
+            loc: loc.clone(),
         }
     }
+}
+
+/// Format a compiler warning in Rust-style with source code context.
+pub fn format_warning_with_source(warn: &Warning, file_path: &str, source: &str) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("warning[{}]: {}\n", warn.code, warn.message));
+
+    let line = warn.loc.line;
+    let col = warn.loc.col;
+
+    if line > 0 {
+        output.push_str(&format!(" --> {}:{}:{}\n", file_path, line, col));
+        output.push_str("     |\n");
+
+        let line_idx = (line - 1) as usize;
+        if let Some(source_line) = source.lines().nth(line_idx) {
+            output.push_str(&format!("{:>4} | {}\n", line, source_line));
+            let caret_col = (col - 1).max(0) as usize;
+            let caret_pos = caret_col.min(source_line.len());
+            output.push_str(&format!("     | {}{}\n", " ".repeat(caret_pos), "^"));
+        }
+    }
+
+    output
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +131,14 @@ fn deprecated_func(name: &str, modname: &str) -> Option<String> {
         "ptr_free" => notrec_if("free", "std.mem.free", false, "std.mem"),
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Deprecated keyword checks
+// ---------------------------------------------------------------------------
+
+fn deprecated_keyword() -> &'static str {
+    "\"c\" is a deprecated keyword, use \"inline\" instead"
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +412,13 @@ pub fn get_warnings(defs: &[Def]) -> Vec<Warning> {
                 if let Some(w) = check_all_lower(loc, name, "module") {
                     warnings.push(w);
                 }
+            }
+            Def::DCFuncUnsafe {
+                loc,
+                used_c_keyword: true,
+                ..
+            } => {
+                warnings.push(Warning::new("W0004", loc, deprecated_keyword()));
             }
             Def::DStruct { .. }
             | Def::DTest { .. }
@@ -1145,6 +1186,7 @@ mod tests {
                 Expr::EStructLit {
                     loc: loc(),
                     name: "Point".to_string(),
+                    type_args: vec![],
                     fields: vec![ValueField {
                         name: "x".to_string(),
                         value: Expr::ECall {
@@ -1318,6 +1360,7 @@ mod tests {
                 returns: None,
                 code: "return 0;".to_string(),
                 safety: Safety::Unsafe,
+                used_c_keyword: false,
             },
         ];
         let warns = get_warnings(&defs);
@@ -1337,7 +1380,8 @@ mod tests {
             ),
         ];
         let warns = get_warnings(&defs);
-        assert!(warns[0].message.starts_with("[42:7]"));
+        assert_eq!(warns[0].loc.line, 42);
+        assert_eq!(warns[0].loc.col, 7);
     }
 
     #[test]
@@ -1347,6 +1391,7 @@ mod tests {
             Def::DStruct {
                 loc: loc(),
                 name: "Point".to_string(),
+                type_params: vec![],
                 fields: Vec::new(),
             },
         ];
@@ -1385,6 +1430,7 @@ mod tests {
         Def::DStruct {
             loc: loc(),
             name: name.to_string(),
+            type_params: vec![],
             fields: Vec::new(),
         }
     }
@@ -1405,6 +1451,7 @@ mod tests {
             returns: None,
             code: String::new(),
             safety: Safety::Unsafe,
+            used_c_keyword: false,
         }
     }
 

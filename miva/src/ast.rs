@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Loc {
     pub line: i64,
     pub col: i64,
@@ -333,6 +333,8 @@ pub enum Def {
         returns: Option<Typ>,
         code: String,
         safety: Safety,
+        #[serde(default)]
+        used_c_keyword: bool,
     },
     #[serde(rename = "test")]
     DTest {

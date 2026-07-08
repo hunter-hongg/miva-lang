@@ -9,6 +9,7 @@ use super::{color, dependency_graph::DependencyGraph, env, frontend, lock};
 use crate::codegen;
 use crate::commands::clean;
 use crate::config::Config;
+use crate::error;
 use crate::json_ast;
 use crate::macro_expand;
 use crate::magical;
@@ -231,6 +232,9 @@ fn compile_file_to_cpp(
 
     let defs = macro_expand::expand_macros(&ast.defs, macro_table)?;
 
+    // Read source file for context-aware error/warning display
+    let source = std::fs::read_to_string(file).unwrap_or_default();
+
     let sem_errors = semantic::check_program(&defs);
     if !sem_errors.is_empty() {
         for err in &sem_errors {
@@ -238,11 +242,10 @@ fn compile_file_to_cpp(
                 "{}",
                 color::colorize(
                     color::RED,
-                    format!("Error [{}]: {}", err.code, err.message).as_str()
+                    error::format_error_with_source(err, file, &source).as_str()
                 )
             );
         }
-        eprintln!("{}", "-".repeat(30));
         anyhow::bail!("semantic errors found");
     }
 
@@ -253,11 +256,10 @@ fn compile_file_to_cpp(
                 "{}",
                 color::colorize(
                     color::RED,
-                    format!("Error [{}]: {}", err.code, err.message).as_str()
+                    error::format_error_with_source(err, file, &source).as_str()
                 )
             );
         }
-        eprintln!("{}", "-".repeat(30));
         anyhow::bail!("type errors found");
     }
 
@@ -267,11 +269,13 @@ fn compile_file_to_cpp(
     for w in &err_warnings {
         eprintln!(
             "{}",
-            color::colorize(color::RED, &format!("Error [{}]: {}", w.code, w.message))
+            color::colorize(
+                color::RED,
+                warning::format_warning_with_source(w, file, &source).as_str()
+            )
         );
     }
     if !err_warnings.is_empty() {
-        eprintln!("{}", "-".repeat(30));
         anyhow::bail!("some warnings treated as errors");
     }
     for w in &warnings {
@@ -279,7 +283,7 @@ fn compile_file_to_cpp(
             "{}",
             color::colorize(
                 color::YELLOW,
-                &format!("Warning [{}]: {}", w.code, w.message)
+                warning::format_warning_with_source(w, file, &source).as_str()
             )
         );
     }

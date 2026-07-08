@@ -1888,6 +1888,7 @@ mod tests {
         let e = Expr::EStructLit {
             loc: loc(),
             name: "Empty".into(),
+            type_args: vec![],
             fields: vec![],
         };
         assert_eq!(cxx_expr(&e, 0), "Empty{}");
@@ -1898,6 +1899,7 @@ mod tests {
         let e = Expr::EStructLit {
             loc: loc(),
             name: "Point".into(),
+            type_args: vec![],
             fields: vec![
                 ValueField {
                     name: "x".into(),
@@ -2385,7 +2387,7 @@ mod tests {
 
     #[test]
     fn test_cxx_struct_def_empty() {
-        let result = cxx_struct_def("Empty", &[], "".into(), 0);
+        let result = cxx_struct_def("Empty", &[], &[] as &[FieldDef], "".into(), 0);
         assert_eq!(result, "struct Empty {\n};\n\n");
     }
 
@@ -2401,7 +2403,7 @@ mod tests {
                 typ: Typ::TBool,
             },
         ];
-        let result = cxx_struct_def("Point", &fields, "".into(), 1);
+        let result = cxx_struct_def("Point", &[], &fields, "".into(), 1);
         assert_eq!(
             result,
             "struct Point {\n  mvp_builtin_int x;\n  mvp_builtin_boolean y;\n};\n\n"
@@ -2883,9 +2885,9 @@ mod tests {
         let defs = vec![Def::DStruct {
             loc: loc(),
             name: "Point".into(),
+            type_params: vec![],
             fields: vec![
                 FieldDef {
-                    type_params: vec![],
                     name: "x".into(),
                     typ: Typ::TInt,
                 },
@@ -2910,6 +2912,7 @@ mod tests {
             returns: None,
             code: "  return mvp_builtin_void;\n".into(),
             safety: Safety::Unsafe,
+            used_c_keyword: false,
         }];
         let [program, _header, _test] = build_ir(&defs);
         assert!(program.contains("c_func()"));
@@ -3068,7 +3071,7 @@ mod tests {
                 typ: Typ::TBool,
             },
         ];
-        let result = cxx_struct_def("Person", &fields, "".into(), 0);
+        let result = cxx_struct_def("Person", &[], &fields, "".into(), 0);
         assert!(result.contains("mvp_builtin_string name;"));
         assert!(result.contains("mvp_builtin_int age;"));
         assert!(result.contains("mvp_builtin_boolean active;"));
@@ -3091,6 +3094,7 @@ mod tests {
         let inner = Expr::EStructLit {
             loc: loc(),
             name: "Inner".into(),
+            type_args: vec![],
             fields: vec![ValueField {
                 name: "val".into(),
                 value: Expr::EInt {
@@ -3102,6 +3106,7 @@ mod tests {
         let outer = Expr::EStructLit {
             loc: loc(),
             name: "Outer".into(),
+            type_args: vec![],
             fields: vec![ValueField {
                 name: "inner".into(),
                 value: inner,

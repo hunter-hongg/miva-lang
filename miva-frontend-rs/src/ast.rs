@@ -354,6 +354,8 @@ pub enum Def {
         returns: Option<Typ>,
         code: String,
         safety: Safety,
+        #[serde(default)]
+        used_c_keyword: bool,
     },
     #[serde(rename = "test")]
     DTest {

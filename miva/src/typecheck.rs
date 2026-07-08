@@ -1320,6 +1320,7 @@ mod tests {
             loc: loc(),
             name: name.to_string(),
             fields,
+            type_params: vec![],
         }
     }
 
@@ -1702,6 +1703,7 @@ mod tests {
                 Expr::EStructLit {
                     loc: loc(),
                     name: "Point".to_string(),
+                    type_args: vec![],
                     fields: vec![
                         ValueField {
                             name: "x".to_string(),
@@ -1748,6 +1750,7 @@ mod tests {
                 Expr::EStructLit {
                     loc: loc(),
                     name: "Point".to_string(),
+                    type_args: vec![],
                     fields: vec![ValueField {
                         name: "x".to_string(),
                         value: Expr::EBool {
@@ -1788,6 +1791,7 @@ mod tests {
                 Expr::EStructLit {
                     loc: loc(),
                     name: "Point".to_string(),
+                    type_args: vec![],
                     fields: vec![ValueField {
                         name: "x".to_string(),
                         value: Expr::EInt {
@@ -1815,6 +1819,7 @@ mod tests {
                 Expr::EStructLit {
                     loc: loc(),
                     name: "NonExistent".to_string(),
+                    type_args: vec![],
                     fields: vec![],
                 },
                 Safety::Safe,
@@ -1845,6 +1850,7 @@ mod tests {
                     expr: Box::new(Expr::EStructLit {
                         loc: loc(),
                         name: "Point".to_string(),
+                        type_args: vec![],
                         fields: vec![ValueField {
                             name: "x".to_string(),
                             value: Expr::EInt {
@@ -1886,6 +1892,7 @@ mod tests {
                     expr: Box::new(Expr::EStructLit {
                         loc: loc(),
                         name: "Point".to_string(),
+                        type_args: vec![],
                         fields: vec![ValueField {
                             name: "x".to_string(),
                             value: Expr::EInt {

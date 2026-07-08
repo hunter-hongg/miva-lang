@@ -114,7 +114,8 @@ impl<'input> Parser<'input> {
             match &tok {
                 Token::Unsafe => return self.parse_func_unsafe(),
                 Token::Trusted => return self.parse_func_trusted(),
-                Token::CKeyword => return self.parse_c_func(),
+                Token::CKeyword => return self.parse_c_func(true),
+                Token::Inline => return self.parse_c_func(false),
                 Token::Test => return self.parse_test(),
                 Token::Module => return self.parse_module(),
                 Token::Export => return self.parse_export(),
@@ -279,8 +280,8 @@ impl<'input> Parser<'input> {
         self.parse_func_body(name, type_params, start, Safety::Trusted)
     }
 
-    fn parse_c_func(&mut self) -> Result<Def, String> {
-        self.advance()?; // consume "c"
+    fn parse_c_func(&mut self, used_c_keyword: bool) -> Result<Def, String> {
+        self.advance()?; // consume "c" or "inline"
         let start = self.expect_keyword(&Token::Unsafe)?;
         let (name, _) = self.expect_ident()?;
         self.expect(&Token::Eq)?;
@@ -292,7 +293,12 @@ impl<'input> Parser<'input> {
             None
         };
         self.expect(&Token::DArrow)?;
-        let (code, _) = self.expect_str_lit()?;
+        let code = if self.peek_token()? == Some(&Token::LBrace) {
+            self.read_raw_brace_block()?
+        } else {
+            let (code, _) = self.expect_str_lit()?;
+            code
+        };
         Ok(Def::DCFuncUnsafe {
             loc: self.loc(start),
             name,
@@ -300,7 +306,32 @@ impl<'input> Parser<'input> {
             returns,
             code,
             safety: Safety::Unsafe,
+            used_c_keyword,
         })
+    }
+
+    /// Read raw C code between balanced braces `{ ... }` from the source input.
+    /// Consumes lexer tokens to track brace depth, then extracts the raw text
+    /// directly from `self.input`.
+    fn read_raw_brace_block(&mut self) -> Result<String, String> {
+        let (_, _, brace_end) = self.advance()?; // consume '{'
+        let content_start = brace_end;
+        let mut depth = 1u32;
+        let mut content_end = content_start;
+        while depth > 0 {
+            let (tok_start, tok, _) = self.advance()?;
+            match tok {
+                Token::LBrace => depth += 1,
+                Token::RBrace => {
+                    depth -= 1;
+                    if depth == 0 {
+                        content_end = tok_start;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(self.input[content_start..content_end].to_string())
     }
 
     fn parse_test(&mut self) -> Result<Def, String> {
@@ -695,8 +726,9 @@ impl<'input> Parser<'input> {
             // Non-ident statement — parse as expression statement
             let expr = self.parse_expr()?;
             self.expect(&Token::Semi)?;
+            let loc = expr_loc(&expr);
             Ok(Stmt::SExpr {
-                loc: Loc::new(0, 0),
+                loc,
                 expr: Box::new(expr),
             })
         }
@@ -785,7 +817,7 @@ impl<'input> Parser<'input> {
                     let call_path = extract_call_path_from_expr(&expr);
                     let processed = util::process_call_path(&call_path);
                     expr = Expr::ECall {
-                        loc: Loc::new(0, 0),
+                        loc: expr_loc(&expr),
                         name: processed,
                         type_args,
                         args,
@@ -809,7 +841,7 @@ impl<'input> Parser<'input> {
                     let call_path = extract_call_path_from_expr(&expr);
                     let processed = util::process_call_path(&call_path);
                     expr = Expr::ECall {
-                        loc: Loc::new(0, 0),
+                        loc: expr_loc(&expr),
                         name: processed,
                         type_args: vec![],
                         args,
@@ -836,7 +868,7 @@ impl<'input> Parser<'input> {
                     }
                     self.expect(&Token::RParen)?;
                     expr = Expr::EMacro {
-                        loc: Loc::new(0, 0),
+                        loc: expr_loc(&expr),
                         name,
                         args,
                     };
@@ -874,8 +906,9 @@ impl<'input> Parser<'input> {
                                 }
                             }
                             self.expect(&Token::RParen)?;
+                            let loc = expr_loc(&expr);
                             expr = Expr::EMethodCall {
-                                loc: Loc::new(0, 0),
+                                loc,
                                 expr: Box::new(expr),
                                 method,
                                 type_args,
@@ -899,8 +932,9 @@ impl<'input> Parser<'input> {
                                 }
                             }
                             self.expect(&Token::RParen)?;
+                            let loc = expr_loc(&expr);
                             expr = Expr::EMethodCall {
-                                loc: Loc::new(0, 0),
+                                loc,
                                 expr: Box::new(expr),
                                 method,
                                 type_args: vec![],
@@ -909,8 +943,9 @@ impl<'input> Parser<'input> {
                         }
                         // Regular field access: expr.field (also handles module paths like a.b(c))
                         _ => {
+                            let loc = expr_loc(&expr);
                             expr = Expr::EFieldAccess {
-                                loc: Loc::new(0, 0),
+                                loc,
                                 expr: Box::new(expr),
                                 field: method,
                             };
@@ -921,8 +956,9 @@ impl<'input> Parser<'input> {
                 Some(&Token::As) => {
                     self.advance()?;
                     let typ = self.parse_typ()?;
+                    let loc = expr_loc(&expr);
                     expr = Expr::ECast {
-                        loc: Loc::new(0, 0),
+                        loc,
                         expr: Box::new(expr),
                         to: typ,
                     };
@@ -1144,8 +1180,9 @@ impl<'input> Parser<'input> {
                 _ => unreachable!(),
             };
 
+            let loc = expr_loc(&left);
             left = Expr::EBinOp {
-                loc: Loc::new(0, 0), // location from the operator token if we had it
+                loc,
                 op: binop,
                 left: Box::new(left),
                 right: Box::new(right),
@@ -1443,6 +1480,37 @@ fn extract_call_path_from_expr(expr: &Expr) -> String {
         }
         Expr::EVar { name, .. } => name.clone(),
         _ => String::new(),
+    }
+}
+
+fn expr_loc(e: &Expr) -> Loc {
+    match e {
+        Expr::EInt { loc, .. }
+        | Expr::EBool { loc, .. }
+        | Expr::EFloat { loc, .. }
+        | Expr::EChar { loc, .. }
+        | Expr::EString { loc, .. }
+        | Expr::EVar { loc, .. }
+        | Expr::EMove { loc, .. }
+        | Expr::EClone { loc, .. }
+        | Expr::EStructLit { loc, .. }
+        | Expr::EFieldAccess { loc, .. }
+        | Expr::EBinOp { loc, .. }
+        | Expr::EIf { loc, .. }
+        | Expr::EChoose { loc, .. }
+        | Expr::ECall { loc, .. }
+        | Expr::EMacro { loc, .. }
+        | Expr::ECast { loc, .. }
+        | Expr::EBlock { loc, .. }
+        | Expr::EArrayLit { loc, .. }
+        | Expr::EVoid { loc, .. }
+        | Expr::EWhile { loc, .. }
+        | Expr::ELoop { loc, .. }
+        | Expr::EFor { loc, .. }
+        | Expr::EAddr { loc, .. }
+        | Expr::EDeref { loc, .. }
+        | Expr::EMethodCall { loc, .. }
+        | Expr::EMacroVar { loc, .. } => loc.clone(),
     }
 }
 

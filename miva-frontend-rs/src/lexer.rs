@@ -65,6 +65,7 @@ pub enum Token<'input> {
     Unsafe,
     Trusted,
     CKeyword,
+    Inline,
     Ptr,
     Box,
     Addr,
@@ -572,6 +573,7 @@ impl<'input> Iterator for Lexer<'input> {
                         "unsafe" => Token::Unsafe,
                         "trusted" => Token::Trusted,
                         "c" => Token::CKeyword,
+                        "inline" => Token::Inline,
                         "ptr" => Token::Ptr,
                         "box" => Token::Box,
                         "ptrany" => Token::Ptrany,
@@ -676,6 +678,7 @@ mod tests {
         assert_eq!(first_token("unsafe"), Some(Token::Unsafe));
         assert_eq!(first_token("trusted"), Some(Token::Trusted));
         assert_eq!(first_token("c"), Some(Token::CKeyword));
+        assert_eq!(first_token("inline"), Some(Token::Inline));
         assert_eq!(first_token("int"), Some(Token::Int));
         assert_eq!(first_token("bool"), Some(Token::Bool));
         assert_eq!(first_token("char"), Some(Token::Char));

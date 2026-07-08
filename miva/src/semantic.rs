@@ -626,6 +626,7 @@ mod tests {
         Def::DStruct {
             loc: loc(),
             name: name.to_string(),
+            type_params: vec![],
             fields,
         }
     }
@@ -878,6 +879,7 @@ mod tests {
             &types,
             &Typ::TStruct {
                 name: "Point".to_string(),
+                type_args: vec![],
                 fields: vec![],
             }
         ));
@@ -897,6 +899,7 @@ mod tests {
             &types,
             &Typ::TStruct {
                 name: "Bad".to_string(),
+                type_args: vec![],
                 fields: vec![],
             }
         ));
@@ -1206,6 +1209,7 @@ mod tests {
                 Expr::EStructLit {
                     loc: loc(),
                     name: "Point".to_string(),
+                    type_args: vec![],
                     fields: vec![ValueField {
                         name: "x".to_string(),
                         value: Expr::EVar {

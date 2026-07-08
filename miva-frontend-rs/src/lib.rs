@@ -202,4 +202,57 @@ main = () => {
             _ => panic!("expected DFunc"),
         }
     }
+
+    #[test]
+    fn test_parse_c_unsafe_brace_body() {
+        let input = r#"
+module main;
+main = () => {
+  println("Hello, World");
+}
+c unsafe foo = (a: int) => {
+  printf("%d", a);
+}
+"#;
+        let defs = parse(input, "test.miva").unwrap();
+        assert_eq!(defs.len(), 3);
+        match &defs[2] {
+            Def::DCFuncUnsafe { name, code, .. } => {
+                assert_eq!(name, "foo");
+                assert!(code.contains("printf"));
+            }
+            _ => panic!("expected DCFuncUnsafe"),
+        }
+    }
+
+    #[test]
+    fn test_parse_c_unsafe_string_lit() {
+        let input = r#"c unsafe bar = (x: int): int => "return x + 1;""#;
+        let defs = parse(input, "test.miva").unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Def::DCFuncUnsafe { name, code, .. } => {
+                assert_eq!(name, "bar");
+                assert_eq!(code, "return x + 1;");
+            }
+            _ => panic!("expected DCFuncUnsafe"),
+        }
+    }
+
+    #[test]
+    fn test_parse_c_unsafe_inline() {
+        let input = r#"inline unsafe baz = () => {
+  puts("hello");
+}
+"#;
+        let defs = parse(input, "test.miva").unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Def::DCFuncUnsafe { name, code, .. } => {
+                assert_eq!(name, "baz");
+                assert!(code.contains("puts"));
+            }
+            _ => panic!("expected DCFuncUnsafe"),
+        }
+    }
 }

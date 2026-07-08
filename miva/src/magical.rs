@@ -78,6 +78,7 @@ mod tests {
         Warning {
             code: code.to_string(),
             message: msg.to_string(),
+            loc: loc(),
         }
     }
 

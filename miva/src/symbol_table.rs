@@ -317,6 +317,7 @@ mod tests {
             returns: None,
             code: String::new(),
             safety: Safety::Unsafe,
+            used_c_keyword: false,
         }
     }
 
