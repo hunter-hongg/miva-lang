@@ -1,0 +1,17 @@
+module std.mem;
+
+alloc = (ref size: int): ptrany => {
+  ptr_alloc(size);
+}
+
+realloc = (ref p: ptrany, size: int): ptrany => {
+  ptr_realloc(p, size);
+}
+
+free = (ref p: ptrany) => {
+  ptr_free(p);
+}
+
+export alloc;
+export realloc;
+export free;

@@ -1,12 +1,10 @@
 #[derive(clap::Args)]
 pub struct Args {
     pub input: String,
+    #[arg(short = 'b', long, default_value = "cxx", help = "Backend to use: cxx, llvm, or mvm")]
+    pub backend: String,
 }
 
-use super::color;
-
-pub fn exec(args: Args, _verbose: bool) -> anyhow::Result<()> {
-    let _input = args.input;
-    eprintln!("{}", color::error("miva sin-run: not yet implemented (stub)"));
-    Ok(())
+pub fn exec(_args: Args, _verbose: bool) -> anyhow::Result<()> {
+    anyhow::bail!("sin-run is deprecated. Please create a complete project and use the `run` command instead.");
 }

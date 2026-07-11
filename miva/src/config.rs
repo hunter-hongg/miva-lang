@@ -10,14 +10,16 @@ pub struct Config {
     pub dependencies: Option<HashMap<String, String>>,
     #[serde(default)]
     pub env: Option<EnvConfig>,
+    #[serde(default)]
+    pub scripts: Option<HashMap<String, String>>,
 }
-
 #[derive(Debug, Deserialize)]
 pub struct ProjectConfig {
     pub name: Option<String>,
     #[serde(rename = "type")]
     pub project_type: Option<String>,
     pub version: Option<String>,
+    pub backend: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -35,5 +37,9 @@ impl Config {
 
     pub fn dependencies(&self) -> HashMap<String, String> {
         self.dependencies.clone().unwrap_or_default()
+    }
+
+    pub fn project_backend(&self) -> Option<String> {
+        self.project.as_ref()?.backend.clone()
     }
 }

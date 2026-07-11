@@ -114,7 +114,7 @@ fn compile_test(
 }
 
 pub fn exec(args: Args, verbose: bool) -> Result<()> {
-    build::exec(verbose, false)?;
+    build::exec(verbose, false, None)?;
 
     let cache_dir = env::get_cache_dir_rel(false);
     let std_include = env::get_std_include_dir();

@@ -44,6 +44,9 @@ echo "━━━ Building frontend (miva-frontend-rs) [$MODE] ━━━"
 echo "━━━ Building compiler (miva) [$MODE] ━━━"
 (cd miva && cargo build $CARGO_FLAGS)
 
+echo "━━━ Building vm (mvm) [$MODE] ━━━"
+(cd miva-vm && cargo build $CARGO_FLAGS)
+
 # ── 测试 ──────────────────────────────────────────────────────────
 if [ "$RUN_TESTS" = true ]; then
     echo ""

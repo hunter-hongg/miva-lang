@@ -58,6 +58,34 @@ pub fn find_frontend() -> Option<(String, Option<String>)> {
     None
 }
 
+/// Locate the `mvm` virtual machine binary.
+///
+/// All search paths are relative to the miva executable itself (via `exe_dir`),
+/// NOT the current working directory. This mirrors how `find_frontend` resolves
+/// sibling repositories (miva-vm lives at the same level as miva-frontend-rs,
+/// i.e. a sibling of the `miva` crate, so three `..` are needed from the
+/// executable dir). Order:
+///   1. `../../../miva-vm/target/debug/mvm`
+///   2. `../../../miva-vm/target/release/mvm`
+///   3. `./mvm` (alongside the miva binary)
+pub fn find_mvm() -> Option<PathBuf> {
+    let base = exe_dir()?;
+
+    let candidates = [
+        base.join("../../../miva-vm/target/debug/mvm"),
+        base.join("../../../miva-vm/target/release/mvm"),
+        base.join("./mvm"),
+    ];
+
+    for c in &candidates {
+        if c.exists() {
+            return Some(c.clone());
+        }
+    }
+
+    None
+}
+
 pub fn run_frontend(
     frontend: &str,
     _work_dir: &Option<String>,

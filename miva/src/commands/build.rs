@@ -6,7 +6,9 @@ use std::process::Command;
 use anyhow::Result;
 
 use super::{color, dependency_graph::DependencyGraph, env, frontend, lock};
+use crate::ast::Def;
 use crate::codegen;
+use crate::codegen::Backend;
 use crate::commands::clean;
 use crate::config::Config;
 use crate::error;
@@ -16,6 +18,12 @@ use crate::magical;
 use crate::semantic;
 use crate::typecheck;
 use crate::warning;
+
+#[derive(clap::Args)]
+pub struct Args {
+    #[arg(short = 'b', long, help = "Backend to use: cxx (default) or llvm. Overrides miva.toml project.backend.")]
+    pub backend: Option<String>,
+}
 
 fn find_project_root() -> Option<PathBuf> {
     let mut current = std::env::current_dir().ok()?;
@@ -186,28 +194,34 @@ fn make_cache_key(file: &str, std_path: &str) -> String {
     }
 }
 
-fn needs_rebuild_by_hash(file: &str, cache_dir: &Path, cache_key: &str) -> bool {
+fn needs_rebuild_by_hash(file: &str, cache_dir: &Path, cache_key: &str, backend: Backend) -> bool {
     let hash_path = env::hash_file_path(&cache_dir.to_path_buf(), cache_key);
     let current_hash = env::compute_sha256(file);
 
-    if let Ok(stored_hash) = std::fs::read_to_string(&hash_path) {
-        let stored_hash = stored_hash.trim();
-        stored_hash != current_hash
+    if let Ok(stored) = std::fs::read_to_string(&hash_path) {
+        let lines: Vec<&str> = stored.trim().lines().collect();
+        if lines.len() >= 2 {
+            // Format: line 1 = hash, line 2 = backend name
+            lines[0].trim() != current_hash || lines[1].trim() != backend.name()
+        } else {
+            // Legacy format: just the hash
+            lines[0].trim() != current_hash
+        }
     } else {
         true
     }
 }
 
-fn update_hash_cache(file: &str, cache_dir: &Path, cache_key: &str) {
+fn update_hash_cache(file: &str, cache_dir: &Path, cache_key: &str, backend: Backend) {
     let hash_path = env::hash_file_path(&cache_dir.to_path_buf(), cache_key);
     let current_hash = env::compute_sha256(file);
     if let Some(parent) = hash_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&hash_path, current_hash);
+    let _ = std::fs::write(&hash_path, format!("{}\n{}", current_hash, backend.name()));
 }
 
-fn compile_file_to_cpp(
+fn compile_file_to_src(
     frontend: &str,
     work_dir: &Option<String>,
     file: &str,
@@ -215,15 +229,18 @@ fn compile_file_to_cpp(
     std_path: &str,
     _verbose: bool,
     macro_table: &macro_expand::MacroTable,
+    backend: Backend,
+    func_sigs: &std::collections::HashMap<String, crate::codegen::FuncSig>,
 ) -> Result<(PathBuf, bool)> {
     let cache_key = make_cache_key(file, std_path);
-    let cpp_path = cache_dir.join(format!("{}.cpp", cache_key));
+    let ext = backend.extension();
+    let src_path = cache_dir.join(format!("{}.{}", cache_key, ext));
 
-    if cpp_path.exists() && !needs_rebuild_by_hash(file, cache_dir, &cache_key) {
-        let has_main = std::fs::read_to_string(&cpp_path)
+    if src_path.exists() && !needs_rebuild_by_hash(file, cache_dir, &cache_key, backend) {
+        let has_main = std::fs::read_to_string(&src_path)
             .map(|s| s.contains("mvp_own_main"))
             .unwrap_or(false);
-        return Ok((cpp_path, has_main));
+        return Ok((src_path, has_main));
     }
 
     let json_str = frontend::run_frontend(frontend, work_dir, file)?;
@@ -232,7 +249,6 @@ fn compile_file_to_cpp(
 
     let defs = macro_expand::expand_macros(&ast.defs, macro_table)?;
 
-    // Read source file for context-aware error/warning display
     let source = std::fs::read_to_string(file).unwrap_or_default();
 
     let sem_errors = semantic::check_program(&defs);
@@ -288,34 +304,49 @@ fn compile_file_to_cpp(
         );
     }
 
-    let [program, header, test] = codegen::build_ir(&defs);
-
-    std::fs::create_dir_all(cpp_path.parent().unwrap())?;
-    std::fs::write(&cpp_path, &program)?;
-
-    if !header.is_empty() {
-        let header_path = cache_dir.join(format!("{}.h", cache_key));
-        std::fs::write(&header_path, &header)?;
+    // For MVM backend: collect defs, skip per-file code generation.
+    // Combined compilation happens later in exec(). Do NOT update hash
+    // cache here — that would trick needs_build into thinking the file
+    // is up-to-date when bytecode was never generated.
+    if backend == Backend::Mvm {
+        return Ok((src_path, false));
     }
 
-    if !test.is_empty() {
-        let test_path = cache_dir.join(format!("{}.test.cpp", cache_key));
-        let test = if !header.is_empty() {
+    let output = codegen::build_ir_with_backend(&defs, backend, func_sigs);
+
+    std::fs::create_dir_all(src_path.parent().unwrap())?;
+    std::fs::write(&src_path, &output.program)?;
+
+    if !output.header.is_empty() {
+        let header_path = cache_dir.join(format!("{}.h", cache_key));
+        std::fs::write(&header_path, &output.header)?;
+        // For LLVM backend, also write bridge file
+        if backend == Backend::Llvm {
+            let bridge_path = cache_dir.join(format!("{}.bridge.cpp", cache_key));
+            std::fs::write(&bridge_path, &output.header)?;
+        }
+    }
+
+    if !output.test.is_empty() {
+        let test_ext = backend.extension();
+        let test_path = cache_dir.join(format!("{}.test.{}", cache_key, test_ext));
+        let test = if !output.header.is_empty() && backend == Backend::Cxx {
             let basename = std::path::Path::new(&cache_key)
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or(&cache_key);
-            format!("#include \"{}.h\"\n{}", basename, test)
+            format!("#include \"{}.h\"\n{}", basename, output.test)
         } else {
-            test
+            output.test
         };
         std::fs::write(&test_path, &test)?;
     }
 
-    update_hash_cache(file, cache_dir, &cache_key);
+    update_hash_cache(file, cache_dir, &cache_key, backend);
 
-    let has_main = program.contains("mvp_own_main");
-    Ok((cpp_path, has_main))
+    let prog_str = String::from_utf8_lossy(&output.program);
+    let has_main = prog_str.contains("mvp_own_main");
+    Ok((src_path, has_main))
 }
 
 fn include_flag(dir: &[&Path]) -> Vec<String> {
@@ -327,8 +358,8 @@ fn include_flag(dir: &[&Path]) -> Vec<String> {
     flag
 }
 
-fn compile_cpp_to_obj(
-    cpp_path: &Path,
+fn compile_src_to_obj(
+    src_path: &Path,
     cache_dir: &Path,
     std_include: &Path,
     build_dir: &Path,
@@ -336,63 +367,97 @@ fn compile_cpp_to_obj(
     release: bool,
     verbose: bool,
     extra_includes: &[PathBuf],
+    backend: Backend,
 ) -> Result<PathBuf> {
-    let obj_path = cpp_path.with_extension("o");
+    let obj_path = src_path.with_extension("o");
 
-    let opt_flag = if release { "-O2" } else { "-g" };
-    let pic_flag = if project_type == "lib" { "-fPIC" } else { "" };
-    let inc_flags = env::get_include_flags();
-    let mut include = include_flag(&[cache_dir, std_include, build_dir]);
-    for extra in extra_includes {
-        include.push(format!("-I{}", extra.to_string_lossy()));
-    }
-
-    let mut args = vec![
-        opt_flag,
-        "-std=c++20",
-        "-c",
-        cpp_path.to_str().unwrap(),
-        "-o",
-        obj_path.to_str().unwrap(),
-    ];
-
-    if !pic_flag.is_empty() {
-        args.push(pic_flag);
-    }
-    for flag in inc_flags.split_whitespace() {
-        if !flag.is_empty() {
-            args.push(flag);
-        }
-    }
-    for flag in &include {
-        args.push(flag);
-    }
-
-    let mut cmd = Command::new("g++");
-    cmd.args(&args);
-    if !verbose {
-        cmd.stderr(std::process::Stdio::null());
-    }
-    let compile_output = cmd
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to run g++: {}", e))?;
-
-    if !compile_output.status.success() {
-        let stderr = String::from_utf8_lossy(&compile_output.stderr);
-        eprintln!("{}", color::error("g++ compilation failed"));
-        if verbose {
-            eprintln!("{}", stderr);
-        } else {
-            // Always show at least some error output
-            for line in stderr.lines().take(5) {
-                eprintln!("{}", line);
+    match backend {
+        Backend::Cxx => {
+            let opt_flag = if release { "-O2" } else { "-g" };
+            let pic_flag = if project_type == "lib" { "-fPIC" } else { "" };
+            let inc_flags = env::get_include_flags();
+            let mut include = include_flag(&[cache_dir, std_include, build_dir]);
+            for extra in extra_includes {
+                include.push(format!("-I{}", extra.to_string_lossy()));
             }
-        }
-        clean::exec(false)?;
-        std::process::exit(1);
-    }
 
-    Ok(obj_path)
+            let mut args = vec![
+                opt_flag,
+                "-std=c++20",
+                "-c",
+                src_path.to_str().unwrap(),
+                "-o",
+                obj_path.to_str().unwrap(),
+            ];
+
+            if !pic_flag.is_empty() {
+                args.push(pic_flag);
+            }
+            for flag in inc_flags.split_whitespace() {
+                if !flag.is_empty() {
+                    args.push(flag);
+                }
+            }
+            for flag in &include {
+                args.push(flag);
+            }
+
+            let mut cmd = Command::new("g++");
+            cmd.args(&args);
+            if !verbose {
+                cmd.stderr(std::process::Stdio::null());
+            }
+            let compile_output = cmd
+                .output()
+                .map_err(|e| anyhow::anyhow!("Failed to run g++: {}", e))?;
+
+            if !compile_output.status.success() {
+                let stderr = String::from_utf8_lossy(&compile_output.stderr);
+                eprintln!("{}", color::error("g++ compilation failed"));
+                if verbose {
+                    eprintln!("{}", stderr);
+                } else {
+                    for line in stderr.lines().take(5) {
+                        eprintln!("{}", line);
+                    }
+                }
+                clean::exec(false)?;
+                std::process::exit(1);
+            }
+
+            Ok(obj_path)
+        }
+            Backend::Llvm => {
+            let llc_output = Command::new("llc")
+                .args([
+                    "-filetype=obj",
+                    src_path.to_str().unwrap(),
+                    "-o",
+                    obj_path.to_str().unwrap(),
+                ])
+                .output()
+                .map_err(|e| anyhow::anyhow!("Failed to run llc: {}", e))?;
+
+            if !llc_output.status.success() {
+                let stderr = String::from_utf8_lossy(&llc_output.stderr);
+                eprintln!("{}", color::error("llc compilation failed"));
+                if verbose {
+                    eprintln!("{}", stderr);
+                } else {
+                    for line in stderr.lines().take(5) {
+                        eprintln!("{}", line);
+                    }
+                }
+                clean::exec(false)?;
+                std::process::exit(1);
+            }
+
+            Ok(obj_path)
+        }
+            Backend::Mvm => {
+                anyhow::bail!("compile_src_to_obj should not be called for MVM backend");
+            }
+    }
 }
 
 fn link_objects(
@@ -447,7 +512,7 @@ fn link_objects(
     Ok(final_path.to_string_lossy().to_string())
 }
 
-pub fn exec(verbose: bool, release: bool) -> Result<()> {
+pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result<()> {
     let project_root = find_project_root()
         .ok_or_else(|| anyhow::anyhow!("no miva.toml found. Run `miva init <name>` first."))?;
 
@@ -470,6 +535,11 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("missing project.type in miva.toml"))?;
 
+    let backend_from_config = config.project_backend().unwrap_or_else(|| "cxx".to_string());
+    let backend_name = cli_backend.unwrap_or(backend_from_config);
+    let backend = Backend::from_name(&backend_name)
+        .ok_or_else(|| anyhow::anyhow!("Unknown backend '{}'. Use 'cxx', 'llvm', or 'mvm'.", backend_name))?;
+
     let entry_file = determine_entry(project_type);
 
     if !Path::new(entry_file).exists() {
@@ -487,7 +557,7 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
 
     eprintln!(
         "{}",
-        color::info(&format!("building {} ({})", name, project_type))
+        color::info(&format!("building {} ({}) [backend: {}]", name, project_type, backend.name()))
     );
 
     let std_path_str = std_include_dir.to_string_lossy();
@@ -549,17 +619,40 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
         );
     }
 
-    // Phase 1: Compile each .miva to .cpp (content-hash based caching)
-    let mut cpp_results: Vec<(String, PathBuf, bool)> = Vec::new();
+    // Phase 0.5: Collect function signatures from all files (cross-file type info)
+    let mut all_func_sigs = std::collections::HashMap::new();
+    for file in &files {
+        let json_str = frontend::run_frontend(&frontend, &frontend_work_dir, file)?;
+        let ast = json_ast::from_str(&json_str)
+            .map_err(|e| anyhow::anyhow!("Failed to parse JSON AST from {}: {}", file, e))?;
+        let defs = macro_expand::expand_macros(&ast.defs, &macro_table)?;
+        for d in &defs {
+            if let crate::ast::Def::DFunc { name, type_params, returns, .. } = d {
+                use std::collections::hash_map::Entry;
+                match all_func_sigs.entry(name.clone()) {
+                    Entry::Occupied(_) => {}
+                    Entry::Vacant(v) => {
+                        v.insert(crate::codegen::FuncSig {
+                            type_params: type_params.clone(),
+                            returns: returns.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Phase 1: Compile each .miva to source file (content-hash based caching)
+    let mut src_results: Vec<(String, PathBuf, bool)> = Vec::new();
     let mut recompiled_files: HashSet<String> = HashSet::new();
 
     for file in &files {
         eprintln!("{}", color::step("compile", file));
 
         let cache_key = make_cache_key(file, &std_path_str);
-        let was_cached = !needs_rebuild_by_hash(file, &cache_dir, &cache_key);
+        let was_cached = !needs_rebuild_by_hash(file, &cache_dir, &cache_key, backend);
 
-        let (cpp_path, has_main) = compile_file_to_cpp(
+        let (src_path, has_main) = compile_file_to_src(
             &frontend,
             &frontend_work_dir,
             file,
@@ -567,31 +660,29 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
             &std_path_str,
             verbose,
             &macro_table,
+            backend,
+            &all_func_sigs,
         )?;
 
         if !was_cached {
             recompiled_files.insert(file.clone());
         }
 
-        cpp_results.push((file.clone(), cpp_path, has_main));
+        src_results.push((file.clone(), src_path, has_main));
     }
 
-    // Determine which files need .cpp -> .o compilation
-    // A file needs re-linking if it was recompiled OR if any of its dependencies was recompiled
+    // Determine which files need source -> .o compilation
     let mut need_compile_bin: HashSet<String> = HashSet::new();
     for file in &recompiled_files {
         need_compile_bin.insert(file.clone());
-        // All transitive dependents of a changed file also need re-linking
         for dependent in graph.get_all_dependents(file) {
             need_compile_bin.insert(dependent);
         }
     }
 
-    // If nothing was recompiled, check if .o files exist for all cpp files
     let all_cached = need_compile_bin.is_empty();
 
     // Create cache symlinks for versioned dep includes
-    // e.g., <cache_dir>/std -> <cache_dir>/std-0.1.0 so #include <std/src/...> resolves
     for (dep_name, dep_ver) in &deps {
         let versioned_cache = cache_dir.join(format!("{}-{}", dep_name, dep_ver));
         let unversioned_link = cache_dir.join(dep_name);
@@ -603,31 +694,85 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
         }
     }
 
-    // Phase 2: Compile .cpp to .o
-    let mut obj_files: Vec<PathBuf> = Vec::new();
+    // MVM backend: compile all defs to a single .mvm file
+    if backend == Backend::Mvm {
+        let mvm_path = if project_type == "lib" {
+            build_dir.join(format!("lib{}.mvm", name))
+        } else {
+            build_dir.join(format!("{}.mvm", name))
+        };
 
+        // Check if bytecode needs rebuild (if any source changed)
+        let needs_build = if mvm_path.exists() {
+            let all_files_up_to_date = files.iter().all(|f| {
+                let cache_key = make_cache_key(f, &std_path_str);
+                !needs_rebuild_by_hash(f, &cache_dir, &cache_key, backend)
+            });
+            !all_files_up_to_date
+        } else {
+            true
+        };
+
+        if needs_build {
+            eprintln!("{}", color::step("compile", "mvm bytecode"));
+
+            // Collect all expanded defs from all files
+            let mut all_defs: Vec<Def> = Vec::new();
+            for file in &files {
+                let json_str = frontend::run_frontend(&frontend, &frontend_work_dir, file)?;
+                let ast = json_ast::from_str(&json_str)
+                    .map_err(|e| anyhow::anyhow!("Failed to parse JSON AST from {}: {}", file, e))?;
+                let defs = macro_expand::expand_macros(&ast.defs, &macro_table)?;
+                all_defs.extend(defs);
+            }
+
+            // Generate combined MVM bytecode
+            let output = codegen::build_ir_with_backend(&all_defs, backend, &all_func_sigs);
+
+            // Write .mvm file
+            std::fs::create_dir_all(&build_dir)?;
+            std::fs::write(&mvm_path, &output.program)?;
+
+            // Update hash cache for all files
+            for file in &files {
+                let cache_key = make_cache_key(file, &std_path_str);
+                update_hash_cache(file, &cache_dir, &cache_key, backend);
+            }
+
+            eprintln!("{}", color::success(&format!("{} -> {}", name, mvm_path.display())));
+        } else {
+            eprintln!("  {} (cached)", name);
+        }
+
+        println!("{}", color::success("compilation finished"));
+        return Ok(());
+    }
+
+    // Phase 2: Compile source to .o
+    let mut obj_files: Vec<PathBuf> = Vec::new();
     let mut dep_include_dirs: Vec<PathBuf> = Vec::new();
     for (dep_name, dep_ver) in &deps {
         dep_include_dirs.push(std_include_dir.join(format!("{}-{}", dep_name, dep_ver)));
     }
 
-    for (file, cpp_path, _) in &cpp_results {
+    let mut bridge_compiled = false;
+    for (_i, (file, src_path, _)) in src_results.iter().enumerate() {
         if all_cached {
-            let obj_path = cpp_path.with_extension("o");
+            let obj_path = src_path.with_extension("o");
             if obj_path.exists() {
                 obj_files.push(obj_path);
                 continue;
             }
         } else if !need_compile_bin.contains(file) {
-            let obj_path = cpp_path.with_extension("o");
+            let obj_path = src_path.with_extension("o");
             if obj_path.exists() {
                 obj_files.push(obj_path);
                 continue;
             }
         }
 
-        let obj_path = compile_cpp_to_obj(
-            cpp_path,
+        let obj_path = compile_src_to_obj(
+            src_path,
             &cache_dir,
             &std_include_dir,
             &build_dir,
@@ -635,10 +780,97 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
             release,
             verbose,
             &dep_include_dirs,
+            backend,
         )?;
+        if backend == Backend::Llvm && !bridge_compiled {
+            let bridge_src = src_path.with_extension("bridge.cpp");
+            let bridge_obj = src_path.with_extension("bridge.o");
+            if bridge_src.exists() {
+                let opt_flag = if release { "-O2" } else { "-g" };
+                let inc_flags = env::get_include_flags();
+                let mut include = include_flag(&[&cache_dir, &std_include_dir, &build_dir]);
+                for extra in &dep_include_dirs {
+                    include.push(format!("-I{}", extra.to_string_lossy()));
+                }
+                let mut args: Vec<String> = vec![opt_flag.to_string(), "-std=c++20".into(), "-c".into()];
+                args.push(bridge_src.to_str().unwrap().to_string());
+                args.push("-o".into());
+                args.push(bridge_obj.to_str().unwrap().to_string());
+                for flag in inc_flags.split_whitespace() {
+                    if !flag.is_empty() {
+                        args.push(flag.to_string());
+                    }
+                }
+                for flag in &include {
+                    args.push(flag.clone());
+                }
+                let bridge_output = Command::new("g++")
+                    .args(&args)
+                    .output()
+                    .map_err(|e| anyhow::anyhow!("Failed to compile bridge: {}", e))?;
+                if !bridge_output.status.success() {
+                    let stderr = String::from_utf8_lossy(&bridge_output.stderr);
+                    eprintln!("{}", color::error(&format!("bridge compilation failed:\n{}", stderr)));
+                    if verbose {
+                        eprintln!("{:?}", args);
+                    }
+                    std::process::exit(1);
+                }
+                obj_files.push(bridge_obj);
+                bridge_compiled = true;
+            }
+        }
 
         obj_files.push(obj_path);
     }
+
+    // Fallback: compile bridge if skipped due to caching (LLVM backend)
+    if backend == Backend::Llvm && !bridge_compiled {
+        for (_i, (file, src_path, _)) in src_results.iter().enumerate() {
+            let bridge_src = src_path.with_extension("bridge.cpp");
+            let bridge_obj = src_path.with_extension("bridge.o");
+            if bridge_src.exists() {
+                if !bridge_obj.exists() {
+                    let opt_flag = if release { "-O2" } else { "-g" };
+                    let inc_flags = env::get_include_flags();
+                    let mut include = include_flag(&[&cache_dir, &std_include_dir, &build_dir]);
+                    for extra in &dep_include_dirs {
+                        include.push(format!("-I{}", extra.to_string_lossy()));
+                    }
+                    let mut args: Vec<String> = vec![opt_flag.to_string(), "-std=c++20".into(), "-c".into()];
+                    args.push(bridge_src.to_str().unwrap().to_string());
+                    args.push("-o".into());
+                    args.push(bridge_obj.to_str().unwrap().to_string());
+                    for flag in inc_flags.split_whitespace() {
+                        if !flag.is_empty() {
+                            args.push(flag.to_string());
+                        }
+                    }
+                    for flag in &include {
+                        args.push(flag.clone());
+                    }
+                    let bridge_output = Command::new("g++")
+                        .args(&args)
+                        .output()
+                        .map_err(|e| anyhow::anyhow!("Failed to compile bridge: {}", e))?;
+                    if !bridge_output.status.success() {
+                        let stderr = String::from_utf8_lossy(&bridge_output.stderr);
+                        eprintln!("{}", color::error(&format!("bridge compilation failed:\n{}", stderr)));
+                        if verbose {
+                            eprintln!("{:?}", args);
+                        }
+                        std::process::exit(1);
+                    }
+                }
+                obj_files.push(bridge_obj);
+                bridge_compiled = true;
+                break;
+            }
+        }
+    }
+
+    obj_files.sort();
+    obj_files.dedup();
 
     eprintln!("{}", color::step("link", name));
 
@@ -646,8 +878,8 @@ pub fn exec(verbose: bool, release: bool) -> Result<()> {
 
     if !env::get_keep_cpp() {
         for obj in &obj_files {
-            let cpp = obj.with_extension("cpp");
-            let _ = std::fs::remove_file(cpp);
+            let src = obj.with_extension(backend.extension());
+            let _ = std::fs::remove_file(src);
         }
     }
 
