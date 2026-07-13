@@ -1,2 +1,8 @@
 tests/
 .reasonix/
+.codewhale/
+.pi-chalin/
+build/
+miva-vm/target/
+miva/build/
+stdlib/std

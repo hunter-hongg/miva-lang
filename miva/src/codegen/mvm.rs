@@ -56,6 +56,17 @@ impl MvmCodegen {
             ("string_make", 14), ("string_from", 15), ("string_get", 16),
             ("box_new", 17), ("box_deref", 18), ("box_set", 19),
             ("range", 20), ("to_string", 21), ("read_int", 22), ("read_line", 23),
+            ("json_parse", 24), ("json_kind", 25), ("json_bool", 26),
+            ("json_number", 27), ("json_string", 28), ("json_array_len", 29),
+            ("json_array_get", 30), ("json_object_len", 31), ("json_object_key", 32),
+            ("json_object_get", 33), ("json_object_find", 34), ("json_free", 35),
+            ("json_stringify", 36),
+            ("xml_parse", 37), ("xml_kind", 38), ("xml_tag", 39),
+            ("xml_attr_count", 40), ("xml_attr_name", 41), ("xml_attr_value", 42),
+            ("xml_attr_find", 43), ("xml_child_count", 44), ("xml_child_get", 45),
+            ("xml_text", 46), ("xml_comment", 47), ("xml_cdata", 48),
+            ("xml_pi_target", 49), ("xml_pi_data", 50), ("xml_stringify", 51),
+            ("xml_free", 52),
         ];
         for (name, idx) in builtins {
             builtin_indices.insert(name.to_string(), idx);
@@ -253,7 +264,7 @@ impl MvmCodegen {
         // Pass 1: collect function names and signatures
         for def in defs {
             match def {
-                Def::DFunc { name, params, .. } => {
+                Def::DFunc { name, params, is_async, .. } => {
                     if !cg.func_indices.contains_key(name) {
                         let idx = cg.functions.len();
                         cg.func_indices.insert(name.clone(), idx);
@@ -262,6 +273,7 @@ impl MvmCodegen {
                             name_idx: 0,
                             arity: params.len() as u32,
                             locals: 0,
+                            is_async: *is_async,
                             code: Vec::new(),
                         });
                     }
@@ -274,6 +286,7 @@ impl MvmCodegen {
                             name_idx: 0,
                             arity: 0,
                             locals: 0,
+                            is_async: false,
                             code: Vec::new(),
                         });
                     }
@@ -473,6 +486,16 @@ impl MvmCodegen {
             Expr::ECall { name, args, .. } => {
                 // Handle module-qualified names: try bare name suffix
                 let lookup_name = name.rsplit('.').next().unwrap_or(name);
+                // `await(f)` / `f.await()` unwraps a future (identity for non-futures)
+                if lookup_name == "await" {
+                    if let Some(arg) = args.first() {
+                        self.compile_expr(arg);
+                    } else {
+                        self.emit_op(MvmOp::PushUnit);
+                    }
+                    self.emit_op(MvmOp::Await);
+                    return;
+                }
                 // Check if builtin
                 if let Some(&builtin_idx) = self.builtin_indices.get(lookup_name) {
                     // Compile args (they'll be on the stack for the builtin)
@@ -487,6 +510,8 @@ impl MvmCodegen {
                     }
                     self.emit_op(MvmOp::Call);
                     self.emit_u32(func_idx as u32);
+                    // Async functions are spawned by the VM on call; the returned
+                    // value is already a future[T], so no wrapping is needed.
                 } else {
                     // Unknown function; compile args and push unit
                     for arg in args {

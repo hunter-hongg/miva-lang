@@ -1,17 +1,20 @@
 module std.mem;
 
-alloc = (ref size: int): ptrany => {
+unsafe alloc = (ref size: int): ptrany => {
   ptr_alloc(size);
 }
 
-realloc = (ref p: ptrany, size: int): ptrany => {
+unsafe realloc = (ref p: ptrany, size: int): ptrany => {
   ptr_realloc(p, size);
 }
 
-free = (ref p: ptrany) => {
+unsafe free = (ref p: ptrany) => {
   ptr_free(p);
 }
+
+unsafe offset = (ref p: ptrany, n: int): ptrany => ptr_offset(p, n)
 
 export alloc;
 export realloc;
 export free;
+export offset;

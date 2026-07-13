@@ -71,13 +71,25 @@ pub fn find_frontend() -> Option<(String, Option<String>)> {
 pub fn find_mvm() -> Option<PathBuf> {
     let base = exe_dir()?;
 
+    let platform_names = [
+        "mvm",
+        "mvm-linux",
+        "mvm-macos",
+        "mvm-windows.exe",
+    ];
+
     let candidates = [
         base.join("../../../miva-vm/target/debug/mvm"),
         base.join("../../../miva-vm/target/release/mvm"),
-        base.join("./mvm"),
     ];
-
     for c in &candidates {
+        if c.exists() {
+            return Some(c.clone());
+        }
+    }
+
+    for name in &platform_names {
+        let c = base.join(name);
         if c.exists() {
             return Some(c.clone());
         }

@@ -1,0 +1,13 @@
+[project]
+name = "async_demo"
+version = "0.1.0"
+type = "bin"
+
+[env]
+
+[scripts]
+dev = "miva run -b mvm"
+release = "miva build -b llvm --release"
+
+[dependencies]
+std = "0.1.1"

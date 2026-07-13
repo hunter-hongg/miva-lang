@@ -177,6 +177,8 @@ pub enum Opcode {
     Debug = 0xB1,
     /// Clone value on top of stack
     Clone = 0xB2,
+    /// Await a future: if top is a future, push its inner value; else identity
+    Await = 0xB4,
 }
 
 impl Opcode {
@@ -281,6 +283,7 @@ impl Opcode {
             0xB0 => Some(Halt),
             0xB1 => Some(Debug),
             0xB2 => Some(Clone),
+            0xB4 => Some(Await),
             _ => None,
         }
     }
@@ -406,6 +409,7 @@ impl Opcode {
             Halt => "halt",
             Debug => "debug",
             Clone => "clone",
+            Await => "await",
         }
     }
 }

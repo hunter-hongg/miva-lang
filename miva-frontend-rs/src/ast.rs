@@ -53,6 +53,11 @@ pub enum Typ {
         #[serde(rename = "of")]
         of: Box<Typ>,
     },
+    #[serde(rename = "future")]
+    TFuture {
+        #[serde(rename = "of")]
+        of: Box<Typ>,
+    },
     #[serde(rename = "null")]
     TNull,
     #[serde(rename = "ptrany")]
@@ -344,6 +349,8 @@ pub enum Def {
         returns: Option<Typ>,
         body: Box<Expr>,
         safety: Safety,
+        #[serde(default)]
+        is_async: bool,
     },
     #[serde(rename = "cFunc")]
     DCFuncUnsafe {

@@ -1,0 +1,27 @@
+module main;
+
+async square = (x: int): future[int] => {
+  return x * x;
+}
+
+async add = (a: int, b: int): future[int] => {
+  return a + b;
+}
+
+async greet = (name: string): future[string] => {
+  return "hello " + name;
+}
+
+async combine = (x: int): future[int] => {
+  return add(x, square(x).await()).await();
+}
+
+main = () => {
+  f := square(5);
+  g := greet("miva");
+  a := square(3).await();
+  b := square(4).await();
+  printlns!(f.await(), g.await(), a, b);
+  printlns!(combine(7).await());
+  printlns!(add(square(2).await(), square(3).await()).await());
+}

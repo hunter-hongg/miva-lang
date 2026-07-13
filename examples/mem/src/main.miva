@@ -1,0 +1,28 @@
+module main;
+import "std/mem";
+
+// `std.mem.offset(p, n)` offsets pointer p by n bytes, equivalent to C's
+// `(char*)p + n`, returning the new offset pointer. offset itself is an unsafe
+// operation; the caller must ensure the resulting address stays valid (no
+// out-of-bounds access, no double-free).
+//
+// This demonstrates using a buffer as an "array": use offset to fetch the
+// address of each slot in turn.
+unsafe main = () => {
+  // Allocate 16 bytes, enough to hold 4 ints (each int is 4 bytes).
+  let buf ptrany = std.mem.alloc(16);
+
+  // Use offset with a 4-byte stride to fetch the start address of 4 evenly
+  // spaced slots.
+  // Note: offset only performs address arithmetic; it allocates or frees no
+  // memory.
+  let s0 ptrany = std.mem.offset(buf, 0);
+  let s1 ptrany = std.mem.offset(buf, 4);
+  let s2 ptrany = std.mem.offset(buf, 8);
+  let s3 ptrany = std.mem.offset(buf, 12);
+
+  // The whole buffer only needs to be freed once via the base pointer.
+  std.mem.free(buf);
+
+  println("offset demo ok (slots at +0/+4/+8/+12)");
+}

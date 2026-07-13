@@ -1,0 +1,62 @@
+module main;
+
+import "std/xml";
+
+// Demonstrates the std/xml API: parse a non-trivial document (namespace-prefixed
+// root element with attributes, mixed content, a comment, a CDATA section and a
+// processing instruction), inspect it, then re-serialize it.
+unsafe main = () => {
+  s := "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+       "<ns:book id=\"b1\" lang=\"en\">\n" +
+       "  <!-- the very best book -->\n" +
+       "  <title>Learning Miva &amp; XML</title>\n" +
+       "  <author>M. Coder</author>\n" +
+       "  <![CDATA[<raw> unescaped </raw>]]>\n" +
+       "  <?pi-handler data=\"x\"?>\n" +
+       "  plain mixed text\n" +
+       "</ns:book>";
+
+  doc := std.xml.parse(s);
+
+  printlns!("doc kind (6=Document):", std.xml.kind(doc));
+  printlns!("is_document:", std.xml.is_document(doc));
+
+  // The single element child of the document is the root element.
+  root := std.xml.child_get(doc, 1);
+  printlns!("root tag:", std.xml.tag(root));
+  printlns!("root is_element:", std.xml.is_element(root));
+
+  printlns!("attr count:", std.xml.attr_count(root));
+  printlns!("attr[0]:", std.xml.attr_name(root, 0), "=", std.xml.attr_value(root, 0));
+  printlns!("attr[1]:", std.xml.attr_name(root, 1), "=", std.xml.attr_value(root, 1));
+  printlns!("attr_find(lang):", std.xml.attr_find(root, "lang"));
+  printlns!("attr_find(missing):", std.xml.attr_find(root, "nope"));
+
+  n := std.xml.child_count(root);
+  printlns!("child count:", n);
+
+  for i in (range(n)) {
+    node := std.xml.child_get(root, i);
+    printlns!("child", i, "kind:", std.xml.kind(node));
+    if (std.xml.is_element(node)) {
+      printlns!("  tag:", std.xml.tag(node));
+    };
+    if (std.xml.is_text(node)) {
+      printlns!("  text:", std.xml.text(node));
+    };
+    if (std.xml.is_comment(node)) {
+      printlns!("  comment:", std.xml.comment(node));
+    };
+    if (std.xml.is_cdata(node)) {
+      printlns!("  cdata:", std.xml.cdata(node));
+    };
+    if (std.xml.is_pi(node)) {
+      printlns!("  pi target:", std.xml.pi_target(node), "data:", std.xml.pi_data(node));
+    };
+  };
+
+  out := std.xml.stringify(doc);
+  printlns!("stringified:", out);
+
+  std.xml.free(doc);
+}

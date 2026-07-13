@@ -24,6 +24,8 @@ struct VarInfo {
 struct Context {
     types: HashMap<String, Vec<FieldDef>>,
     vars: HashMap<String, VarInfo>,
+    caller_safety: Safety,
+    global_safety: HashMap<String, Safety>,
 }
 
 fn is_copy_type(types: &HashMap<String, Vec<FieldDef>>, t: &Typ) -> bool {
@@ -33,6 +35,7 @@ fn is_copy_type(types: &HashMap<String, Vec<FieldDef>>, t: &Typ) -> bool {
         | Typ::TArray { .. }
         | Typ::TPtr { .. }
         | Typ::TBox { .. }
+        | Typ::TFuture { .. }
         | Typ::TNull
         | Typ::TInvalid
         | Typ::TPtrAny
@@ -128,13 +131,21 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
             type_args: _,
             args,
         } => {
-            match symbol_table.get_function_safety(name) {
+            let safety = symbol_table
+                .get_function_safety(name)
+                .or_else(|| ctx.global_safety.get(name).cloned());
+            match safety {
                 Some(Safety::Unsafe) => {
-                    errs.push(Error::new(
-                        "E0009",
-                        loc,
-                        &format!("cannot call unsafe function '{}' from safe function", name),
-                    ));
+                    if ctx.caller_safety == Safety::Safe {
+                        errs.push(Error::new(
+                            "E0009",
+                            loc,
+                            &format!(
+                                "cannot call unsafe function '{}' from safe function",
+                                name
+                            ),
+                        ));
+                    }
                 }
                 Some(Safety::Trusted) | Some(Safety::Safe) => {}
                 None => {
@@ -456,7 +467,10 @@ fn merge_saved_with_current(
     result
 }
 
-pub fn check_program(defs: &[Def]) -> Vec<Error> {
+pub fn check_program_with(
+    defs: &[Def],
+    global_safety: &HashMap<String, Safety>,
+) -> Vec<Error> {
     let (symbol_table, mut errs) = SymbolTable::build_with_errors(defs);
 
     let types: HashMap<String, Vec<FieldDef>> = defs
@@ -504,6 +518,7 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
                 name: _,
                 params,
                 body,
+                safety,
                 ..
             } => {
                 let vars: HashMap<String, VarInfo> = params
@@ -532,10 +547,13 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
                 let mut ctx = Context {
                     types: types.clone(),
                     vars,
+                    caller_safety: safety.clone(),
+                    global_safety: global_safety.clone(),
                 };
                 errs.extend(check_expr(&mut ctx, &symbol_table, body));
             }
-            Def::DCFuncUnsafe { .. } | Def::DStruct { .. } => {}
+            Def::DCFuncUnsafe { .. } => {}
+            Def::DStruct { .. } => {}
             Def::DTest {
                 loc: _,
                 name: _,
@@ -544,6 +562,8 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
                 let mut ctx = Context {
                     types: types.clone(),
                     vars: HashMap::new(),
+                    caller_safety: Safety::Safe,
+                    global_safety: global_safety.clone(),
                 };
                 errs.extend(check_expr(&mut ctx, &symbol_table, body));
             }
@@ -587,6 +607,10 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
     errs
 }
 
+pub fn check_program(defs: &[Def]) -> Vec<Error> {
+    check_program_with(defs, &HashMap::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,6 +635,7 @@ mod tests {
             returns: None,
             body: Box::new(body),
             safety,
+            is_async: false,
         }
     }
 

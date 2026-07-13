@@ -4,7 +4,7 @@ use crate::ast::*;
 use crate::error::Error;
 
 #[allow(dead_code)]
-pub const BUILTIN_FUNCTIONS_COUNT: usize = 23;
+pub const BUILTIN_FUNCTIONS_COUNT: usize = 54;
 
 const BUILTIN_FUNCTIONS: &[(&str, Safety)] = &[
     ("print", Safety::Safe),
@@ -30,6 +30,37 @@ const BUILTIN_FUNCTIONS: &[(&str, Safety)] = &[
     ("ptr_realloc", Safety::Unsafe),
     ("ptr_free", Safety::Unsafe),
     ("ptr_set", Safety::Unsafe),
+    ("ptr_offset", Safety::Unsafe),
+    ("await", Safety::Safe),
+    ("json_parse", Safety::Safe),
+    ("json_kind", Safety::Safe),
+    ("json_bool", Safety::Safe),
+    ("json_number", Safety::Safe),
+    ("json_string", Safety::Safe),
+    ("json_array_len", Safety::Safe),
+    ("json_array_get", Safety::Safe),
+    ("json_object_len", Safety::Safe),
+    ("json_object_key", Safety::Safe),
+    ("json_object_get", Safety::Safe),
+    ("json_object_find", Safety::Safe),
+    ("json_free", Safety::Safe),
+    ("json_stringify", Safety::Safe),
+    ("xml_parse", Safety::Safe),
+    ("xml_kind", Safety::Safe),
+    ("xml_tag", Safety::Safe),
+    ("xml_attr_count", Safety::Safe),
+    ("xml_attr_name", Safety::Safe),
+    ("xml_attr_value", Safety::Safe),
+    ("xml_attr_find", Safety::Safe),
+    ("xml_child_count", Safety::Safe),
+    ("xml_child_get", Safety::Safe),
+    ("xml_text", Safety::Safe),
+    ("xml_comment", Safety::Safe),
+    ("xml_cdata", Safety::Safe),
+    ("xml_pi_target", Safety::Safe),
+    ("xml_pi_data", Safety::Safe),
+    ("xml_stringify", Safety::Safe),
+    ("xml_free", Safety::Safe),
 ];
 
 #[derive(Debug, Clone)]
@@ -253,6 +284,7 @@ mod tests {
             returns: None,
             body: Box::new(Expr::EVoid { loc: loc() }),
             safety,
+            is_async: false,
         }
     }
 
@@ -475,6 +507,7 @@ mod tests {
             returns: Some(Typ::TInt),
             body: Box::new(Expr::EVoid { loc: loc() }),
             safety: Safety::Safe,
+            is_async: false,
         };
         let st = SymbolTable::build(&[def]);
         assert!(st.functions.len() > BUILTIN_FUNCTIONS_COUNT);

@@ -118,10 +118,42 @@ fn runtime_declarations() -> String {
     decls.push_str("declare ptr @miva_alloc(i64)\n");
     decls.push_str("declare ptr @miva_realloc(ptr, i64)\n");
     decls.push_str("declare void @miva_free(ptr)\n");
+    decls.push_str("declare ptr @miva_ptr_offset(ptr, i64)\n");
     decls.push_str("declare void @miva_ptr_set_i64(ptr, i64)\n");
     decls.push_str("declare void @miva_ptr_set_double(ptr, double)\n");
     decls.push_str("declare void @miva_ptr_set_i8(ptr, i8)\n");
     decls.push_str("declare void @miva_ptr_set_ptr(ptr, ptr)\n");
+    decls.push_str("declare i64 @miva_async_await(i64)\n");
+    decls.push_str("declare i64 @miva_async_spawn(ptr, i64)\n");
+    decls.push_str("declare i64 @miva_json_parse(ptr)\n");
+    decls.push_str("declare i64 @miva_json_kind(i64)\n");
+    decls.push_str("declare i64 @miva_json_bool(i64)\n");
+    decls.push_str("declare i64 @miva_json_number(i64)\n");
+    decls.push_str("declare ptr @miva_json_string(i64)\n");
+    decls.push_str("declare i64 @miva_json_array_len(i64)\n");
+    decls.push_str("declare i64 @miva_json_array_get(i64, i64)\n");
+    decls.push_str("declare i64 @miva_json_object_len(i64)\n");
+    decls.push_str("declare ptr @miva_json_object_key(i64, i64)\n");
+    decls.push_str("declare i64 @miva_json_object_get(i64, i64)\n");
+    decls.push_str("declare i64 @miva_json_object_find(i64, ptr)\n");
+    decls.push_str("declare void @miva_json_free(i64)\n");
+    decls.push_str("declare ptr @miva_json_stringify(i64)\n");
+    decls.push_str("declare i64 @miva_xml_parse(ptr)\n");
+    decls.push_str("declare i64 @miva_xml_kind(i64)\n");
+    decls.push_str("declare ptr @miva_xml_tag(i64)\n");
+    decls.push_str("declare i64 @miva_xml_attr_count(i64)\n");
+    decls.push_str("declare ptr @miva_xml_attr_name(i64, i64)\n");
+    decls.push_str("declare ptr @miva_xml_attr_value(i64, i64)\n");
+    decls.push_str("declare ptr @miva_xml_attr_find(i64, ptr)\n");
+    decls.push_str("declare i64 @miva_xml_child_count(i64)\n");
+    decls.push_str("declare i64 @miva_xml_child_get(i64, i64)\n");
+    decls.push_str("declare ptr @miva_xml_text(i64)\n");
+    decls.push_str("declare ptr @miva_xml_comment(i64)\n");
+    decls.push_str("declare ptr @miva_xml_cdata(i64)\n");
+    decls.push_str("declare ptr @miva_xml_pi_target(i64)\n");
+    decls.push_str("declare ptr @miva_xml_pi_data(i64)\n");
+    decls.push_str("declare ptr @miva_xml_stringify(i64)\n");
+    decls.push_str("declare void @miva_xml_free(i64)\n");
     decls.push_str("@.str.void = private unnamed_addr constant [1 x i8] zeroinitializer\n");
     decls
 }
@@ -151,6 +183,37 @@ fn map_builtin(name: &str, current_module: Option<&str>) -> String {
         "ptr_realloc" => "@miva_realloc".into(),
         "ptr_free" => "@miva_free".into(),
         "ptr_set" => "@miva_ptr_set_i64".into(),
+        "ptr_offset" => "@miva_ptr_offset".into(),
+        "await" => "@miva_async_await".into(),
+        "json_parse" => "@miva_json_parse".into(),
+        "json_kind" => "@miva_json_kind".into(),
+        "json_bool" => "@miva_json_bool".into(),
+        "json_number" => "@miva_json_number".into(),
+        "json_string" => "@miva_json_string".into(),
+        "json_array_len" => "@miva_json_array_len".into(),
+        "json_array_get" => "@miva_json_array_get".into(),
+        "json_object_len" => "@miva_json_object_len".into(),
+        "json_object_key" => "@miva_json_object_key".into(),
+        "json_object_get" => "@miva_json_object_get".into(),
+        "json_object_find" => "@miva_json_object_find".into(),
+        "json_free" => "@miva_json_free".into(),
+        "json_stringify" => "@miva_json_stringify".into(),
+        "xml_parse" => "@miva_xml_parse".into(),
+        "xml_kind" => "@miva_xml_kind".into(),
+        "xml_tag" => "@miva_xml_tag".into(),
+        "xml_attr_count" => "@miva_xml_attr_count".into(),
+        "xml_attr_name" => "@miva_xml_attr_name".into(),
+        "xml_attr_value" => "@miva_xml_attr_value".into(),
+        "xml_attr_find" => "@miva_xml_attr_find".into(),
+        "xml_child_count" => "@miva_xml_child_count".into(),
+        "xml_child_get" => "@miva_xml_child_get".into(),
+        "xml_text" => "@miva_xml_text".into(),
+        "xml_comment" => "@miva_xml_comment".into(),
+        "xml_cdata" => "@miva_xml_cdata".into(),
+        "xml_pi_target" => "@miva_xml_pi_target".into(),
+        "xml_pi_data" => "@miva_xml_pi_data".into(),
+        "xml_stringify" => "@miva_xml_stringify".into(),
+        "xml_free" => "@miva_xml_free".into(),
         _ => {
             let parts: Vec<&str> = name.split('.').collect();
             if parts.first() == Some(&"ffi") {
@@ -255,6 +318,12 @@ impl LlvmCtx {
         format!("%{}_{}", prefix, id)
     }
 
+    fn gen_label(&mut self, prefix: &str) -> String {
+        let id = self.tmp_counter;
+        self.tmp_counter += 1;
+        format!("{}_{}", prefix, id)
+    }
+
     fn indent_str(&self) -> String {
         "  ".repeat(self.indent)
     }
@@ -286,9 +355,8 @@ impl LlvmCtx {
 fn is_string_expr(expr: &Expr) -> bool {
     match expr {
         Expr::EString { .. } => true,
-        Expr::ECall { name, args, .. } => {
+        Expr::ECall { name, .. } => {
             matches!(name.as_str(), "string_from" | "string_concat" | "string_make" | "to_string")
-                || args.iter().any(is_string_expr)
         }
         Expr::EBinOp { op: BinOp::Add, left, right, .. } => {
             is_string_expr(left) || is_string_expr(right)
@@ -315,6 +383,47 @@ fn is_string_var(expr: &Expr, ctx: &LlvmCtx) -> bool {
             ctx.var_reloads.get(name).map_or(false, |r| ctx.string_regs.contains(r))
         }
         _ => false,
+    }
+}
+
+/// Numeric category of a value, used to pick the correct `string_from_*`
+/// runtime conversion when stringifying a non-string value.
+enum NumKind {
+    Int,
+    Float,
+    Bool,
+}
+
+fn expr_numeric_kind(expr: &Expr, ctx: &LlvmCtx) -> NumKind {
+    match expr {
+        Expr::EFloat { .. } => NumKind::Float,
+        Expr::EInt { .. } => NumKind::Int,
+        Expr::EBool { .. } => NumKind::Bool,
+        Expr::ECall { name, .. } => {
+            let lookup = name.rsplit('.').next().unwrap_or(name);
+            match ctx.func_sigs.get(lookup) {
+                Some(sig) => match &sig.returns {
+                    Some(Typ::TFloat64) | Some(Typ::TFloat32) => NumKind::Float,
+                    Some(Typ::TBool) => NumKind::Bool,
+                    _ => NumKind::Int,
+                },
+                None => NumKind::Int,
+            }
+        }
+        _ => NumKind::Int,
+    }
+}
+
+fn emit_fresh_loads(ctx: &mut LlvmCtx, body: &mut String, before: &HashMap<String, String>, names: &[String]) {
+    for name in names {
+        let addr = ctx.get_var_addr(name);
+        let new_reload = format!("{}.reload.{}", name, ctx.tmp_counter);
+        ctx.tmp_counter += 1;
+        body.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", new_reload, addr));
+        ctx.var_reloads.insert(name.clone(), new_reload.clone());
+        if before.get(name).map_or(false, |r| ctx.string_regs.contains(r)) {
+            ctx.string_regs.insert(new_reload);
+        }
     }
 }
 
@@ -400,24 +509,43 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
         Expr::EIf { cond, then, else_, .. } => {
             let cond_val = gen_expr(cond, ctx, body);
             let cmp = ctx.gen_tmp("ifc");
-            let label_then = ctx.gen_tmp("then");
-            let label_else = ctx.gen_tmp("else");
-            let label_end = ctx.gen_tmp("ifend");
+            let label_then = ctx.gen_label("then");
+            let label_else = ctx.gen_label("else");
+            let label_end = ctx.gen_label("ifend");
+            let var_reloads_before = ctx.var_reloads.clone();
+            let var_addrs_before = ctx.var_addrs.clone();
             body.push_str(&format!("{}{} = icmp ne i64 {}, 0\n", ctx.indent_str(), cmp, cond_val));
             body.push_str(&format!("{}br i1 {}, label %{}, label %{}\n", ctx.indent_str(), cmp, label_then, label_else));
             body.push_str(&format!("{}:\n", label_then));
             ctx.indent += 1; let then_val = gen_expr(then, ctx, body); ctx.indent -= 1;
+            let var_reloads_after_then = ctx.var_reloads.clone();
             body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_end));
+            ctx.var_reloads = var_reloads_before.clone();
+            ctx.var_addrs = var_addrs_before.clone();
             body.push_str(&format!("{}:\n", label_else));
             ctx.indent += 1; let else_val = if let Some(else_expr) = else_ { gen_expr(else_expr, ctx, body) } else { "0".to_string() }; ctx.indent -= 1;
             body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_end));
             body.push_str(&format!("{}:\n", label_end));
             let phi_tmp = ctx.gen_tmp("phi");
             body.push_str(&format!("{}{} = phi i64 [ {}, %{} ], [ {}, %{} ]\n", ctx.indent_str(), phi_tmp, then_val, label_then, else_val, label_else));
+            // Restore var_addrs to pre-if state (branch-scoped allocations don't dominate post-if code)
+            ctx.var_addrs = var_addrs_before;
+            // Only reload variables that existed before the if (not ones declared inside branches)
+            let changed_names: Vec<String> = {
+                let vr = &ctx.var_reloads;
+                vr.keys().filter(|name| {
+                    var_reloads_before.get(*name).is_some() &&
+                    (var_reloads_after_then.get(*name) != var_reloads_before.get(*name) ||
+                     vr.get(*name) != var_reloads_before.get(*name))
+                }).cloned().collect()
+            };
+            emit_fresh_loads(ctx, body, &var_reloads_before, &changed_names);
             phi_tmp
         }
         Expr::EWhile { cond, body: while_body, .. } => {
-            let label_cond = ctx.gen_tmp("wcond"); let label_body = ctx.gen_tmp("wbody"); let label_end = ctx.gen_tmp("wend");
+            let label_cond = ctx.gen_label("wcond"); let label_body = ctx.gen_label("wbody"); let label_end = ctx.gen_label("wend");
+            let var_reloads_before = ctx.var_reloads.clone();
+            let var_addrs_before = ctx.var_addrs.clone();
             body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_cond));
             body.push_str(&format!("{}:\n", label_cond));
             let cond_val = gen_expr(cond, ctx, body); let cmp = ctx.gen_tmp("wc");
@@ -425,29 +553,89 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
             body.push_str(&format!("{}br i1 {}, label %{}, label %{}\n", ctx.indent_str(), cmp, label_body, label_end));
             body.push_str(&format!("{}:\n", label_body)); ctx.indent += 1; gen_expr(while_body, ctx, body); ctx.indent -= 1;
             body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_cond));
-            body.push_str(&format!("{}:\n", label_end)); "0".to_string()
+            body.push_str(&format!("{}:\n", label_end));
+            // Restore var_addrs to pre-loop state
+            ctx.var_addrs = var_addrs_before;
+            let changed_names: Vec<String> = {
+                let vr = &ctx.var_reloads;
+                vr.keys().filter(|name| {
+                    var_reloads_before.get(*name).is_some() &&
+                    var_reloads_before.get(*name) != vr.get(*name)
+                }).cloned().collect()
+            };
+            emit_fresh_loads(ctx, body, &var_reloads_before, &changed_names);
+            "0".to_string()
         }
         Expr::ELoop { body: loop_body, .. } => {
-            let label_body = ctx.gen_tmp("lbody"); let label_end = ctx.gen_tmp("lend");
+            let label_body = ctx.gen_label("lbody"); let label_end = ctx.gen_label("lend");
+            let var_reloads_before = ctx.var_reloads.clone();
+            let var_addrs_before = ctx.var_addrs.clone();
             body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_body));
             body.push_str(&format!("{}:\n", label_body)); ctx.indent += 1; gen_expr(loop_body, ctx, body); ctx.indent -= 1;
             body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_body));
-            body.push_str(&format!("{}:\n", label_end)); "0".to_string()
+            body.push_str(&format!("{}:\n", label_end));
+            // Restore var_addrs to pre-loop state
+            ctx.var_addrs = var_addrs_before;
+            let changed_names: Vec<String> = {
+                let vr = &ctx.var_reloads;
+                vr.keys().filter(|name| {
+                    var_reloads_before.get(*name).is_some() &&
+                    var_reloads_before.get(*name) != vr.get(*name)
+                }).cloned().collect()
+            };
+            emit_fresh_loads(ctx, body, &var_reloads_before, &changed_names);
+            "0".to_string()
         }
-        Expr::EFor { var: _var, range, body: for_body, .. } => {
-            let range_val = gen_expr(range, ctx, body);
-            let label_cond = ctx.gen_tmp("fcond"); let label_body = ctx.gen_tmp("fbody"); let label_end = ctx.gen_tmp("fend");
-            let phi = ctx.gen_tmp("fi");
+        Expr::EFor { var, range, body: for_body, .. } => {
+            // Extract the count from `range(n)` — the range builtin returns void
+            // in LLVM (writes through an output pointer), so we evaluate the
+            // argument of range() directly as the loop bound.
+            let range_count = match range.as_ref() {
+                Expr::ECall { name, args, .. } if name == "range" && args.len() == 1 => {
+                    gen_expr(&args[0], ctx, body)
+                }
+                _ => gen_expr(range, ctx, body),
+            };
+            let label_cond = ctx.gen_label("fcond"); let label_body = ctx.gen_label("fbody"); let label_end = ctx.gen_label("fend");
+            let var_reloads_before = ctx.var_reloads.clone();
+            let var_addrs_before = ctx.var_addrs.clone();
+            // Declare the loop variable (creates an alloca address)
+            let (addr, _reload) = ctx.declare_var(var);
+            body.push_str(&format!("  %{} = alloca i64, align 8\n", addr));
+            // Initialize loop counter to 0
+            body.push_str(&format!("  store i64 0, ptr %{}, align 8\n", addr));
             body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_cond));
             body.push_str(&format!("{}:\n", label_cond));
-            body.push_str(&format!("{}{} = phi i64 [ 0, %entry ], [ %{}.next, %{} ]\n", ctx.indent_str(), phi, phi, label_body));
+            // Reload loop counter
+            let reload_name = format!("{}.fv.{}", var, ctx.tmp_counter);
+            ctx.tmp_counter += 1;
+            body.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", reload_name, addr));
+            ctx.var_reloads.insert(var.clone(), reload_name.clone());
             let cmp = ctx.gen_tmp("fc");
-            body.push_str(&format!("{}{} = icmp slt i64 {}, {}\n", ctx.indent_str(), cmp, phi, range_val));
+            body.push_str(&format!("{}{} = icmp slt i64 %{}, {}\n", ctx.indent_str(), cmp, reload_name, range_count));
             body.push_str(&format!("{}br i1 {}, label %{}, label %{}\n", ctx.indent_str(), cmp, label_body, label_end));
             body.push_str(&format!("{}:\n", label_body)); ctx.indent += 1; gen_expr(for_body, ctx, body); ctx.indent -= 1;
-            body.push_str(&format!("{}{}.next = add i64 {}, 1\n", ctx.indent_str(), phi, phi));
+            // Increment and store loop counter back
+            let next_name = format!("{}.fn.{}", var, ctx.tmp_counter);
+            ctx.tmp_counter += 1;
+            body.push_str(&format!("  %{} = add i64 %{}, 1\n", next_name, reload_name));
+            body.push_str(&format!("  store i64 %{}, ptr %{}, align 8\n", next_name, addr));
             body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_cond));
-            body.push_str(&format!("{}:\n", label_end)); "0".to_string()
+            body.push_str(&format!("{}:\n", label_end));
+            // Loop variable is out of scope after the loop
+            ctx.var_reloads.remove(var);
+            // Restore var_addrs to pre-loop state (loop-scoped allocations don't dominate post-loop code)
+            ctx.var_addrs = var_addrs_before;
+            // Only reload variables that existed before the loop (not ones declared inside)
+            let changed_names: Vec<String> = {
+                let vr = &ctx.var_reloads;
+                vr.keys().filter(|name| {
+                    var_reloads_before.get(*name).is_some() &&
+                    var_reloads_before.get(*name) != vr.get(*name)
+                }).cloned().collect()
+            };
+            emit_fresh_loads(ctx, body, &var_reloads_before, &changed_names);
+            "0".to_string()
         }
         Expr::EVar { name, .. } | Expr::EMove { name, .. } | Expr::EClone { name, .. } => ctx.get_var_reload(name),
         Expr::EVoid { .. } => "0".to_string(),
@@ -513,14 +701,17 @@ fn is_ptr_arg(func_name: &str, arg_idx: usize) -> bool {
         n if n.contains("miva_print") || n.contains("miva_error") => true,
         "@miva_string_concat" | "@miva_string_from_str" => true,
         "@miva_string_parse" | "@miva_string_length" => true,
-        "@miva_string_make" => arg_idx == 0, // ptr, i64
+        "@miva_string_make" => arg_idx == 0,
         "@miva_box_new_int" | "@miva_box_new_float" | "@miva_box_new_bool"
-        | "@miva_box_new_byte" | "@miva_box_new_string" => arg_idx == 0, // ptr out, value
+        | "@miva_box_new_byte" | "@miva_box_new_string" => arg_idx == 0,
         "@miva_box_deref_int" | "@miva_box_deref_float" | "@miva_box_deref_bool"
-        | "@miva_box_deref_byte" => false, // these take ptr, return scalar
-        "@miva_box_deref_string" => true, // ptr, ptr
-        "@miva_range" | "@miva_range_end" | "@miva_range_step" => arg_idx == 0, // ptr out, i64...
-        // Most other miva_ functions take i64 (scalar) arguments
+        | "@miva_box_deref_byte" => false,
+        "@miva_box_deref_string" => true,
+        "@miva_range" | "@miva_range_end" | "@miva_range_step" => arg_idx == 0,
+        "@miva_json_parse" => arg_idx == 0,
+        "@miva_json_object_find" => arg_idx == 1,
+        "@miva_xml_parse" => arg_idx == 0,
+        "@miva_xml_attr_find" => arg_idx == 1,
         _ => false,
     }
 }
@@ -530,20 +721,108 @@ fn ret_type(func_name: &str) -> &'static str {
         n if n.contains("miva_print") || n.contains("miva_error") || n == "@miva_panic"
             || n == "@miva_abort" || n == "@miva_exit" => "void",
         n if n == "@miva_string_concat" || n == "@miva_string_make"
-            || n.starts_with("@miva_string_from_") || n == "@miva_alloc" || n == "@miva_realloc" => "ptr",
+            || n.starts_with("@miva_string_from_") || n == "@miva_alloc" || n == "@miva_realloc"
+            || n == "@miva_json_string" || n == "@miva_json_object_key"
+            || n == "@miva_json_stringify" => "ptr",
+        n if n == "@miva_xml_tag" || n == "@miva_xml_attr_name"
+            || n == "@miva_xml_attr_value" || n == "@miva_xml_attr_find"
+            || n == "@miva_xml_text" || n == "@miva_xml_comment"
+            || n == "@miva_xml_cdata" || n == "@miva_xml_pi_target"
+            || n == "@miva_xml_pi_data" || n == "@miva_xml_stringify" => "ptr",
         n if n == "@miva_box_deref_float" => "double",
         n if n == "@miva_box_deref_bool" || n == "@miva_box_deref_byte" => "i8",
         n if n.starts_with("@miva_") || n.starts_with("@ffi_") => "i64",
-        _ => "i64", // user-defined functions return i64
+        _ => "i64",
     }
 }
 
 fn gen_call(name: &str, args: &[Expr], type_args: &[Typ], ctx: &mut LlvmCtx, body: &mut String) -> String {
-    // string_from/to_string on already-string arg: skip conversion, pass through
+        // string_from/to_string on already-string arg: skip conversion, pass through.
+    // When the arg is NOT a string, still emit the conversion using the already
+    // computed register — never re-evaluate args[0], which would double-evaluate
+    // side-effecting expressions such as a second `await` on the same future.
     if (name == "string_from" || name == "to_string") && args.len() == 1 {
-        if is_string_expr(&args[0]) || call_returns_string(&args[0], ctx) || is_string_var(&args[0], ctx) {
-            return gen_expr(&args[0], ctx, body);
+        let reg = gen_expr(&args[0], ctx, body);
+        let is_str = is_string_expr(&args[0]) || call_returns_string(&args[0], ctx)
+            || is_string_var(&args[0], ctx) || ctx.string_regs.contains(&reg);
+        if is_str {
+            return reg;
         }
+        // The value is numeric; choose the matching runtime conversion so the
+        // result stringifies correctly (e.g. 0.1 not the raw bit-pattern).
+        let tmp = ctx.gen_tmp("call");
+        let (fn_name, arg_llvm) = match expr_numeric_kind(&args[0], ctx) {
+            NumKind::Float => {
+                let double_reg = if matches!(args[0], Expr::EFloat { .. }) {
+                    reg
+                } else {
+                    let bc = ctx.gen_tmp("bc");
+                    body.push_str(&format!("{}{} = bitcast i64 {} to double\n", ctx.indent_str(), bc, reg));
+                    bc
+                };
+                ("@miva_string_from_float".to_string(), format!("double {}", double_reg))
+            }
+            NumKind::Bool => {
+                let b = ctx.gen_tmp("bt");
+                body.push_str(&format!("{}{} = trunc i64 {} to i8\n", ctx.indent_str(), b, reg));
+                ("@miva_string_from_bool".to_string(), format!("i8 {}", b))
+            }
+            NumKind::Int => ("@miva_string_from_int".to_string(), format!("i64 {}", reg)),
+        };
+        body.push_str(&format!("{} = call ptr {}({})\n",
+            format!("{}{}", ctx.indent_str(), tmp), fn_name, arg_llvm));
+        let int_tmp = ctx.gen_tmp("cr");
+        body.push_str(&format!("{}{} = ptrtoint ptr {} to i64\n", ctx.indent_str(), int_tmp, tmp));
+        ctx.string_regs.insert(int_tmp.clone());
+        return int_tmp;
+    }
+
+    // `await(f)` / `f.await()`: join the spawned task and return its value.
+    if name == "await" {
+        let arg = match args.first() {
+            Some(a) => a,
+            None => return String::new(),
+        };
+        let arg_reg = gen_expr(arg, ctx, body);
+        let tmp = ctx.gen_tmp("call");
+        body.push_str(&format!("{} = call i64 @miva_async_await(i64 {})\n",
+            format!("{}{}", ctx.indent_str(), tmp), arg_reg));
+        // The awaited value is the future's inner type; mirror string-ness.
+        if call_returns_string(arg, ctx) || is_string_expr(arg) || is_string_var(arg, ctx) {
+            ctx.string_regs.insert(tmp.clone());
+        }
+        return tmp;
+    }
+
+    // Spawn a real OS thread for calls to async functions. The async function
+    // takes a single `i64` (pointer to a heap struct of packed args); the
+    // runtime spawns it and returns a task handle (also an i64).
+    let lookup = name.rsplit('.').next().unwrap_or(name);
+    let is_async_call = ctx.func_sigs.get(lookup).map_or(false, |s| s.is_async);
+    if is_async_call {
+        let arg_regs: Vec<String> = args.iter()
+            .map(|a| gen_expr(a, ctx, body))
+            .collect();
+        let struct_bytes = (arg_regs.len() as i64) * 8;
+        let struct_ptr = ctx.gen_tmp("asp");
+        body.push_str(&format!("{}{} = call ptr @miva_alloc(i64 {})\n",
+            ctx.indent_str(), struct_ptr, struct_bytes));
+        for (i, reg) in arg_regs.iter().enumerate() {
+            let gep = ctx.gen_tmp("asg");
+            body.push_str(&format!("{}{} = getelementptr i64, ptr {}, i64 {}\n",
+                ctx.indent_str(), gep, struct_ptr, i));
+            body.push_str(&format!("{}store i64 {}, ptr {}\n", ctx.indent_str(), reg, gep));
+        }
+        let struct_int = ctx.gen_tmp("asi");
+        body.push_str(&format!("{}{} = ptrtoint ptr {} to i64\n",
+            ctx.indent_str(), struct_int, struct_ptr));
+        let func_name = map_builtin(name, ctx.current_module.as_deref());
+        let handle = ctx.gen_tmp("call");
+        body.push_str(&format!("{} = call i64 @miva_async_spawn(ptr {}, i64 {})\n",
+            format!("{}{}", ctx.indent_str(), handle), func_name, struct_int));
+        // The handle is a plain i64; it is NOT a string. String-ness is applied
+        // by the `await` that later joins this handle.
+        return handle;
     }
 
     let func_name = map_builtin(name, ctx.current_module.as_deref());
@@ -597,6 +876,12 @@ fn gen_call(name: &str, args: &[Expr], type_args: &[Typ], ctx: &mut LlvmCtx, bod
 fn returns_from_sig(sig: &crate::codegen::FuncSig, type_args: &[Typ]) -> bool {
     match &sig.returns {
         Some(Typ::TString) => true,
+        Some(Typ::TFuture { of }) => {
+            if let Typ::TString = **of {
+                return true;
+            }
+            false
+        }
         Some(Typ::TStruct { name, .. }) => {
             if let Some(pos) = sig.type_params.iter().position(|p| p == name) {
                 if pos < type_args.len() {
@@ -656,22 +941,41 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut LlvmCtx, body: &mut String) {
 fn gen_func_def(
     name: &str, _type_params: &[String], params: &[Param], _returns: &Option<Typ>,
     body: &Expr, module: Option<&str>, struct_field_map: &HashMap<String, HashMap<String, usize>>,
-    func_sigs: &HashMap<String, crate::codegen::FuncSig>,
+    func_sigs: &HashMap<String, crate::codegen::FuncSig>, is_async: bool,
 ) -> String {
     let global_name = make_global_name(module, name);
-    let param_strs: Vec<String> = params.iter().map(|p| {
-        let pname = match p { Param::PRef { name, .. } | Param::POwn { name, .. } => name.as_str() };
-        format!("i64 %{}", pname)
-    }).collect();
     let mut ctx = LlvmCtx::with_module_and_fields(module, struct_field_map.clone()).with_func_sigs(func_sigs);
     ctx.indent = 1;
     let mut body_prefix = String::new();
-    for p in params {
-        let pname = match p { Param::PRef { name, .. } | Param::POwn { name, .. } => name.as_str() };
-        let (addr, reload) = ctx.declare_var(pname);
-        body_prefix.push_str(&format!("  %{} = alloca i64, align 8\n", addr));
-        body_prefix.push_str(&format!("  store i64 %{}, ptr %{}, align 8\n", pname, addr));
-        body_prefix.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", reload, addr));
+    let param_strs: Vec<String>;
+    if is_async {
+        // Async functions take a single i64 that is a pointer to a heap struct
+        // holding the packed arguments. The runtime spawns them on a thread.
+        param_strs = vec!["i64 %args".to_string()];
+        body_prefix.push_str("  %args_ptr = inttoptr i64 %args to ptr\n");
+        for (i, p) in params.iter().enumerate() {
+            let pname = match p { Param::PRef { name, .. } | Param::POwn { name, .. } => name.as_str() };
+            let (addr, reload) = ctx.declare_var(pname);
+            let gep = ctx.gen_tmp("ag");
+            body_prefix.push_str(&format!("  {} = getelementptr i64, ptr %args_ptr, i64 {}\n", gep, i));
+            let val = ctx.gen_tmp("av");
+            body_prefix.push_str(&format!("  {} = load i64, ptr {}\n", val, gep));
+            body_prefix.push_str(&format!("  %{} = alloca i64, align 8\n", addr));
+            body_prefix.push_str(&format!("  store i64 {}, ptr %{}, align 8\n", val, addr));
+            body_prefix.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", reload, addr));
+        }
+    } else {
+        param_strs = params.iter().map(|p| {
+            let pname = match p { Param::PRef { name, .. } | Param::POwn { name, .. } => name.as_str() };
+            format!("i64 %{}", pname)
+        }).collect();
+        for p in params {
+            let pname = match p { Param::PRef { name, .. } | Param::POwn { name, .. } => name.as_str() };
+            let (addr, reload) = ctx.declare_var(pname);
+            body_prefix.push_str(&format!("  %{} = alloca i64, align 8\n", addr));
+            body_prefix.push_str(&format!("  store i64 %{}, ptr %{}, align 8\n", pname, addr));
+            body_prefix.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", reload, addr));
+        }
     }
     let mut body_str = String::new();
     let ret_val = gen_expr(body, &mut ctx, &mut body_str);
@@ -739,10 +1043,10 @@ fn generate_with_scope(defs: &[Def], module: Option<&str>, struct_field_map: &Ha
         match def {
             Def::DFunc { name, type_params, params, returns, body, .. } if name == "main" => main_functions.push_str(&gen_main_func(body, struct_field_map, func_sigs)),
             Def::DCFuncUnsafe { name, params, returns, code, .. } => defs_str.push_str(&gen_cfunc(name, params, returns, code)),
-            Def::DFunc { name, type_params, params, returns, body, .. } => {
+            Def::DFunc { name, type_params, params, returns, body, is_async, .. } => {
                 let global_name = make_global_name(module, name.as_str());
                 defined.insert(global_name);
-                defs_str.push_str(&gen_func_def(name, type_params, params, returns, body, module, struct_field_map, func_sigs));
+                defs_str.push_str(&gen_func_def(name, type_params, params, returns, body, module, struct_field_map, func_sigs, *is_async));
             }
             Def::DImpl { struct_name, impls, .. } => defs_str.push_str(&gen_impl(struct_name, impls)),
             Def::DModule { name, .. } => {
@@ -765,7 +1069,7 @@ fn generate_test(defs: &[Def]) -> String {
 
 fn generate_bridge(_defs: &[Def]) -> String {
     let mut bridge = String::new();
-    bridge.push_str("#include <string>\n#include <vector>\n#include <cstdint>\n#include <mvp_builtin.h>\n\nextern \"C\" {\n");
+    bridge.push_str("#include <string>\n#include <vector>\n#include <thread>\n#include <mutex>\n#include <condition_variable>\n#include <cstdint>\n#include <cstdlib>\n#include <cstdio>\n#include <mvp_builtin.h>\n\nextern \"C\" {\n");
     bridge.push_str("void miva_print(void* s) { auto& str = *(std::string*)s; mvp_print(str); }\n");
     bridge.push_str("void miva_println(void* s) { auto& str = *(std::string*)s; mvp_println(str); }\n");
     bridge.push_str("void miva_prints(void* s) { auto& str = *(std::string*)s; mvp_prints(str); }\n");
@@ -799,10 +1103,43 @@ fn generate_bridge(_defs: &[Def]) -> String {
     bridge.push_str("void* miva_alloc(int64_t s) { return mvp_alloc(s); }\n");
     bridge.push_str("void* miva_realloc(void* p, int64_t s) { return mvp_realloc(p,s); }\n");
     bridge.push_str("void miva_free(void* p) { mvp_free(p); }\n");
+    bridge.push_str("void* miva_ptr_offset(void* p, int64_t n) { return mvp_ptr_offset(p, n); }\n");
+    bridge.push_str("int64_t miva_json_parse(void* s) { auto& str = *(std::string*)s; return (int64_t)(intptr_t)mvp_json_parse(str); }\n");
+    bridge.push_str("int64_t miva_json_kind(int64_t v) { return mvp_json_kind((void*)(intptr_t)v); }\n");
+    bridge.push_str("int64_t miva_json_bool(int64_t v) { return mvp_json_bool((void*)(intptr_t)v); }\n");
+    bridge.push_str("int64_t miva_json_number(int64_t v) { double d = mvp_json_number((void*)(intptr_t)v); int64_t r; memcpy(&r, &d, 8); return r; }\n");
+    bridge.push_str("void* miva_json_string(int64_t v) { auto r = mvp_json_string((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("int64_t miva_json_array_len(int64_t v) { return mvp_json_array_len((void*)(intptr_t)v); }\n");
+    bridge.push_str("int64_t miva_json_array_get(int64_t v, int64_t i) { return (int64_t)(intptr_t)mvp_json_array_get((void*)(intptr_t)v, i); }\n");
+    bridge.push_str("int64_t miva_json_object_len(int64_t v) { return mvp_json_object_len((void*)(intptr_t)v); }\n");
+    bridge.push_str("void* miva_json_object_key(int64_t v, int64_t i) { auto r = mvp_json_object_key((void*)(intptr_t)v, i); return new std::string(std::move(r)); }\n");
+    bridge.push_str("int64_t miva_json_object_get(int64_t v, int64_t i) { return (int64_t)(intptr_t)mvp_json_object_get((void*)(intptr_t)v, i); }\n");
+    bridge.push_str("int64_t miva_json_object_find(int64_t v, void* key) { auto& k = *(std::string*)key; return (int64_t)(intptr_t)mvp_json_object_find((void*)(intptr_t)v, k); }\n");
+    bridge.push_str("void miva_json_free(int64_t v) { mvp_json_free((void*)(intptr_t)v); }\n");
+    bridge.push_str("void* miva_json_stringify(int64_t v) { auto r = mvp_json_stringify((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("int64_t miva_xml_parse(void* s) { auto& str = *(std::string*)s; return (int64_t)(intptr_t)mvp_xml_parse(str); }\n");
+    bridge.push_str("int64_t miva_xml_kind(int64_t v) { return mvp_xml_kind((void*)(intptr_t)v); }\n");
+    bridge.push_str("void* miva_xml_tag(int64_t v) { auto r = mvp_xml_tag((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("int64_t miva_xml_attr_count(int64_t v) { return mvp_xml_attr_count((void*)(intptr_t)v); }\n");
+    bridge.push_str("void* miva_xml_attr_name(int64_t v, int64_t i) { auto r = mvp_xml_attr_name((void*)(intptr_t)v, i); return new std::string(std::move(r)); }\n");
+    bridge.push_str("void* miva_xml_attr_value(int64_t v, int64_t i) { auto r = mvp_xml_attr_value((void*)(intptr_t)v, i); return new std::string(std::move(r)); }\n");
+    bridge.push_str("void* miva_xml_attr_find(int64_t v, void* key) { auto& k = *(std::string*)key; auto r = mvp_xml_attr_find((void*)(intptr_t)v, k); return new std::string(std::move(r)); }\n");
+    bridge.push_str("int64_t miva_xml_child_count(int64_t v) { return mvp_xml_child_count((void*)(intptr_t)v); }\n");
+    bridge.push_str("int64_t miva_xml_child_get(int64_t v, int64_t i) { return (int64_t)(intptr_t)mvp_xml_child_get((void*)(intptr_t)v, i); }\n");
+    bridge.push_str("void* miva_xml_text(int64_t v) { auto r = mvp_xml_text((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("void* miva_xml_comment(int64_t v) { auto r = mvp_xml_comment((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("void* miva_xml_cdata(int64_t v) { auto r = mvp_xml_cdata((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("void* miva_xml_pi_target(int64_t v) { auto r = mvp_xml_pi_target((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("void* miva_xml_pi_data(int64_t v) { auto r = mvp_xml_pi_data((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("void* miva_xml_stringify(int64_t v) { auto r = mvp_xml_stringify((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("void miva_xml_free(int64_t v) { mvp_xml_free((void*)(intptr_t)v); }\n");
     bridge.push_str("void miva_ptr_set_i64(void* p, int64_t v) { mvp_builtin_ptrset((mvp_builtin_int*)p, v); }\n");
     bridge.push_str("void miva_ptr_set_double(void* p, double v) { mvp_builtin_ptrset((mvp_builtin_float*)p, v); }\n");
     bridge.push_str("void miva_ptr_set_i8(void* p, int8_t v) { mvp_builtin_ptrset((mvp_builtin_byte*)p, v); }\n");
     bridge.push_str("void miva_ptr_set_ptr(void* p, void* v) { mvp_builtin_ptrset((mvp_builtin_ptrany*)p, v); }\n");
+    bridge.push_str("struct mvp_async_task {\n  std::mutex mutex;\n  std::condition_variable cv;\n  bool done = false;\n  int64_t result = 0;\n  std::thread thread;\n};\n");
+    bridge.push_str("int64_t miva_async_spawn(int64_t (*fn)(int64_t), int64_t arg_struct_ptr) {\n  auto* task = new mvp_async_task();\n  task->thread = std::thread([task, fn, arg_struct_ptr]() {\n    int64_t r = fn(arg_struct_ptr);\n    free((void*)(intptr_t)arg_struct_ptr);\n    {\n      std::lock_guard<std::mutex> lk(task->mutex);\n      task->result = r;\n      task->done = true;\n    }\n    task->cv.notify_one();\n  });\n  return (int64_t)(intptr_t)task;\n}\n");
+    bridge.push_str("int64_t miva_async_await(int64_t handle) {\n  auto* task = (mvp_async_task*)(intptr_t)handle;\n  {\n    std::unique_lock<std::mutex> lk(task->mutex);\n    task->cv.wait(lk, [&] { return task->done; });\n  }\n  int64_t r = task->result;\n  task->thread.join();\n  delete task;\n  return r;\n}\n");
     bridge.push_str("}\n");
     bridge
 }

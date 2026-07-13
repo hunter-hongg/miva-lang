@@ -116,6 +116,7 @@ impl<'input> Parser<'input> {
                 Token::Trusted => return self.parse_func_trusted(),
                 Token::CKeyword => return self.parse_c_func(true),
                 Token::Inline => return self.parse_c_func(false),
+                Token::Async => return self.parse_func_async(),
                 Token::Test => return self.parse_test(),
                 Token::Module => return self.parse_module(),
                 Token::Export => return self.parse_export(),
@@ -171,7 +172,7 @@ impl<'input> Parser<'input> {
         }
 
         // Must be a function
-        self.parse_func_body(name, type_params, start, Safety::Safe)
+        self.parse_func_body(name, type_params, start, Safety::Safe, false)
     }
 
     fn parse_struct_body(
@@ -211,6 +212,7 @@ impl<'input> Parser<'input> {
         type_params: Vec<String>,
         start: usize,
         safety: Safety,
+        is_async: bool,
     ) -> Result<Def, String> {
         let params = self.parse_func_params()?;
         let returns = if self.peek_token()? == Some(&Token::Colon) {
@@ -229,7 +231,32 @@ impl<'input> Parser<'input> {
             returns,
             body: Box::new(body),
             safety,
+            is_async,
         })
+    }
+
+    fn parse_func_async(&mut self) -> Result<Def, String> {
+        let start = self.advance()?.0; // consume "async"
+        let (name, _) = self.expect_ident()?;
+        let type_params = if self.peek_token()? == Some(&Token::LBracket) {
+            self.advance()?;
+            let mut params = Vec::new();
+            loop {
+                let (pname, _) = self.expect_ident()?;
+                params.push(pname);
+                if self.peek_token()? == Some(&Token::Comma) {
+                    self.advance()?;
+                } else {
+                    break;
+                }
+            }
+            self.expect(&Token::RBracket)?;
+            params
+        } else {
+            vec![]
+        };
+        self.expect(&Token::Eq)?;
+        self.parse_func_body(name, type_params, start, Safety::Safe, true)
     }
 
     fn parse_func_unsafe(&mut self) -> Result<Def, String> {
@@ -253,7 +280,7 @@ impl<'input> Parser<'input> {
             vec![]
         };
         self.expect(&Token::Eq)?;
-        self.parse_func_body(name, type_params, start, Safety::Unsafe)
+        self.parse_func_body(name, type_params, start, Safety::Unsafe, false)
     }
 
     fn parse_func_trusted(&mut self) -> Result<Def, String> {
@@ -277,7 +304,7 @@ impl<'input> Parser<'input> {
             vec![]
         };
         self.expect(&Token::Eq)?;
-        self.parse_func_body(name, type_params, start, Safety::Trusted)
+        self.parse_func_body(name, type_params, start, Safety::Trusted, false)
     }
 
     fn parse_c_func(&mut self, used_c_keyword: bool) -> Result<Def, String> {
@@ -607,8 +634,16 @@ impl<'input> Parser<'input> {
                 Ok(Typ::TArray { of: Box::new(t) })
             }
             Some(&Token::Ident(_)) => {
-                // Type path (struct type), possibly with generic args
+                // Special built-in future[T] type
                 let name = self.parse_type_path()?;
+                if name == "future" {
+                    self.expect(&Token::LBracket)?;
+                    let of = self.parse_typ()?;
+                    self.expect(&Token::RBracket)?;
+                    return Ok(Typ::TFuture {
+                        of: Box::new(of),
+                    });
+                }
                 let type_args = if self.peek_token()? == Some(&Token::LBracket) {
                     self.advance()?; // consume "["
                     let mut args = Vec::new();

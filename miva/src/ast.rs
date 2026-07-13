@@ -13,7 +13,7 @@ pub struct AstFile {
     pub files: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Safety {
     Safe,
@@ -76,6 +76,8 @@ pub enum Typ {
     TPtr { to: Box<Typ> },
     #[serde(rename = "box")]
     TBox { of: Box<Typ> },
+    #[serde(rename = "future")]
+    TFuture { of: Box<Typ> },
     #[serde(rename = "null")]
     TNull,
     #[serde(rename = "ptrany")]
@@ -323,6 +325,8 @@ pub enum Def {
         returns: Option<Typ>,
         body: Box<Expr>,
         safety: Safety,
+        #[serde(default)]
+        is_async: bool,
     },
     #[serde(rename = "cFunc")]
     DCFuncUnsafe {

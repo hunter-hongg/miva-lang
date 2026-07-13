@@ -468,6 +468,7 @@ mod tests {
             returns: None,
             body: Box::new(body),
             safety,
+            is_async: false,
         }
     }
 
@@ -480,6 +481,7 @@ mod tests {
             returns: None,
             body: Box::new(body),
             safety,
+            is_async: false,
         }
     }
 

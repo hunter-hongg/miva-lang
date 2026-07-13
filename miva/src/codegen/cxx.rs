@@ -49,6 +49,7 @@ pub fn cxx_type(typ: &Typ) -> String {
         }
         Typ::TPtr { to } => format!("{}*", cxx_type(to)),
         Typ::TBox { of } => format!("mvp_builtin_box<{}>", cxx_type(of)),
+        Typ::TFuture { of } => format!("mvp_future<{}>", cxx_type(of)),
         Typ::TNull => "void".into(),
         Typ::TPtrAny => "mvp_builtin_ptrany".into(),
         Typ::TInvalid => "invalid".into(),
@@ -94,6 +95,37 @@ pub fn map_builtin(name: &str) -> String {
         "ptr_realloc" => "mvp_realloc".into(),
         "ptr_free" => "mvp_free".into(),
         "ptr_set" => "mvp_builtin_ptrset".into(),
+        "ptr_offset" => "mvp_ptr_offset".into(),
+        "await" => "mvp_async_await".into(),
+        "json_parse" => "mvp_json_parse".into(),
+        "json_kind" => "mvp_json_kind".into(),
+        "json_bool" => "mvp_json_bool".into(),
+        "json_number" => "mvp_json_number".into(),
+        "json_string" => "mvp_json_string".into(),
+        "json_array_len" => "mvp_json_array_len".into(),
+        "json_array_get" => "mvp_json_array_get".into(),
+        "json_object_len" => "mvp_json_object_len".into(),
+        "json_object_key" => "mvp_json_object_key".into(),
+        "json_object_get" => "mvp_json_object_get".into(),
+        "json_object_find" => "mvp_json_object_find".into(),
+        "json_free" => "mvp_json_free".into(),
+        "json_stringify" => "mvp_json_stringify".into(),
+        "xml_parse" => "mvp_xml_parse".into(),
+        "xml_kind" => "mvp_xml_kind".into(),
+        "xml_tag" => "mvp_xml_tag".into(),
+        "xml_attr_count" => "mvp_xml_attr_count".into(),
+        "xml_attr_name" => "mvp_xml_attr_name".into(),
+        "xml_attr_value" => "mvp_xml_attr_value".into(),
+        "xml_attr_find" => "mvp_xml_attr_find".into(),
+        "xml_child_count" => "mvp_xml_child_count".into(),
+        "xml_child_get" => "mvp_xml_child_get".into(),
+        "xml_text" => "mvp_xml_text".into(),
+        "xml_comment" => "mvp_xml_comment".into(),
+        "xml_cdata" => "mvp_xml_cdata".into(),
+        "xml_pi_target" => "mvp_xml_pi_target".into(),
+        "xml_pi_data" => "mvp_xml_pi_data".into(),
+        "xml_stringify" => "mvp_xml_stringify".into(),
+        "xml_free" => "mvp_xml_free".into(),
         _ => {
             let parts: Vec<&str> = name.split('.').collect();
             if parts.first() == Some(&"ffi") {
@@ -463,6 +495,15 @@ fn cxx_def(def: &Def, depth: usize) -> String {
             params,
             returns,
             body,
+            is_async,
+            ..
+        } if *is_async => cxx_async_func(name, type_params, params, returns, body, ind, inner),
+        Def::DFunc {
+            name,
+            type_params,
+            params,
+            returns,
+            body,
             ..
         } if name == "main" => cxx_main_func(ind, inner, body),
         Def::DCFuncUnsafe {
@@ -621,6 +662,87 @@ fn cxx_normal_func(
         }
     };
     format!("{}{}", template_header, body_str)
+}
+
+/// Generate the inner statements + return line of a function body (without the
+/// surrounding braces), for the given C++ return type.
+fn cxx_func_inner(ret_type: &str, body: &Expr, _depth: usize) -> String {
+    match body {
+        Expr::EBlock { .. } => {
+            let flow = analyze_block(body, 0, ret_type).unwrap_or(BlockFlow {
+                stmts: vec![],
+                ret_line: String::new(),
+            });
+            format!("{}{}", flow.stmts.join(""), flow.ret_line)
+        }
+        _ => {
+            if ret_type == "mvp_builtin_unit" {
+                format!("{}; return mvp_builtin_void;\n", cxx_expr(body, 0))
+            } else {
+                format!("return {};\n", cxx_expr(body, 0))
+            }
+        }
+    }
+}
+
+/// Generate an `async` function. The body returns the inner type T; the
+/// function spawns a real OS thread running the body and returns a
+/// `future[T]` handle. `.await()` joins the thread and yields the result.
+fn cxx_async_func(
+    name: &str,
+    type_params: &[String],
+    params: &[Param],
+    returns: &Option<Typ>,
+    body: &Expr,
+    ind: String,
+    inner: usize,
+) -> String {
+    let ret_type = returns
+        .as_ref()
+        .map_or_else(|| "mvp_future<mvp_builtin_unit>".to_string(), cxx_type);
+    let inner_typ = match returns {
+        Some(Typ::TFuture { of }) => (**of).clone(),
+        _ => Typ::TNull,
+    };
+    let inner_ret = cxx_type(&inner_typ);
+    let param_strs: Vec<_> = params.iter().map(cxx_param).collect();
+    let signature = format!("{} {}({})", ret_type, name, param_strs.join(", "));
+    let template_header = if type_params.is_empty() {
+        String::new()
+    } else {
+        let params_str = type_params
+            .iter()
+            .map(|tp| format!("typename {}", tp))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{}template<{}>\n", ind, params_str)
+    };
+    // Capture each parameter by value so the spawned thread owns its inputs
+    // (this also copies `ref` parameters by value, avoiding dangling refs).
+    let capture_list = if params.is_empty() {
+        "[]".to_string()
+    } else {
+        let names: Vec<_> = params
+            .iter()
+            .map(|p| match p {
+                Param::PRef { name, .. } | Param::POwn { name, .. } => name.clone(),
+            })
+            .collect();
+        format!("[{}]", names.join(", "))
+    };
+    let inner_body = cxx_func_inner(&inner_ret, body, inner + 1);
+    let lambda = format!(
+        "return mvp_async_spawn({}() -> {} {{\n{}}});\n",
+        capture_list, inner_ret, inner_body
+    );
+    format!(
+        "{}{} {{\n{}{}{}}}\n\n",
+        template_header,
+        signature,
+        indent_str(inner),
+        lambda,
+        ind
+    )
 }
 
 fn cxx_impl(struct_name: &str, impls: &[ImplExpr], ind: String) -> String {
@@ -1039,6 +1161,7 @@ mod tests {
             returns: None,
             body: Box::new(body_expr),
             safety: Safety::Safe,
+            is_async: false,
         }];
 
         let [program, _header, _test] = build_ir(&defs);
@@ -1346,6 +1469,11 @@ mod tests {
     #[test]
     fn test_map_builtin_ptr_set() {
         assert_eq!(map_builtin("ptr_set"), "mvp_builtin_ptrset");
+    }
+
+    #[test]
+    fn test_map_builtin_ptr_offset() {
+        assert_eq!(map_builtin("ptr_offset"), "mvp_ptr_offset");
     }
 
     #[test]

@@ -1,10 +1,12 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::thread::JoinHandle;
 
 use crate::opcode::Opcode;
-use crate::value::Value;
+use crate::value::{MvmFuture, Value};
+use serde_json::Value as JsonValue;
 
 /// A compiled MVM function.
 #[derive(Debug, Clone)]
@@ -12,6 +14,7 @@ pub struct MvmFunction {
     pub name_idx: u32,
     pub arity: u32,
     pub locals: u32,
+    pub is_async: bool,
     pub code: Vec<u8>,
 }
 
@@ -35,7 +38,7 @@ impl MvmProgram {
         // Magic: "MVMF"
         buf.extend_from_slice(b"MVMF");
         // Version
-        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&2u32.to_le_bytes());
         // Strings
         buf.extend_from_slice(&(self.strings.len() as u32).to_le_bytes());
         for s in &self.strings {
@@ -48,6 +51,7 @@ impl MvmProgram {
             buf.extend_from_slice(&f.name_idx.to_le_bytes());
             buf.extend_from_slice(&f.arity.to_le_bytes());
             buf.extend_from_slice(&f.locals.to_le_bytes());
+            buf.push(if f.is_async { 1 } else { 0 });
             buf.extend_from_slice(&(f.code.len() as u32).to_le_bytes());
             buf.extend_from_slice(&f.code);
         }
@@ -64,8 +68,11 @@ impl MvmProgram {
         if data.len() < pos + 4 {
             return Err("Unexpected end of data (version)".into());
         }
-        let _version = u32::from_le_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]);
+        let version = u32::from_le_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]);
         pos += 4;
+        if version != 2 {
+            return Err(format!("Unsupported MVM bytecode version: {}", version));
+        }
 
         // Read strings
         if data.len() < pos + 4 {
@@ -106,13 +113,18 @@ impl MvmProgram {
             pos += 4;
             let locals = u32::from_le_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]);
             pos += 4;
+            if data.len() < pos + 1 {
+                return Err("Unexpected end of data (function is_async)".into());
+            }
+            let is_async = data[pos] != 0;
+            pos += 1;
             let code_size = u32::from_le_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]) as usize;
             pos += 4;
             if data.len() < pos + code_size {
                 return Err("Unexpected end of data (function code)".into());
             }
             let code = data[pos..pos+code_size].to_vec();
-            functions.push(MvmFunction { name_idx, arity, locals, code });
+            functions.push(MvmFunction { name_idx, arity, locals, is_async, code });
             pos += code_size;
         }
 
@@ -130,12 +142,12 @@ struct CallFrame {
     /// Number of values on the stack before this call's arguments.
     stack_base: usize,
     /// Local variables for this frame.
-    locals: Rc<RefCell<Vec<Value>>>,
+    locals: Arc<Mutex<Vec<Value>>>,
 }
 
 /// The Miva Virtual Machine.
 pub struct Mvm {
-    program: MvmProgram,
+    program: Arc<MvmProgram>,
     /// The operand stack.
     stack: Vec<Value>,
     /// Call stack.
@@ -145,7 +157,7 @@ pub struct Mvm {
     /// Current function index.
     current_func: usize,
     /// Current function's locals.
-    current_locals: Rc<RefCell<Vec<Value>>>,
+    current_locals: Arc<Mutex<Vec<Value>>>,
     /// Function index cache (name -> index).
     func_name_cache: HashMap<String, usize>,
     /// Builtin function name -> index mapping.
@@ -160,18 +172,35 @@ pub struct Mvm {
 
 impl Mvm {
     pub fn new(program: MvmProgram) -> Self {
+        Self::with_program(Arc::new(program))
+    }
+
+    /// Construct a VM that shares an already-loaded program (used when
+    /// spawning a task onto its own thread).
+    pub fn with_program(program: Arc<MvmProgram>) -> Self {
         let mut builtin_map = HashMap::new();
         let builtins = [
-            "print", "prints", "println", "printlns",
-            "error", "errors", "errorln", "errorlns",
-            "exit", "abort", "panic",
-            "string_concat", "string_length", "string_parse",
-            "string_make", "string_from", "string_get",
-            "box_new", "box_deref", "box_set",
-            "range", "to_string", "read_int", "read_line",
+            ("print", 0u8), ("prints", 1), ("println", 2), ("printlns", 3),
+            ("error", 4), ("errors", 5), ("errorln", 6), ("errorlns", 7),
+            ("exit", 8), ("abort", 9), ("panic", 10),
+            ("string_concat", 11), ("string_length", 12), ("string_parse", 13),
+            ("string_make", 14), ("string_from", 15), ("string_get", 16),
+            ("box_new", 17), ("box_deref", 18), ("box_set", 19),
+            ("range", 20), ("to_string", 21), ("read_int", 22), ("read_line", 23),
+            ("json_parse", 24), ("json_kind", 25), ("json_bool", 26),
+            ("json_number", 27), ("json_string", 28), ("json_array_len", 29),
+            ("json_array_get", 30), ("json_object_len", 31), ("json_object_key", 32),
+            ("json_object_get", 33), ("json_object_find", 34), ("json_free", 35),
+            ("json_stringify", 36),
+            ("xml_parse", 37), ("xml_kind", 38), ("xml_tag", 39),
+            ("xml_attr_count", 40), ("xml_attr_name", 41), ("xml_attr_value", 42),
+            ("xml_attr_find", 43), ("xml_child_count", 44), ("xml_child_get", 45),
+            ("xml_text", 46), ("xml_comment", 47), ("xml_cdata", 48),
+            ("xml_pi_target", 49), ("xml_pi_data", 50), ("xml_stringify", 51),
+            ("xml_free", 52),
         ];
-        for (i, name) in builtins.iter().enumerate() {
-            builtin_map.insert(name.to_string(), i as u8);
+        for (name, i) in builtins {
+            builtin_map.insert(name.to_string(), i);
         }
 
         let mut func_name_cache = HashMap::new();
@@ -186,7 +215,7 @@ impl Mvm {
             call_stack: Vec::new(),
             pc: 0,
             current_func: 0,
-            current_locals: Rc::new(RefCell::new(Vec::new())),
+            current_locals: Arc::new(Mutex::new(Vec::new())),
             func_name_cache,
             builtin_map,
             halted: false,
@@ -306,14 +335,14 @@ impl Mvm {
         // Setup new function context
         let _old_locals = std::mem::replace(
             &mut self.current_locals,
-            Rc::new(RefCell::new(Vec::with_capacity(locals_count as usize))),
+            Arc::new(Mutex::new(Vec::with_capacity(locals_count as usize))),
         );
         let _old_func = std::mem::replace(&mut self.current_func, func_idx);
         self.pc = 0;
 
         // Pop args from stack into locals
         {
-            let mut locals = self.current_locals.borrow_mut();
+            let mut locals = self.current_locals.lock().unwrap();
             // First arity locals are function parameters (values on stack)
             // Pop from stack into locals in reverse order
             let arg_base = self.stack.len() - arity as usize;
@@ -344,6 +373,13 @@ impl Mvm {
         }
 
         result
+    }
+
+    /// Run a function to completion and return its result value. Used by the
+    /// async spawn path to evaluate a task on its own thread.
+    fn run_function(&mut self, func_idx: usize, args: Vec<Value>) -> Result<Value, String> {
+        self.call_internal(func_idx, args)?;
+        Ok(self.pop())
     }
 
     /// Main execution loop.
@@ -403,7 +439,7 @@ impl Mvm {
                     if idx >= self.program.strings.len() {
                         return Err(format!("String index {} out of bounds", idx));
                     }
-                    self.push(Value::String(Rc::new(self.program.strings[idx].clone())));
+                    self.push(Value::String(Arc::new(self.program.strings[idx].clone())));
                 }
                 Opcode::PushNull => self.push(Value::Null),
                 Opcode::PushUnit => self.push(Value::Unit),
@@ -428,14 +464,14 @@ impl Mvm {
                         vals.push(self.pop());
                     }
                     vals.reverse();
-                    self.push(Value::Array(Rc::new(vals)));
+                    self.push(Value::Array(Arc::new(vals)));
                 }
 
                 Opcode::LoadLocal => {
                     let idx = Self::read_u32(code, self.pc) as usize;
                     self.pc += 4;
                     let val = {
-                        let locals = self.current_locals.borrow();
+                        let locals = self.current_locals.lock().unwrap();
                         if idx >= locals.len() {
                             let func = &self.program.functions[self.current_func];
                             return Err(format!("Local variable index {} out of bounds (len={}) in function '{}' at pc={}", idx, locals.len(), func.name(&self.program.strings), self.pc - 5));
@@ -449,7 +485,7 @@ impl Mvm {
                     self.pc += 4;
                     let val = self.pop();
                     {
-                        let mut locals = self.current_locals.borrow_mut();
+                        let mut locals = self.current_locals.lock().unwrap();
                         if idx >= locals.len() {
                             let func = &self.program.functions[self.current_func];
                             return Err(format!("Local variable index {} out of bounds (len={}) in function '{}' at pc={}", idx, locals.len(), func.name(&self.program.strings), self.pc - 5));
@@ -465,13 +501,13 @@ impl Mvm {
                     match (&a, &b) {
                         (Value::Int(ai), Value::Int(bi)) => self.push(Value::Int(ai + bi)),
                         (Value::String(as_), Value::String(bs_)) => {
-                            self.push(Value::String(Rc::new(format!("{}{}", as_, bs_))));
+                            self.push(Value::String(Arc::new(format!("{}{}", as_, bs_))));
                         }
                         (Value::String(as_), Value::Int(bi)) => {
-                            self.push(Value::String(Rc::new(format!("{}{}", as_, bi))));
+                            self.push(Value::String(Arc::new(format!("{}{}", as_, bi))));
                         }
                         (Value::Int(ai), Value::String(bs_)) => {
-                            self.push(Value::String(Rc::new(format!("{}{}", ai, bs_))));
+                            self.push(Value::String(Arc::new(format!("{}{}", ai, bs_))));
                         }
                         _ => {
                             return Err(format!("Cannot add {} and {}", a.type_name(), b.type_name()));
@@ -570,49 +606,75 @@ impl Mvm {
                 Opcode::Call => {
                     let func_idx = Self::read_u32(code, self.pc) as usize;
                     self.pc += 4;
-                    let (arity, call_locals_count) = {
+                    let (arity, call_locals_count, is_async) = {
                         let f = &self.program.functions[func_idx];
-                        (f.arity as usize, f.locals as usize)
+                        (f.arity as usize, f.locals as usize, f.is_async)
                     };
 
-                    // Collect args from stack
-                    let arg_start = if self.stack.len() >= arity { self.stack.len() - arity } else { 0 };
-                    let args: Vec<Value> = self.stack.drain(arg_start..).collect();
+                    if is_async {
+                        // Collect args from stack
+                        let arg_start = if self.stack.len() >= arity { self.stack.len() - arity } else { 0 };
+                        let args: Vec<Value> = self.stack.drain(arg_start..).collect();
 
-                    // Save state and call
-                    let frame = CallFrame {
-                        func_idx: self.current_func,
-                        return_pc: self.pc,
-                        stack_base: 0,
-                        locals: self.current_locals.clone(),
-                    };
+                        // Spawn the async task on its own OS thread. The future
+                        // resolves (joins) when awaited.
+                        let prog = self.program.clone();
+                        let result = Arc::new(Mutex::new(None));
+                        let result_thread = result.clone();
+                        let handle = std::thread::spawn(move || {
+                            let mut vm = Mvm::with_program(prog);
+                            match vm.run_function(func_idx, args) {
+                                Ok(v) => { *result_thread.lock().unwrap() = Some(v); }
+                                Err(e) => {
+                                    *result_thread.lock().unwrap() =
+                                        Some(Value::String(Arc::new(format!("async error: {}", e))));
+                                }
+                            }
+                        });
+                        self.push(Value::Future(Arc::new(MvmFuture {
+                            result,
+                            handle: Mutex::new(Some(handle)),
+                        })));
+                    } else {
+                        // Collect args from stack
+                        let arg_start = if self.stack.len() >= arity { self.stack.len() - arity } else { 0 };
+                        let args: Vec<Value> = self.stack.drain(arg_start..).collect();
 
-                    self.current_func = func_idx;
-                    self.current_locals = Rc::new(RefCell::new(Vec::with_capacity(call_locals_count)));
-                    self.pc = 0;
+                        // Save state and call
+                        let frame = CallFrame {
+                            func_idx: self.current_func,
+                            return_pc: self.pc,
+                            stack_base: 0,
+                            locals: self.current_locals.clone(),
+                        };
 
-                    // Set up locals: args first, then unit-filled
-                    {
-                        let mut locals = self.current_locals.borrow_mut();
-                        locals.extend(args);
-                        while locals.len() < call_locals_count {
-                            locals.push(Value::Unit);
+                        self.current_func = func_idx;
+                        self.current_locals = Arc::new(Mutex::new(Vec::with_capacity(call_locals_count)));
+                        self.pc = 0;
+
+                        // Set up locals: args first, then unit-filled
+                        {
+                            let mut locals = self.current_locals.lock().unwrap();
+                            locals.extend(args);
+                            while locals.len() < call_locals_count {
+                                locals.push(Value::Unit);
+                            }
                         }
-                    }
 
-                    self.call_stack.push(frame);
+                        self.call_stack.push(frame);
 
-                    // Execute the called function
-                    let call_result = self.execute_loop();
-                    if self.halted {
-                        return call_result;
-                    }
+                        // Execute the called function
+                        let call_result = self.execute_loop();
+                        if self.halted {
+                            return call_result;
+                        }
 
-                    // Restore caller context
-                    if let Some(prev_frame) = self.call_stack.pop() {
-                        self.current_func = prev_frame.func_idx;
-                        self.current_locals = prev_frame.locals;
-                        self.pc = prev_frame.return_pc;
+                        // Restore caller context
+                        if let Some(prev_frame) = self.call_stack.pop() {
+                            self.current_func = prev_frame.func_idx;
+                            self.current_locals = prev_frame.locals;
+                            self.pc = prev_frame.return_pc;
+                        }
                     }
                 }
                 Opcode::CallBuiltin => {
@@ -640,7 +702,7 @@ impl Mvm {
                         arr.push(self.pop());
                     }
                     arr.reverse();
-                    self.push(Value::MutableArray(Rc::new(RefCell::new(arr))));
+                    self.push(Value::MutableArray(Arc::new(Mutex::new(arr))));
                 }
                 Opcode::ArrayGet => {
                     let index = self.pop().as_i64().ok_or("ArrayGet expected int index")? as usize;
@@ -650,7 +712,7 @@ impl Mvm {
                             self.push(arr[index].clone());
                         }
                         Value::MutableArray(arr) => {
-                            self.push(arr.borrow()[index].clone());
+                            self.push(arr.lock().unwrap()[index].clone());
                         }
                         v => return Err(format!("ArrayGet expected array, got {}", v.type_name())),
                     }
@@ -661,7 +723,7 @@ impl Mvm {
                     let arr_val = self.pop();
                     match arr_val {
                         Value::MutableArray(arr) => {
-                            arr.borrow_mut()[index] = value;
+                            arr.lock().unwrap()[index] = value;
                         }
                         v => return Err(format!("ArraySet expected mutable array, got {}", v.type_name())),
                     }
@@ -671,7 +733,7 @@ impl Mvm {
                     let arr_val = self.pop();
                     let len = match arr_val {
                         Value::Array(arr) => arr.len(),
-                        Value::MutableArray(arr) => arr.borrow().len(),
+                        Value::MutableArray(arr) => arr.lock().unwrap().len(),
                         v => return Err(format!("ArrayLen expected array, got {}", v.type_name())),
                     };
                     self.push(Value::Int(len as i64));
@@ -681,7 +743,7 @@ impl Mvm {
                     let arr_val = self.pop();
                     match arr_val {
                         Value::MutableArray(arr) => {
-                            arr.borrow_mut().push(val);
+                            arr.lock().unwrap().push(val);
                         }
                         v => return Err(format!("ArrayPush expected mutable array, got {}", v.type_name())),
                     }
@@ -741,12 +803,12 @@ impl Mvm {
                 // Box operations
                 Opcode::BoxNew => {
                     let val = self.pop();
-                    self.push(Value::Boxed(Rc::new(RefCell::new(val))));
+                    self.push(Value::Boxed(Arc::new(Mutex::new(val))));
                 }
                 Opcode::BoxGet => {
                     let box_val = self.pop();
                     match box_val {
-                        Value::Boxed(b) => self.push(b.borrow().clone()),
+                        Value::Boxed(b) => self.push(b.lock().unwrap().clone()),
                         v => return Err(format!("BoxGet expected box, got {}", v.type_name())),
                     }
                 }
@@ -754,7 +816,7 @@ impl Mvm {
                     let val = self.pop();
                     let box_val = self.pop();
                     match box_val {
-                        Value::Boxed(b) => { *b.borrow_mut() = val; }
+                        Value::Boxed(b) => { *b.lock().unwrap() = val; }
                         v => return Err(format!("BoxSet expected box, got {}", v.type_name())),
                     }
                     self.push(Value::Unit);
@@ -770,7 +832,7 @@ impl Mvm {
                     let ptr_val = self.pop();
                     match ptr_val {
                         Value::Ptr(idx, locals) => {
-                            let val = locals.borrow()[idx].clone();
+                            let val = locals.lock().unwrap()[idx].clone();
                             self.push(val);
                         }
                         v => return Err(format!("PtrLoad expected ptr, got {}", v.type_name())),
@@ -781,7 +843,7 @@ impl Mvm {
                     let ptr_val = self.pop();
                     match ptr_val {
                         Value::Ptr(idx, locals) => {
-                            locals.borrow_mut()[idx] = val;
+                            locals.lock().unwrap()[idx] = val;
                         }
                         v => return Err(format!("PtrStore expected ptr, got {}", v.type_name())),
                     }
@@ -829,7 +891,7 @@ impl Mvm {
                 Opcode::StrConcat => {
                     let b = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("StrConcat expected string, got {}", v.type_name())) };
                     let a = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("StrConcat expected string, got {}", v.type_name())) };
-                    self.push(Value::String(Rc::new(a + &b)));
+                    self.push(Value::String(Arc::new(a + &b)));
                 }
                 Opcode::StrLen => {
                     match self.pop() {
@@ -851,14 +913,14 @@ impl Mvm {
                     match self.pop() {
                         Value::Char(c) => {
                             let s: String = std::iter::repeat(c as char).take(len).collect();
-                            self.push(Value::String(Rc::new(s)));
+                            self.push(Value::String(Arc::new(s)));
                         }
                         v => return Err(format!("StrMake expected char, got {}", v.type_name())),
                     }
                 }
                 Opcode::StrFrom => {
                     let v = self.pop();
-                    self.push(Value::String(Rc::new(v.display())));
+                    self.push(Value::String(Arc::new(v.display())));
                 }
                 Opcode::StrGet => {
                     let idx = self.pop().as_i64().ok_or("StrGet expected int index")? as usize;
@@ -927,7 +989,7 @@ impl Mvm {
                     let mut line = String::new();
                     io::stdin().lock().read_line(&mut line).ok();
                     if line.ends_with('\n') { line.pop(); }
-                    self.push(Value::String(Rc::new(line)));
+                    self.push(Value::String(Arc::new(line)));
                 }
 
                 // Range / Iteration
@@ -969,7 +1031,7 @@ impl Mvm {
                         eprintln!("  [{}] {} ({})", i, v.display(), v.type_name());
                     }
                     eprintln!("Locals:");
-                    let locals = self.current_locals.borrow();
+                    let locals = self.current_locals.lock().unwrap();
                     for (i, v) in locals.iter().enumerate() {
                         eprintln!("  [{}] {} ({})", i, v.display(), v.type_name());
                     }
@@ -978,6 +1040,21 @@ impl Mvm {
                 Opcode::Clone => {
                     let v = self.peek().clone();
                     self.push(v);
+                }
+                Opcode::Await => {
+                    let v = self.pop();
+                    match v {
+                        Value::Future(f) => {
+                            // Join the task thread, then take its result.
+                            let handle = f.handle.lock().unwrap().take();
+                            if let Some(h) = handle {
+                                let _ = h.join();
+                            }
+                            let result = f.result.lock().unwrap().take();
+                            self.push(result.unwrap_or(Value::Unit));
+                        }
+                        other => self.push(other),
+                    }
                 }
             }
         }
@@ -1011,7 +1088,7 @@ impl Mvm {
             11 => {
                 let b = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("string_concat expected string, got {}", v.type_name())) };
                 let a = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("string_concat expected string, got {}", v.type_name())) };
-                self.push(Value::String(Rc::new(a + &b)));
+                self.push(Value::String(Arc::new(a + &b)));
             }
             // string_length
             12 => {
@@ -1024,12 +1101,12 @@ impl Mvm {
             // string_make
             14 => {
                 let len = self.pop().as_i64().ok_or("string_make expected int")? as usize;
-                match self.pop() { Value::Char(c) => { let s: String = std::iter::repeat(c as char).take(len).collect(); self.push(Value::String(Rc::new(s))); } v => return Err(format!("string_make expected char, got {}", v.type_name())) };
+                match self.pop() { Value::Char(c) => { let s: String = std::iter::repeat(c as char).take(len).collect(); self.push(Value::String(Arc::new(s))); } v => return Err(format!("string_make expected char, got {}", v.type_name())) };
             }
             // string_from (to_string)
             15 => {
                 let v = self.pop();
-                self.push(Value::String(Rc::new(v.display())));
+                self.push(Value::String(Arc::new(v.display())));
             }
             // string_get
             16 => {
@@ -1037,11 +1114,11 @@ impl Mvm {
                 match self.pop() { Value::String(s) => { let c = s.chars().nth(idx).unwrap_or('\0'); self.push(Value::Char(c as u8)); } v => return Err(format!("string_get expected string, got {}", v.type_name())) };
             }
             // box_new
-            17 => { let v = self.pop(); self.push(Value::Boxed(Rc::new(RefCell::new(v)))); }
+            17 => { let v = self.pop(); self.push(Value::Boxed(Arc::new(Mutex::new(v)))); }
             // box_deref
-            18 => { match self.pop() { Value::Boxed(b) => self.push(b.borrow().clone()), v => return Err(format!("box_deref expected box, got {}", v.type_name())) }; }
+            18 => { match self.pop() { Value::Boxed(b) => self.push(b.lock().unwrap().clone()), v => return Err(format!("box_deref expected box, got {}", v.type_name())) }; }
             // box_set
-            19 => { let val = self.pop(); match self.pop() { Value::Boxed(b) => { *b.borrow_mut() = val; self.push(Value::Unit); } v => return Err(format!("box_set expected box, got {}", v.type_name())) }; }
+            19 => { let val = self.pop(); match self.pop() { Value::Boxed(b) => { *b.lock().unwrap() = val; self.push(Value::Unit); } v => return Err(format!("box_set expected box, got {}", v.type_name())) }; }
             // range
             20 => {
                 let end = self.pop().as_i64().ok_or("range expected int end")?;
@@ -1057,7 +1134,7 @@ impl Mvm {
             // to_string (same as string_from)
             21 => {
                 let v = self.pop();
-                self.push(Value::String(Rc::new(v.display())));
+                self.push(Value::String(Arc::new(v.display())));
             }
             // read_int
             22 => {
@@ -1071,7 +1148,326 @@ impl Mvm {
                 let mut line = String::new();
                 io::stdin().lock().read_line(&mut line).ok();
                 if line.ends_with('\n') { line.pop(); }
-                self.push(Value::String(Rc::new(line)));
+                self.push(Value::String(Arc::new(line)));
+            }
+            // json_parse
+            24 => {
+                let s = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("json_parse expected string, got {}", v.type_name())) };
+                let val = serde_json::from_str(&s).map_err(|e| format!("JSON parse error: {}", e))?;
+                self.push(Value::Json(Box::new(val)));
+            }
+            // json_kind
+            25 => {
+                let v = self.pop();
+                let kind = match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Null => 0,
+                        JsonValue::Bool(_) => 1,
+                        JsonValue::Number(_) => 2,
+                        JsonValue::String(_) => 3,
+                        JsonValue::Array(_) => 4,
+                        JsonValue::Object(_) => 5,
+                    },
+                    _ => -1,
+                };
+                self.push(Value::Int(kind));
+            }
+            // json_bool
+            26 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Bool(b) => self.push(Value::Bool(*b)),
+                        _ => return Err("json_bool: value is not a bool".into()),
+                    },
+                    _ => return Err("json_bool: expected json value".into()),
+                }
+            }
+            // json_number
+            27 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Number(n) => {
+                            let f = n.as_f64().unwrap_or(0.0);
+                            self.push(Value::Float64(f));
+                        }
+                        _ => return Err("json_number: value is not a number".into()),
+                    },
+                    _ => return Err("json_number: expected json value".into()),
+                }
+            }
+            // json_string
+            28 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::String(s) => self.push(Value::String(Arc::new(s.clone()))),
+                        _ => return Err("json_string: value is not a string".into()),
+                    },
+                    _ => return Err("json_string: expected json value".into()),
+                }
+            }
+            // json_array_len
+            29 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Array(a) => self.push(Value::Int(a.len() as i64)),
+                        _ => self.push(Value::Int(0)),
+                    },
+                    _ => return Err("json_array_len: expected json value".into()),
+                }
+            }
+            // json_array_get
+            30 => {
+                let idx = self.pop().as_i64().ok_or("json_array_get expected int")? as usize;
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Array(a) => {
+                            if idx >= a.len() {
+                                return Err(format!("json_array_get: index {} out of bounds (len={})", idx, a.len()));
+                            }
+                            self.push(Value::Json(Box::new(a[idx].clone())));
+                        }
+                        _ => return Err("json_array_get: value is not an array".into()),
+                    },
+                    _ => return Err("json_array_get: expected json value".into()),
+                }
+            }
+            // json_object_len
+            31 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => self.push(Value::Int(o.len() as i64)),
+                        _ => self.push(Value::Int(0)),
+                    },
+                    _ => return Err("json_object_len: expected json value".into()),
+                }
+            }
+            // json_object_key
+            32 => {
+                let idx = self.pop().as_i64().ok_or("json_object_key expected int")? as usize;
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => {
+                            if idx >= o.len() {
+                                return Err(format!("json_object_key: index {} out of bounds (len={})", idx, o.len()));
+                            }
+                            let key = o.keys().nth(idx).unwrap().clone();
+                            self.push(Value::String(Arc::new(key)));
+                        }
+                        _ => return Err("json_object_key: value is not an object".into()),
+                    },
+                    _ => return Err("json_object_key: expected json value".into()),
+                }
+            }
+            // json_object_get
+            33 => {
+                let idx = self.pop().as_i64().ok_or("json_object_get expected int")? as usize;
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => {
+                            if idx >= o.len() {
+                                return Err(format!("json_object_get: index {} out of bounds (len={})", idx, o.len()));
+                            }
+                            let val = o.values().nth(idx).unwrap().clone();
+                            self.push(Value::Json(Box::new(val)));
+                        }
+                        _ => return Err("json_object_get: value is not an object".into()),
+                    },
+                    _ => return Err("json_object_get: expected json value".into()),
+                }
+            }
+            // json_object_find
+            34 => {
+                let key = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("json_object_find expected string key, got {}", v.type_name())) };
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => {
+                            if let Some(val) = o.get(&key) {
+                                self.push(Value::Json(Box::new(val.clone())));
+                            } else {
+                                self.push(Value::Json(Box::new(JsonValue::Null)));
+                            }
+                        }
+                        _ => return Err("json_object_find: value is not an object".into()),
+                    },
+                    _ => return Err("json_object_find: expected json value".into()),
+                }
+            }
+            // json_free
+            35 => {
+                let _v = self.pop();
+                // json_free is a no-op in the MVM because Value::Json owns its data
+                self.push(Value::Unit);
+            }
+            // json_stringify
+            36 => {
+                let v = self.pop();
+                let s = match &v {
+                    Value::Json(j) => j.to_string(),
+                    _ => return Err("json_stringify: expected json value".into()),
+                };
+                self.push(Value::String(Arc::new(s)));
+            }
+            // xml_parse
+            37 => {
+                let s = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("xml_parse expected string, got {}", v.type_name())) };
+                match crate::xml::parse(&s) {
+                    Ok(node) => self.push(Value::Xml(node)),
+                    Err(e) => return Err(format!("XML parse error: {}", e)),
+                }
+            }
+            // xml_kind
+            38 => {
+                let kind = match self.pop() {
+                    Value::Xml(n) => n.kind.as_u8() as i64,
+                    v => return Err(format!("xml_kind expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::Int(kind));
+            }
+            // xml_tag
+            39 => {
+                let tag = match self.pop() {
+                    Value::Xml(n) => {
+                        if n.kind != crate::xml::XmlKind::Element { return Err("xml_tag: value is not an element".into()); }
+                        n.tag.clone()
+                    }
+                    v => return Err(format!("xml_tag expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::String(Arc::new(tag)));
+            }
+            // xml_attr_count
+            40 => {
+                let count = match self.pop() {
+                    Value::Xml(n) => {
+                        if n.kind != crate::xml::XmlKind::Element { 0 } else { n.attrs.len() as i64 }
+                    }
+                    v => return Err(format!("xml_attr_count expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::Int(count));
+            }
+            // xml_attr_name
+            41 => {
+                let idx = self.pop().as_i64().ok_or("xml_attr_name expected int")? as usize;
+                let name = match self.pop() {
+                    Value::Xml(n) => {
+                        if n.kind != crate::xml::XmlKind::Element { return Err("xml_attr_name: value is not an element".into()); }
+                        if idx >= n.attrs.len() { return Err(format!("xml_attr_name: index {} out of bounds (len={})", idx, n.attrs.len())); }
+                        n.attrs[idx].0.clone()
+                    }
+                    v => return Err(format!("xml_attr_name expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::String(Arc::new(name)));
+            }
+            // xml_attr_value
+            42 => {
+                let idx = self.pop().as_i64().ok_or("xml_attr_value expected int")? as usize;
+                let val = match self.pop() {
+                    Value::Xml(n) => {
+                        if n.kind != crate::xml::XmlKind::Element { return Err("xml_attr_value: value is not an element".into()); }
+                        if idx >= n.attrs.len() { return Err(format!("xml_attr_value: index {} out of bounds (len={})", idx, n.attrs.len())); }
+                        n.attrs[idx].1.clone()
+                    }
+                    v => return Err(format!("xml_attr_value expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::String(Arc::new(val)));
+            }
+            // xml_attr_find
+            43 => {
+                let name = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("xml_attr_find expected string, got {}", v.type_name())) };
+                let val = match self.pop() {
+                    Value::Xml(n) => {
+                        if n.kind != crate::xml::XmlKind::Element { String::new() }
+                        else { n.attrs.iter().find(|(k, _)| k == &name).map(|(_, v)| v.clone()).unwrap_or_default() }
+                    }
+                    v => return Err(format!("xml_attr_find expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::String(Arc::new(val)));
+            }
+            // xml_child_count
+            44 => {
+                let count = match self.pop() {
+                    Value::Xml(n) => {
+                        if n.kind == crate::xml::XmlKind::Element || n.kind == crate::xml::XmlKind::Document { n.children.len() as i64 } else { 0 }
+                    }
+                    v => return Err(format!("xml_child_count expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::Int(count));
+            }
+            // xml_child_get
+            45 => {
+                let idx = self.pop().as_i64().ok_or("xml_child_get expected int")? as usize;
+                match self.pop() {
+                    Value::Xml(n) => {
+                        if n.kind != crate::xml::XmlKind::Element && n.kind != crate::xml::XmlKind::Document {
+                            return Err("xml_child_get: value is not an element or document".into());
+                        }
+                        if idx >= n.children.len() { return Err(format!("xml_child_get: index {} out of bounds (len={})", idx, n.children.len())); }
+                        self.push(Value::Xml(n.children[idx].clone()));
+                    }
+                    v => return Err(format!("xml_child_get expected xml value, got {}", v.type_name())),
+                }
+            }
+            // xml_text
+            46 => {
+                let text = match self.pop() {
+                    Value::Xml(n) => n.text.clone(),
+                    v => return Err(format!("xml_text expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::String(Arc::new(text)));
+            }
+            // xml_comment
+            47 => {
+                let text = match self.pop() {
+                    Value::Xml(n) => n.text.clone(),
+                    v => return Err(format!("xml_comment expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::String(Arc::new(text)));
+            }
+            // xml_cdata
+            48 => {
+                let text = match self.pop() {
+                    Value::Xml(n) => n.text.clone(),
+                    v => return Err(format!("xml_cdata expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::String(Arc::new(text)));
+            }
+            // xml_pi_target
+            49 => {
+                let t = match self.pop() {
+                    Value::Xml(n) => n.pi_target.clone(),
+                    v => return Err(format!("xml_pi_target expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::String(Arc::new(t)));
+            }
+            // xml_pi_data
+            50 => {
+                let d = match self.pop() {
+                    Value::Xml(n) => n.pi_data.clone(),
+                    v => return Err(format!("xml_pi_data expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::String(Arc::new(d)));
+            }
+            // xml_stringify
+            51 => {
+                let s = match self.pop() {
+                    Value::Xml(n) => crate::xml::stringify(&n),
+                    v => return Err(format!("xml_stringify expected xml value, got {}", v.type_name())),
+                };
+                self.push(Value::String(Arc::new(s)));
+            }
+            // xml_free
+            52 => {
+                let _v = self.pop();
+                // xml_free is a no-op in the MVM because Value::Xml owns its data
+                self.push(Value::Unit);
             }
             _ => return Err(format!("Unknown builtin index: {}", idx)),
         }

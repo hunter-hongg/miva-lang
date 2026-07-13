@@ -31,6 +31,9 @@ fn normalize_typ(typ: &Typ, type_params: &[String]) -> Typ {
         Typ::TBox { of } => Typ::TBox {
             of: Box::new(normalize_typ(of, type_params)),
         },
+        Typ::TFuture { of } => Typ::TFuture {
+            of: Box::new(normalize_typ(of, type_params)),
+        },
         _ => typ.clone(),
     }
 }
@@ -79,6 +82,9 @@ fn resolve_type(typ: &Typ, subst: &HashMap<String, Typ>) -> Typ {
             to: Box::new(resolve_type(to, subst)),
         },
         Typ::TBox { of } => Typ::TBox {
+            of: Box::new(resolve_type(of, subst)),
+        },
+        Typ::TFuture { of } => Typ::TFuture {
             of: Box::new(resolve_type(of, subst)),
         },
         _ => typ.clone(),
@@ -141,6 +147,7 @@ fn types_equal(a: &Typ, b: &Typ) -> bool {
         (Typ::TArray { of: o1 }, Typ::TArray { of: o2 }) => types_equal(o1, o2),
         (Typ::TPtr { to: t1 }, Typ::TPtr { to: t2 }) => types_equal(t1, t2),
         (Typ::TBox { of: o1 }, Typ::TBox { of: o2 }) => types_equal(o1, o2),
+        (Typ::TFuture { of: o1 }, Typ::TFuture { of: o2 }) => types_equal(o1, o2),
         (Typ::TGenericParam { name: n1 }, Typ::TGenericParam { name: n2 }) => n1 == n2,
         _ => a == b,
     }
@@ -159,8 +166,21 @@ fn builtin_return_typ(name: &str) -> Option<Typ> {
         "range" => Some(Typ::TArray {
             of: Box::new(Typ::TInt),
         }),
-        "ptr_alloc" | "ptr_realloc" => Some(Typ::TPtrAny),
+        "ptr_alloc" | "ptr_realloc" | "ptr_offset" => Some(Typ::TPtrAny),
         "box_new" | "box_deref" => None,
+        "json_parse" | "json_array_get" | "json_object_get" | "json_object_find" => {
+            Some(Typ::TPtrAny)
+        },
+        "json_kind" | "json_array_len" | "json_object_len" => Some(Typ::TInt),
+        "json_bool" => Some(Typ::TBool),
+        "json_number" => Some(Typ::TFloat64),
+        "json_string" | "json_stringify" => Some(Typ::TString),
+        "xml_parse" | "xml_child_get" => Some(Typ::TPtrAny),
+        "xml_kind" | "xml_attr_count" | "xml_child_count" => Some(Typ::TInt),
+        "xml_tag" | "xml_attr_name" | "xml_attr_value" | "xml_attr_find" | "xml_text"
+        | "xml_comment" | "xml_cdata" | "xml_pi_target" | "xml_pi_data"
+        | "xml_stringify" => Some(Typ::TString),
+        "xml_free" => Some(Typ::TNull),
         _ => None,
     }
 }
@@ -779,6 +799,16 @@ fn infer_type(
                             }
                         }
                     }
+                    "await" => {
+                        if args.is_empty() {
+                            Typ::TNull
+                        } else {
+                            match &arg_types[0] {
+                                Typ::TFuture { of } => (**of).clone(),
+                                _ => Typ::TInvalid,
+                            }
+                        }
+                    }
                     name => builtin_return_typ(name).unwrap_or(Typ::TNull),
                 }
             };
@@ -1197,7 +1227,26 @@ fn infer_type(
 }
 
 pub fn check_program(defs: &[Def]) -> Vec<Error> {
-    let func_sigs = build_func_sigs(defs);
+    check_program_with(defs, &std::collections::HashMap::new())
+}
+
+/// Like [`check_program`], but also consults `global` — a map of
+/// fully-qualified call paths (e.g. `"mvp_std.json.parse"`) to their
+/// signatures, collected from every module in the build. This lets
+/// module-qualified cross-module calls (`std.json.parse`, `l2.helper.foo`,
+/// ...) resolve during type checking instead of falling back to `TNull`.
+pub fn check_program_with(
+    defs: &[Def],
+    global: &HashMap<String, (Vec<String>, Vec<Param>, Option<Typ>)>,
+) -> Vec<Error> {
+    let mut func_sigs = build_func_sigs(defs);
+    // Merge cross-module signatures (qualified keys). Local (per-file)
+    // signatures take precedence on collisions.
+    for (k, v) in global {
+        if !func_sigs.contains_key(k) {
+            func_sigs.insert(k.clone(), v.clone());
+        }
+    }
     let (structs, struct_type_params) = build_struct_map(defs);
     let has_imports = defs.iter().any(|d| {
         matches!(d, Def::SImport { .. })
@@ -1208,6 +1257,81 @@ pub fn check_program(defs: &[Def]) -> Vec<Error> {
 
     for def in defs {
         match def {
+            Def::DFunc {
+                name,
+                type_params,
+                params,
+                returns,
+                body,
+                is_async,
+                ..
+            } if *is_async => {
+                let normalized_params = if !type_params.is_empty() {
+                    normalize_params(params, type_params)
+                } else {
+                    params.clone()
+                };
+                // An async function must return a future[T]. The body itself is
+                // checked against the inner type T.
+                let expected_inner: Option<Typ> = match returns {
+                    Some(Typ::TFuture { of }) => Some((**of).clone()),
+                    Some(_) => {
+                        errs.push(Error::new(
+                            "E0020",
+                            &loc_of(body),
+                            "async function must return future[T]; declared return type is not a future",
+                        ));
+                        None
+                    }
+                    None => None,
+                };
+                let mut env = TypeEnv {
+                    vars: HashMap::new(),
+                };
+                for p in &normalized_params {
+                    match p {
+                        Param::PRef { name, typ } | Param::POwn { name, typ } => {
+                            env.vars.insert(name.clone(), typ.clone());
+                        }
+                    }
+                }
+                let (body_t, mut fun_errs) = infer_type(
+                    &mut env,
+                    &func_sigs,
+                    &structs,
+                    &struct_type_params,
+                    &expected_inner,
+                    body,
+                );
+                errs.append(&mut fun_errs);
+                if let Some(ref inner) = expected_inner {
+                    if !matches!(body_t, Typ::TNull) && !types_equal(inner, &body_t) {
+                        errs.push(Error::new(
+                            "E0017",
+                            &loc_of(body),
+                            &format!(
+                                "async function body has type {:?} but declared future element type is {:?}",
+                                body_t, inner
+                            ),
+                        ));
+                    }
+                }
+                // Callers see the function as returning future[inner]: a `return`
+                // statement makes the block infer to TNull, so do not derive the
+                // future element from the (null) body type.
+                let eff = match &expected_inner {
+                    Some(inner) => Typ::TFuture {
+                        of: Box::new(inner.clone()),
+                    },
+                    None => Typ::TFuture {
+                        of: Box::new(body_t.clone()),
+                    },
+                };
+                func_sigs.insert(
+                    name.clone(),
+                    (type_params.clone(), normalized_params, Some(eff)),
+                );
+            }
             Def::DFunc {
                 name: _,
                 type_params,
@@ -1312,6 +1436,7 @@ mod tests {
             returns,
             body: Box::new(body),
             safety,
+            is_async: false,
         }
     }
 
@@ -2442,6 +2567,7 @@ mod tests {
                     name: "x".to_string(),
                 }),
                 safety: Safety::Safe,
+                is_async: false,
             },
             make_func(
                 "main",
@@ -2485,6 +2611,7 @@ mod tests {
                     name: "x".to_string(),
                 }),
                 safety: Safety::Safe,
+                is_async: false,
             },
             make_func(
                 "main",
@@ -2528,6 +2655,7 @@ mod tests {
                     name: "x".to_string(),
                 }),
                 safety: Safety::Safe,
+                is_async: false,
             },
             make_func(
                 "main",

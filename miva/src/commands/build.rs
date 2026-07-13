@@ -6,7 +6,7 @@ use std::process::Command;
 use anyhow::Result;
 
 use super::{color, dependency_graph::DependencyGraph, env, frontend, lock};
-use crate::ast::Def;
+use crate::ast::{Def, Param, Safety, Typ};
 use crate::codegen;
 use crate::codegen::Backend;
 use crate::commands::clean;
@@ -231,6 +231,8 @@ fn compile_file_to_src(
     macro_table: &macro_expand::MacroTable,
     backend: Backend,
     func_sigs: &std::collections::HashMap<String, crate::codegen::FuncSig>,
+    global_type_sigs: &std::collections::HashMap<String, (Vec<String>, Vec<Param>, Option<Typ>)>,
+    global_safety: &std::collections::HashMap<String, Safety>,
 ) -> Result<(PathBuf, bool)> {
     let cache_key = make_cache_key(file, std_path);
     let ext = backend.extension();
@@ -251,7 +253,7 @@ fn compile_file_to_src(
 
     let source = std::fs::read_to_string(file).unwrap_or_default();
 
-    let sem_errors = semantic::check_program(&defs);
+    let sem_errors = semantic::check_program_with(&defs, global_safety);
     if !sem_errors.is_empty() {
         for err in &sem_errors {
             eprintln!(
@@ -265,7 +267,7 @@ fn compile_file_to_src(
         anyhow::bail!("semantic errors found");
     }
 
-    let type_errors = typecheck::check_program(&defs);
+    let type_errors = typecheck::check_program_with(&defs, global_type_sigs);
     if !type_errors.is_empty() {
         for err in &type_errors {
             eprintln!(
@@ -421,7 +423,9 @@ fn compile_src_to_obj(
                         eprintln!("{}", line);
                     }
                 }
-                clean::exec(false)?;
+                if !env::get_keep_cpp() {
+                    clean::exec(false)?;
+                }
                 std::process::exit(1);
             }
 
@@ -448,7 +452,9 @@ fn compile_src_to_obj(
                         eprintln!("{}", line);
                     }
                 }
-                clean::exec(false)?;
+                if !env::get_keep_cpp() {
+                    clean::exec(false)?;
+                }
                 std::process::exit(1);
             }
 
@@ -621,23 +627,101 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
 
     // Phase 0.5: Collect function signatures from all files (cross-file type info)
     let mut all_func_sigs = std::collections::HashMap::new();
+    // Qualified (module-prefixed) signatures used to resolve cross-module
+    // calls during per-file type checking, e.g. `mvp_std.json.parse`.
+    let mut global_type_sigs: std::collections::HashMap<
+        String,
+        (Vec<String>, Vec<Param>, Option<Typ>),
+    > = std::collections::HashMap::new();
+    // Qualified (module-prefixed) safety levels used to enforce the "cannot
+    // call unsafe function from safe function" rule across module boundaries,
+    // e.g. `mvp_std.json.as_string` -> unsafe. Mirrors `global_type_sigs`.
+    let mut global_safety: std::collections::HashMap<String, Safety> =
+        std::collections::HashMap::new();
+    // Project name is used to qualify local (non-std) module calls the same
+    // way the frontend does (see `util::process_call_path` / import paths).
+    let pkg_name = name.clone();
     for file in &files {
         let json_str = frontend::run_frontend(&frontend, &frontend_work_dir, file)?;
         let ast = json_ast::from_str(&json_str)
             .map_err(|e| anyhow::anyhow!("Failed to parse JSON AST from {}: {}", file, e))?;
         let defs = macro_expand::expand_macros(&ast.defs, &macro_table)?;
+        // Module name of this file (used to qualify its function signatures).
+        let module_name = defs
+            .iter()
+            .find_map(|d| match d {
+                crate::ast::Def::DModule { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
         for d in &defs {
-            if let crate::ast::Def::DFunc { name, type_params, returns, .. } = d {
+            let func = match d {
+                crate::ast::Def::DFunc { name, safety, .. } => Some((name, safety)),
+                crate::ast::Def::DCFuncUnsafe { name, safety, .. } => Some((name, safety)),
+                _ => None,
+            };
+            if let Some((name, safety)) = func {
                 use std::collections::hash_map::Entry;
                 match all_func_sigs.entry(name.clone()) {
                     Entry::Occupied(_) => {}
                     Entry::Vacant(v) => {
+                        let (type_params, _params, returns, is_async) = match d {
+                            crate::ast::Def::DFunc {
+                                type_params,
+                                params,
+                                returns,
+                                is_async,
+                                ..
+                            } => (
+                                type_params.clone(),
+                                params.clone(),
+                                returns.clone(),
+                                *is_async,
+                            ),
+                            _ => (Vec::new(), Vec::new(), None, false),
+                        };
                         v.insert(crate::codegen::FuncSig {
-                            type_params: type_params.clone(),
-                            returns: returns.clone(),
+                            type_params,
+                            returns,
+                            is_async,
                         });
                     }
                 }
+                // Qualified key mirrors the frontend's call-path rewriting
+                // (`util::process_call_path`):
+                //   - `std.x.y`      -> `mvp_std.x.y`
+                //   - `main`         -> `main.y`
+                //   - local module   -> `<pkg>.{path under src}.y`, e.g.
+                //     `import "pkg/lib"` yields call `pkg.lib.y`.
+                let qual_prefix: String = if module_name == "main" {
+                    "main".to_string()
+                } else if module_name.starts_with("std") {
+                    format!("mvp_{}", module_name)
+                } else {
+                    let local = file
+                        .strip_prefix("src/")
+                        .unwrap_or(file.as_str())
+                        .strip_suffix(".miva")
+                        .unwrap_or(file.as_str())
+                        .replace('/', ".");
+                    format!("{}.{}", pkg_name, local)
+                };
+                let qual = format!("{}.{}", qual_prefix, name);
+                global_type_sigs
+                    .entry(qual.clone())
+                    .or_insert_with(|| {
+                        let (type_params, params, returns) = match d {
+                            crate::ast::Def::DFunc {
+                                type_params,
+                                params,
+                                returns,
+                                ..
+                            } => (type_params.clone(), params.clone(), returns.clone()),
+                            _ => (Vec::new(), Vec::new(), None),
+                        };
+                        (type_params, params, returns)
+                    });
+                global_safety.entry(qual).or_insert_with(|| safety.clone());
             }
         }
     }
@@ -662,6 +746,8 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
             &macro_table,
             backend,
             &all_func_sigs,
+            &global_type_sigs,
+            &global_safety,
         )?;
 
         if !was_cached {
@@ -740,8 +826,6 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
             }
 
             eprintln!("{}", color::success(&format!("{} -> {}", name, mvm_path.display())));
-        } else {
-            eprintln!("  {} (cached)", name);
         }
 
         println!("{}", color::success("compilation finished"));

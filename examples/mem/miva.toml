@@ -1,0 +1,7 @@
+[project]
+name = "mem-demo"
+version = "0.1.0"
+type = "app"
+
+[dependencies]
+std = "0.1.1"

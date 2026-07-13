@@ -1,0 +1,27 @@
+module main;
+
+import "std/json";
+
+unsafe main = () => {
+  s := "{\"name\":\"miva\",\"version\":0.1,\"tags\":[\"lang\",\"compiler\"],\"active\":true,\"extra\":null}";
+  doc := std.json.parse(s);
+
+  printlns!("kind:", std.json.kind(doc));
+  printlns!("is_object:", std.json.is_object(doc));
+  printlns!("name:", std.json.as_string(std.json.object_find(doc, "name")));
+  printlns!("version:", std.json.as_number(std.json.object_find(doc, "version")));
+  printlns!("active:", std.json.as_bool(std.json.object_find(doc, "active")));
+
+  tags := std.json.object_find(doc, "tags");
+  printlns!("tags len:", std.json.len(tags));
+  printlns!("tag[0]:", std.json.as_string(std.json.array_get(tags, 0)));
+  printlns!("tag[1]:", std.json.as_string(std.json.array_get(tags, 1)));
+
+  extra := std.json.object_find(doc, "extra");
+  printlns!("extra is_null:", std.json.is_null(extra));
+
+  out := std.json.stringify(doc);
+  printlns!("stringified:", out);
+
+  std.json.free(doc);
+}

@@ -87,6 +87,7 @@ fn expand_def(def: &Def, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Resul
             returns,
             body,
             safety,
+            is_async,
         } => Ok(Def::DFunc {
             loc: loc.clone(),
             name: name.clone(),
@@ -95,6 +96,7 @@ fn expand_def(def: &Def, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Resul
             returns: returns.clone(),
             body: Box::new(expand_expr(body, addf, macro_table)?),
             safety: safety.clone(),
+            is_async: *is_async,
         }),
         Def::DTest { loc, name, body } => Ok(Def::DTest {
             loc: loc.clone(),
@@ -826,6 +828,7 @@ mod tests {
             returns: None,
             body: Box::new(body),
             safety: Safety::Safe,
+            is_async: false,
         }]
     }
 
@@ -1191,6 +1194,7 @@ mod tests {
                     value: 0,
                 }),
                 safety: Safety::Safe,
+                is_async: false,
             },
         ];
 

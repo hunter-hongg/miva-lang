@@ -1,6 +1,21 @@
 use std::cmp::Ordering;
 use std::fmt;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::thread::JoinHandle;
+
+use serde_json::Value as JsonValue;
+use crate::xml::{XmlKind, XmlNode};
+
+/// A handle to an asynchronously-running MVM task.
+///
+/// The task executes on its own OS thread. `result` is filled once the task
+/// finishes; `handle` is joined when the future is awaited.
+#[derive(Debug)]
+pub struct MvmFuture {
+    pub result: Arc<Mutex<Option<Value>>>,
+    pub handle: Mutex<Option<JoinHandle<()>>>,
+}
 
 /// Runtime value in the Miva Virtual Machine.
 #[derive(Debug, Clone)]
@@ -10,16 +25,19 @@ pub enum Value {
     Float32(f32),
     Bool(bool),
     Char(u8),
-    String(Rc<String>),
-    Array(Rc<Vec<Value>>),
-    MutableArray(Rc<std::cell::RefCell<Vec<Value>>>),
+    String(Arc<String>),
+    Array(Arc<Vec<Value>>),
+    MutableArray(Arc<Mutex<Vec<Value>>>),
     Struct(Vec<Value>),
-    Boxed(Rc<std::cell::RefCell<Value>>),
-    Ptr(usize, Rc<std::cell::RefCell<Vec<Value>>>), // (index, RefCell to frame locals)
+    Boxed(Arc<Mutex<Value>>),
+    Ptr(usize, Arc<Mutex<Vec<Value>>>), // (index, Mutex to frame locals)
     Null,
     PtrAny,
     Range(i64, i64, i64), // start, end, current
     Unit,
+    Future(Arc<MvmFuture>),
+    Json(Box<JsonValue>),
+    Xml(Arc<XmlNode>),
 }
 
 impl Value {
@@ -39,6 +57,9 @@ impl Value {
             Value::PtrAny => "ptrany",
             Value::Range(_, _, _) => "range",
             Value::Unit => "unit",
+            Value::Future(_) => "future",
+            Value::Json(_) => "json",
+            Value::Xml(_) => "xml",
         }
     }
 
@@ -53,12 +74,15 @@ impl Value {
             Value::Unit => false,
             Value::String(s) => !s.is_empty(),
             Value::Array(a) => !a.is_empty(),
-            Value::MutableArray(a) => !a.borrow().is_empty(),
+            Value::MutableArray(a) => !a.lock().unwrap().is_empty(),
             Value::Struct(fields) => !fields.is_empty(),
-            Value::Boxed(b) => !matches!(*b.borrow(), Value::Null | Value::Unit),
+            Value::Boxed(b) => !matches!(*b.lock().unwrap(), Value::Null | Value::Unit),
             Value::Ptr(_, _) => true,
             Value::PtrAny => true,
             Value::Range(_, _, _) => true,
+            Value::Future(_) => true,
+            Value::Json(j) => !j.is_null(),
+            Value::Xml(n) => n.kind != XmlKind::Null,
         }
     }
 
@@ -109,18 +133,22 @@ impl Value {
                 format!("[{}]", items.join(", "))
             }
             Value::MutableArray(a) => {
-                let items: Vec<String> = a.borrow().iter().map(|v| v.display()).collect();
+                let guard = a.lock().unwrap();
+                let items: Vec<String> = guard.iter().map(|v| v.display()).collect();
                 format!("[{}]", items.join(", "))
             }
             Value::Struct(fields) => {
                 format!("({})", fields.iter().map(|v| v.display()).collect::<Vec<_>>().join(", "))
             }
-            Value::Boxed(b) => format!("box({})", b.borrow().display()),
+            Value::Boxed(b) => format!("box({})", b.lock().unwrap().display()),
             Value::Ptr(_, _) => "<ptr>".to_string(),
             Value::Null => "null".to_string(),
             Value::PtrAny => "<ptrany>".to_string(),
             Value::Range(start, end, current) => format!("range({}, {}, {})", start, end, current),
             Value::Unit => "".to_string(),
+            Value::Future(_) => "<future>".to_string(),
+            Value::Json(j) => j.to_string(),
+            Value::Xml(n) => crate::xml::stringify(n),
         }
     }
 }
@@ -143,6 +171,8 @@ impl PartialEq for Value {
             (Value::Null, Value::Null) => true,
             (Value::Unit, Value::Unit) => true,
             (Value::PtrAny, Value::PtrAny) => true,
+            (Value::Json(a), Value::Json(b)) => a == b,
+            (Value::Xml(a), Value::Xml(b)) => Arc::ptr_eq(a, b),
             // Cross-type comparisons (Miva allows int-bool etc.)
             (Value::Int(a), Value::Bool(b)) => *a == if *b { 1 } else { 0 },
             (Value::Bool(b), Value::Int(a)) => *a == if *b { 1 } else { 0 },
