@@ -154,6 +154,32 @@ fn runtime_declarations() -> String {
     decls.push_str("declare ptr @miva_xml_pi_data(i64)\n");
     decls.push_str("declare ptr @miva_xml_stringify(i64)\n");
     decls.push_str("declare void @miva_xml_free(i64)\n");
+    decls.push_str("declare i64 @miva_toml_parse(ptr)\n");
+    decls.push_str("declare i64 @miva_toml_kind(i64)\n");
+    decls.push_str("declare i64 @miva_toml_bool(i64)\n");
+    decls.push_str("declare i64 @miva_toml_number(i64)\n");
+    decls.push_str("declare ptr @miva_toml_string(i64)\n");
+    decls.push_str("declare i64 @miva_toml_array_len(i64)\n");
+    decls.push_str("declare i64 @miva_toml_array_get(i64, i64)\n");
+    decls.push_str("declare i64 @miva_toml_object_len(i64)\n");
+    decls.push_str("declare ptr @miva_toml_object_key(i64, i64)\n");
+    decls.push_str("declare i64 @miva_toml_object_get(i64, i64)\n");
+    decls.push_str("declare i64 @miva_toml_object_find(i64, ptr)\n");
+    decls.push_str("declare void @miva_toml_free(i64)\n");
+    decls.push_str("declare ptr @miva_toml_stringify(i64)\n");
+    decls.push_str("declare i64 @miva_yaml_parse(ptr)\n");
+    decls.push_str("declare i64 @miva_yaml_kind(i64)\n");
+    decls.push_str("declare i64 @miva_yaml_bool(i64)\n");
+    decls.push_str("declare i64 @miva_yaml_number(i64)\n");
+    decls.push_str("declare ptr @miva_yaml_string(i64)\n");
+    decls.push_str("declare i64 @miva_yaml_array_len(i64)\n");
+    decls.push_str("declare i64 @miva_yaml_array_get(i64, i64)\n");
+    decls.push_str("declare i64 @miva_yaml_object_len(i64)\n");
+    decls.push_str("declare ptr @miva_yaml_object_key(i64, i64)\n");
+    decls.push_str("declare i64 @miva_yaml_object_get(i64, i64)\n");
+    decls.push_str("declare i64 @miva_yaml_object_find(i64, ptr)\n");
+    decls.push_str("declare void @miva_yaml_free(i64)\n");
+    decls.push_str("declare ptr @miva_yaml_stringify(i64)\n");
     decls.push_str("@.str.void = private unnamed_addr constant [1 x i8] zeroinitializer\n");
     decls
 }
@@ -214,6 +240,32 @@ fn map_builtin(name: &str, current_module: Option<&str>) -> String {
         "xml_pi_data" => "@miva_xml_pi_data".into(),
         "xml_stringify" => "@miva_xml_stringify".into(),
         "xml_free" => "@miva_xml_free".into(),
+        "toml_parse" => "@miva_toml_parse".into(),
+        "toml_kind" => "@miva_toml_kind".into(),
+        "toml_bool" => "@miva_toml_bool".into(),
+        "toml_number" => "@miva_toml_number".into(),
+        "toml_string" => "@miva_toml_string".into(),
+        "toml_array_len" => "@miva_toml_array_len".into(),
+        "toml_array_get" => "@miva_toml_array_get".into(),
+        "toml_object_len" => "@miva_toml_object_len".into(),
+        "toml_object_key" => "@miva_toml_object_key".into(),
+        "toml_object_get" => "@miva_toml_object_get".into(),
+        "toml_object_find" => "@miva_toml_object_find".into(),
+        "toml_free" => "@miva_toml_free".into(),
+        "toml_stringify" => "@miva_toml_stringify".into(),
+        "yaml_parse" => "@miva_yaml_parse".into(),
+        "yaml_kind" => "@miva_yaml_kind".into(),
+        "yaml_bool" => "@miva_yaml_bool".into(),
+        "yaml_number" => "@miva_yaml_number".into(),
+        "yaml_string" => "@miva_yaml_string".into(),
+        "yaml_array_len" => "@miva_yaml_array_len".into(),
+        "yaml_array_get" => "@miva_yaml_array_get".into(),
+        "yaml_object_len" => "@miva_yaml_object_len".into(),
+        "yaml_object_key" => "@miva_yaml_object_key".into(),
+        "yaml_object_get" => "@miva_yaml_object_get".into(),
+        "yaml_object_find" => "@miva_yaml_object_find".into(),
+        "yaml_free" => "@miva_yaml_free".into(),
+        "yaml_stringify" => "@miva_yaml_stringify".into(),
         _ => {
             let parts: Vec<&str> = name.split('.').collect();
             if parts.first() == Some(&"ffi") {
@@ -712,6 +764,10 @@ fn is_ptr_arg(func_name: &str, arg_idx: usize) -> bool {
         "@miva_json_object_find" => arg_idx == 1,
         "@miva_xml_parse" => arg_idx == 0,
         "@miva_xml_attr_find" => arg_idx == 1,
+        "@miva_toml_parse" => arg_idx == 0,
+        "@miva_toml_object_find" => arg_idx == 1,
+        "@miva_yaml_parse" => arg_idx == 0,
+        "@miva_yaml_object_find" => arg_idx == 1,
         _ => false,
     }
 }
@@ -729,6 +785,10 @@ fn ret_type(func_name: &str) -> &'static str {
             || n == "@miva_xml_text" || n == "@miva_xml_comment"
             || n == "@miva_xml_cdata" || n == "@miva_xml_pi_target"
             || n == "@miva_xml_pi_data" || n == "@miva_xml_stringify" => "ptr",
+        n if n == "@miva_toml_string" || n == "@miva_toml_object_key"
+            || n == "@miva_toml_stringify" => "ptr",
+        n if n == "@miva_yaml_string" || n == "@miva_yaml_object_key"
+            || n == "@miva_yaml_stringify" => "ptr",
         n if n == "@miva_box_deref_float" => "double",
         n if n == "@miva_box_deref_bool" || n == "@miva_box_deref_byte" => "i8",
         n if n.starts_with("@miva_") || n.starts_with("@ffi_") => "i64",
@@ -1133,6 +1193,32 @@ fn generate_bridge(_defs: &[Def]) -> String {
     bridge.push_str("void* miva_xml_pi_data(int64_t v) { auto r = mvp_xml_pi_data((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
     bridge.push_str("void* miva_xml_stringify(int64_t v) { auto r = mvp_xml_stringify((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
     bridge.push_str("void miva_xml_free(int64_t v) { mvp_xml_free((void*)(intptr_t)v); }\n");
+    bridge.push_str("int64_t miva_toml_parse(void* s) { auto& str = *(std::string*)s; return (int64_t)(intptr_t)mvp_toml_parse(str); }\n");
+    bridge.push_str("int64_t miva_toml_kind(int64_t v) { return mvp_toml_kind((void*)(intptr_t)v); }\n");
+    bridge.push_str("int64_t miva_toml_bool(int64_t v) { return mvp_toml_bool((void*)(intptr_t)v); }\n");
+    bridge.push_str("int64_t miva_toml_number(int64_t v) { double d = mvp_toml_number((void*)(intptr_t)v); int64_t r; memcpy(&r, &d, 8); return r; }\n");
+    bridge.push_str("void* miva_toml_string(int64_t v) { auto r = mvp_toml_string((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("int64_t miva_toml_array_len(int64_t v) { return mvp_toml_array_len((void*)(intptr_t)v); }\n");
+    bridge.push_str("int64_t miva_toml_array_get(int64_t v, int64_t i) { return (int64_t)(intptr_t)mvp_toml_array_get((void*)(intptr_t)v, i); }\n");
+    bridge.push_str("int64_t miva_toml_object_len(int64_t v) { return mvp_toml_object_len((void*)(intptr_t)v); }\n");
+    bridge.push_str("void* miva_toml_object_key(int64_t v, int64_t i) { auto r = mvp_toml_object_key((void*)(intptr_t)v, i); return new std::string(std::move(r)); }\n");
+    bridge.push_str("int64_t miva_toml_object_get(int64_t v, int64_t i) { return (int64_t)(intptr_t)mvp_toml_object_get((void*)(intptr_t)v, i); }\n");
+    bridge.push_str("int64_t miva_toml_object_find(int64_t v, void* key) { auto& k = *(std::string*)key; return (int64_t)(intptr_t)mvp_toml_object_find((void*)(intptr_t)v, k); }\n");
+    bridge.push_str("void miva_toml_free(int64_t v) { mvp_toml_free((void*)(intptr_t)v); }\n");
+    bridge.push_str("void* miva_toml_stringify(int64_t v) { auto r = mvp_toml_stringify((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("int64_t miva_yaml_parse(void* s) { auto& str = *(std::string*)s; return (int64_t)(intptr_t)mvp_yaml_parse(str); }\n");
+    bridge.push_str("int64_t miva_yaml_kind(int64_t v) { return mvp_yaml_kind((void*)(intptr_t)v); }\n");
+    bridge.push_str("int64_t miva_yaml_bool(int64_t v) { return mvp_yaml_bool((void*)(intptr_t)v); }\n");
+    bridge.push_str("int64_t miva_yaml_number(int64_t v) { double d = mvp_yaml_number((void*)(intptr_t)v); int64_t r; memcpy(&r, &d, 8); return r; }\n");
+    bridge.push_str("void* miva_yaml_string(int64_t v) { auto r = mvp_yaml_string((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
+    bridge.push_str("int64_t miva_yaml_array_len(int64_t v) { return mvp_yaml_array_len((void*)(intptr_t)v); }\n");
+    bridge.push_str("int64_t miva_yaml_array_get(int64_t v, int64_t i) { return (int64_t)(intptr_t)mvp_yaml_array_get((void*)(intptr_t)v, i); }\n");
+    bridge.push_str("int64_t miva_yaml_object_len(int64_t v) { return mvp_yaml_object_len((void*)(intptr_t)v); }\n");
+    bridge.push_str("void* miva_yaml_object_key(int64_t v, int64_t i) { auto r = mvp_yaml_object_key((void*)(intptr_t)v, i); return new std::string(std::move(r)); }\n");
+    bridge.push_str("int64_t miva_yaml_object_get(int64_t v, int64_t i) { return (int64_t)(intptr_t)mvp_yaml_object_get((void*)(intptr_t)v, i); }\n");
+    bridge.push_str("int64_t miva_yaml_object_find(int64_t v, void* key) { auto& k = *(std::string*)key; return (int64_t)(intptr_t)mvp_yaml_object_find((void*)(intptr_t)v, k); }\n");
+    bridge.push_str("void miva_yaml_free(int64_t v) { mvp_yaml_free((void*)(intptr_t)v); }\n");
+    bridge.push_str("void* miva_yaml_stringify(int64_t v) { auto r = mvp_yaml_stringify((void*)(intptr_t)v); return new std::string(std::move(r)); }\n");
     bridge.push_str("void miva_ptr_set_i64(void* p, int64_t v) { mvp_builtin_ptrset((mvp_builtin_int*)p, v); }\n");
     bridge.push_str("void miva_ptr_set_double(void* p, double v) { mvp_builtin_ptrset((mvp_builtin_float*)p, v); }\n");
     bridge.push_str("void miva_ptr_set_i8(void* p, int8_t v) { mvp_builtin_ptrset((mvp_builtin_byte*)p, v); }\n");

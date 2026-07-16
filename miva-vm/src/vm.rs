@@ -1469,6 +1469,341 @@ impl Mvm {
                 // xml_free is a no-op in the MVM because Value::Xml owns its data
                 self.push(Value::Unit);
             }
+            // toml_parse
+            53 => {
+                let s = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("toml_parse expected string, got {}", v.type_name())) };
+                match crate::toml::parse(&s) {
+                    Ok(val) => self.push(Value::Json(Box::new(val))),
+                    Err(e) => return Err(e),
+                }
+            }
+            54 => {
+                let v = self.pop();
+                let kind = match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Null => 0,
+                        JsonValue::Bool(_) => 1,
+                        JsonValue::Number(_) => 2,
+                        JsonValue::String(_) => 3,
+                        JsonValue::Array(_) => 4,
+                        JsonValue::Object(_) => 5,
+                    },
+                    _ => -1,
+                };
+                self.push(Value::Int(kind));
+            }
+            // toml_bool
+            55 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Bool(b) => self.push(Value::Bool(*b)),
+                        _ => return Err("toml_bool: value is not a bool".into()),
+                    },
+                    _ => return Err("toml_bool: expected toml value".into()),
+                }
+            }
+            // toml_number
+            56 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Number(n) => {
+                            let f = n.as_f64().unwrap_or(0.0);
+                            self.push(Value::Float64(f));
+                        }
+                        _ => return Err("toml_number: value is not a number".into()),
+                    },
+                    _ => return Err("toml_number: expected toml value".into()),
+                }
+            }
+            // toml_string
+            57 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::String(s) => self.push(Value::String(Arc::new(s.clone()))),
+                        _ => return Err("toml_string: value is not a string".into()),
+                    },
+                    _ => return Err("toml_string: expected toml value".into()),
+                }
+            }
+            // toml_array_len
+            58 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Array(a) => self.push(Value::Int(a.len() as i64)),
+                        _ => self.push(Value::Int(0)),
+                    },
+                    _ => return Err("toml_array_len: expected toml value".into()),
+                }
+            }
+            // toml_array_get
+            59 => {
+                let idx = self.pop().as_i64().ok_or("toml_array_get expected int")? as usize;
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Array(a) => {
+                            if idx >= a.len() {
+                                return Err(format!("toml_array_get: index {} out of bounds (len={})", idx, a.len()));
+                            }
+                            self.push(Value::Json(Box::new(a[idx].clone())));
+                        }
+                        _ => return Err("toml_array_get: value is not an array".into()),
+                    },
+                    _ => return Err("toml_array_get: expected toml value".into()),
+                }
+            }
+            // toml_object_len
+            60 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => self.push(Value::Int(o.len() as i64)),
+                        _ => self.push(Value::Int(0)),
+                    },
+                    _ => return Err("toml_object_len: expected toml value".into()),
+                }
+            }
+            // toml_object_key
+            61 => {
+                let idx = self.pop().as_i64().ok_or("toml_object_key expected int")? as usize;
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => {
+                            if idx >= o.len() {
+                                return Err(format!("toml_object_key: index {} out of bounds (len={})", idx, o.len()));
+                            }
+                            let key = o.keys().nth(idx).unwrap().clone();
+                            self.push(Value::String(Arc::new(key)));
+                        }
+                        _ => return Err("toml_object_key: value is not an object".into()),
+                    },
+                    _ => return Err("toml_object_key: expected toml value".into()),
+                }
+            }
+            // toml_object_get
+            62 => {
+                let idx = self.pop().as_i64().ok_or("toml_object_get expected int")? as usize;
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => {
+                            if idx >= o.len() {
+                                return Err(format!("toml_object_get: index {} out of bounds (len={})", idx, o.len()));
+                            }
+                            let val = o.values().nth(idx).unwrap().clone();
+                            self.push(Value::Json(Box::new(val)));
+                        }
+                        _ => return Err("toml_object_get: value is not an object".into()),
+                    },
+                    _ => return Err("toml_object_get: expected toml value".into()),
+                }
+            }
+            // toml_object_find
+            63 => {
+                let key = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("toml_object_find expected string key, got {}", v.type_name())) };
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => {
+                            if let Some(val) = o.get(&key) {
+                                self.push(Value::Json(Box::new(val.clone())));
+                            } else {
+                                self.push(Value::Json(Box::new(JsonValue::Null)));
+                            }
+                        }
+                        _ => return Err("toml_object_find: value is not an object".into()),
+                    },
+                    _ => return Err("toml_object_find: expected toml value".into()),
+                }
+            }
+            // toml_free
+            64 => {
+                let _v = self.pop();
+                // toml_free is a no-op in the MVM because Value::Json owns its data
+                self.push(Value::Unit);
+            }
+            // toml_stringify
+            65 => {
+                let v = self.pop();
+                let s = match &v {
+                    Value::Json(j) => crate::toml::stringify(j),
+                    _ => return Err("toml_stringify: expected toml value".into()),
+                };
+                self.push(Value::String(Arc::new(s)));
+            }
+            // yaml_parse
+            66 => {
+                let s = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("yaml_parse expected string, got {}", v.type_name())) };
+                match crate::yaml::parse(&s) {
+                    Ok(val) => self.push(Value::Json(Box::new(val))),
+                    Err(e) => return Err(e),
+                }
+            }
+            // yaml_kind
+            67 => {
+                let v = self.pop();
+                let kind = match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Null => 0,
+                        JsonValue::Bool(_) => 1,
+                        JsonValue::Number(_) => 2,
+                        JsonValue::String(_) => 3,
+                        JsonValue::Array(_) => 4,
+                        JsonValue::Object(_) => 5,
+                    },
+                    _ => -1,
+                };
+                self.push(Value::Int(kind));
+            }
+            // yaml_bool
+            68 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Bool(b) => self.push(Value::Bool(*b)),
+                        _ => return Err("yaml_bool: value is not a bool".into()),
+                    },
+                    _ => return Err("yaml_bool: expected yaml value".into()),
+                }
+            }
+            // yaml_number
+            69 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Number(n) => {
+                            let f = n.as_f64().unwrap_or(0.0);
+                            self.push(Value::Float64(f));
+                        }
+                        _ => return Err("yaml_number: value is not a number".into()),
+                    },
+                    _ => return Err("yaml_number: expected yaml value".into()),
+                }
+            }
+            // yaml_string
+            70 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::String(s) => self.push(Value::String(Arc::new(s.clone()))),
+                        _ => return Err("yaml_string: value is not a string".into()),
+                    },
+                    _ => return Err("yaml_string: expected yaml value".into()),
+                }
+            }
+            // yaml_array_len
+            71 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Array(a) => self.push(Value::Int(a.len() as i64)),
+                        _ => self.push(Value::Int(0)),
+                    },
+                    _ => return Err("yaml_array_len: expected yaml value".into()),
+                }
+            }
+            // yaml_array_get
+            72 => {
+                let idx = self.pop().as_i64().ok_or("yaml_array_get expected int")? as usize;
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Array(a) => {
+                            if idx >= a.len() {
+                                return Err(format!("yaml_array_get: index {} out of bounds (len={})", idx, a.len()));
+                            }
+                            self.push(Value::Json(Box::new(a[idx].clone())));
+                        }
+                        _ => return Err("yaml_array_get: value is not an array".into()),
+                    },
+                    _ => return Err("yaml_array_get: expected yaml value".into()),
+                }
+            }
+            // yaml_object_len
+            73 => {
+                let v = self.pop();
+                match &v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => self.push(Value::Int(o.len() as i64)),
+                        _ => self.push(Value::Int(0)),
+                    },
+                    _ => return Err("yaml_object_len: expected yaml value".into()),
+                }
+            }
+            // yaml_object_key
+            74 => {
+                let idx = self.pop().as_i64().ok_or("yaml_object_key expected int")? as usize;
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => {
+                            if idx >= o.len() {
+                                return Err(format!("yaml_object_key: index {} out of bounds (len={})", idx, o.len()));
+                            }
+                            let key = o.keys().nth(idx).unwrap().clone();
+                            self.push(Value::String(Arc::new(key)));
+                        }
+                        _ => return Err("yaml_object_key: value is not an object".into()),
+                    },
+                    _ => return Err("yaml_object_key: expected yaml value".into()),
+                }
+            }
+            // yaml_object_get
+            75 => {
+                let idx = self.pop().as_i64().ok_or("yaml_object_get expected int")? as usize;
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => {
+                            if idx >= o.len() {
+                                return Err(format!("yaml_object_get: index {} out of bounds (len={})", idx, o.len()));
+                            }
+                            let val = o.values().nth(idx).unwrap().clone();
+                            self.push(Value::Json(Box::new(val)));
+                        }
+                        _ => return Err("yaml_object_get: value is not an object".into()),
+                    },
+                    _ => return Err("yaml_object_get: expected yaml value".into()),
+                }
+            }
+            // yaml_object_find
+            76 => {
+                let key = match self.pop() { Value::String(s) => (*s).clone(), v => return Err(format!("yaml_object_find expected string key, got {}", v.type_name())) };
+                let v = self.pop();
+                match v {
+                    Value::Json(j) => match j.as_ref() {
+                        JsonValue::Object(o) => {
+                            if let Some(val) = o.get(&key) {
+                                self.push(Value::Json(Box::new(val.clone())));
+                            } else {
+                                self.push(Value::Json(Box::new(JsonValue::Null)));
+                            }
+                        }
+                        _ => return Err("yaml_object_find: value is not an object".into()),
+                    },
+                    _ => return Err("yaml_object_find: expected yaml value".into()),
+                }
+            }
+            // yaml_free
+            77 => {
+                let _v = self.pop();
+                // yaml_free is a no-op in the MVM because Value::Json owns its data
+                self.push(Value::Unit);
+            }
+            // yaml_stringify
+            78 => {
+                let v = self.pop();
+                let s = match &v {
+                    Value::Json(j) => crate::yaml::stringify(j),
+                    _ => return Err("yaml_stringify: expected yaml value".into()),
+                };
+                self.push(Value::String(Arc::new(s)));
+            }
             _ => return Err(format!("Unknown builtin index: {}", idx)),
         }
         // Ensure stdout/stderr are flushed

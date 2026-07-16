@@ -111,19 +111,12 @@ impl Value {
         match self {
             Value::Int(i) => i.to_string(),
             Value::Float64(f) => {
-                if f.fract() == 0.0 && f.is_finite() {
-                    format!("{}.0", f)
-                } else {
-                    format!("{}", f)
-                }
+                // Shortest round-trip, matching C++ std::to_chars used by the
+                // LLVM/C++ backends (e.g. 9090, not 9090.0; 0.1 stays 0.1).
+                format!("{}", f)
             }
             Value::Float32(f) => {
-                let f64 = *f as f64;
-                if f64.fract() == 0.0 && f64.is_finite() {
-                    format!("{}.0", f)
-                } else {
-                    format!("{}", f)
-                }
+                format!("{}", *f as f64)
             }
             Value::Bool(b) => b.to_string(),
             Value::Char(c) => format!("'{}'", *c as char),

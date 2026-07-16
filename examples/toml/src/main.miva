@@ -1,0 +1,45 @@
+module main;
+
+import "std/toml";
+
+unsafe main = () => {
+  s := """
+title = "TOML Example"
+version = 0.1
+active = true
+tags = ["lang", "config", "data"]
+
+fruits = [
+  { name = "apple" },
+  { name = "banana" },
+]
+
+[server]
+host = "localhost"
+port = 8080
+""";
+  doc := std.toml.parse(s);
+
+  printlns!("kind:", std.toml.kind(doc));
+  printlns!("is_object:", std.toml.is_object(doc));
+  printlns!("title:", std.toml.as_string(std.toml.object_find(doc, "title")));
+  printlns!("version:", std.toml.as_number(std.toml.object_find(doc, "version")));
+  printlns!("active:", std.toml.as_bool(std.toml.object_find(doc, "active")));
+
+  tags := std.toml.object_find(doc, "tags");
+  printlns!("tags len:", std.toml.len(tags));
+  printlns!("tag[0]:", std.toml.as_string(std.toml.array_get(tags, 0)));
+
+  server := std.toml.object_find(doc, "server");
+  printlns!("server.host:", std.toml.as_string(std.toml.object_find(server, "host")));
+  printlns!("server.port:", std.toml.as_number(std.toml.object_find(server, "port")));
+
+  fruits := std.toml.object_find(doc, "fruits");
+  first := std.toml.array_get(fruits, 0);
+  printlns!("fruits[0].name:", std.toml.as_string(std.toml.object_find(first, "name")));
+
+  out := std.toml.stringify(doc);
+  printlns!("stringified:", out);
+
+  std.toml.free(doc);
+}

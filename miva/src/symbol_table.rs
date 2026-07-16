@@ -4,7 +4,7 @@ use crate::ast::*;
 use crate::error::Error;
 
 #[allow(dead_code)]
-pub const BUILTIN_FUNCTIONS_COUNT: usize = 54;
+pub const BUILTIN_FUNCTIONS_COUNT: usize = 80;
 
 const BUILTIN_FUNCTIONS: &[(&str, Safety)] = &[
     ("print", Safety::Safe),
@@ -61,6 +61,32 @@ const BUILTIN_FUNCTIONS: &[(&str, Safety)] = &[
     ("xml_pi_data", Safety::Safe),
     ("xml_stringify", Safety::Safe),
     ("xml_free", Safety::Safe),
+    ("toml_parse", Safety::Safe),
+    ("toml_kind", Safety::Safe),
+    ("toml_bool", Safety::Safe),
+    ("toml_number", Safety::Safe),
+    ("toml_string", Safety::Safe),
+    ("toml_array_len", Safety::Safe),
+    ("toml_array_get", Safety::Safe),
+    ("toml_object_len", Safety::Safe),
+    ("toml_object_key", Safety::Safe),
+    ("toml_object_get", Safety::Safe),
+    ("toml_object_find", Safety::Safe),
+    ("toml_free", Safety::Safe),
+    ("toml_stringify", Safety::Safe),
+    ("yaml_parse", Safety::Safe),
+    ("yaml_kind", Safety::Safe),
+    ("yaml_bool", Safety::Safe),
+    ("yaml_number", Safety::Safe),
+    ("yaml_string", Safety::Safe),
+    ("yaml_array_len", Safety::Safe),
+    ("yaml_array_get", Safety::Safe),
+    ("yaml_object_len", Safety::Safe),
+    ("yaml_object_key", Safety::Safe),
+    ("yaml_object_get", Safety::Safe),
+    ("yaml_object_find", Safety::Safe),
+    ("yaml_free", Safety::Safe),
+    ("yaml_stringify", Safety::Safe),
 ];
 
 #[derive(Debug, Clone)]

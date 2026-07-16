@@ -6,3 +6,5 @@ build/
 miva-vm/target/
 miva/build/
 stdlib/std
+.nightshift-logs/
+.nightshift-report.md

@@ -1,0 +1,46 @@
+module main;
+
+import "std/yaml";
+
+unsafe main = () => {
+  s := """
+name: YAML Example
+version: 0.2
+active: true
+tags:
+  - lang
+  - markup
+  - data
+server:
+  host: localhost
+  port: 9090
+fruits:
+  - name: apple
+  - name: banana
+""";
+  doc := std.yaml.parse(s);
+
+  printlns!("kind:", std.yaml.kind(doc));
+  printlns!("is_object:", std.yaml.is_object(doc));
+  printlns!("name:", std.yaml.as_string(std.yaml.object_find(doc, "name")));
+  printlns!("version:", std.yaml.as_number(std.yaml.object_find(doc, "version")));
+  printlns!("active:", std.yaml.as_bool(std.yaml.object_find(doc, "active")));
+
+  tags := std.yaml.object_find(doc, "tags");
+  printlns!("tags len:", std.yaml.len(tags));
+  printlns!("tag[0]:", std.yaml.as_string(std.yaml.array_get(tags, 0)));
+
+  server := std.yaml.object_find(doc, "server");
+  printlns!("server.host:", std.yaml.as_string(std.yaml.object_find(server, "host")));
+  printlns!("server.port:", std.yaml.as_number(std.yaml.object_find(server, "port")));
+
+  fruits := std.yaml.object_find(doc, "fruits");
+  printlns!("fruits len:", std.yaml.len(fruits));
+  first := std.yaml.array_get(fruits, 0);
+  printlns!("fruits[0].name:", std.yaml.as_string(std.yaml.object_find(first, "name")));
+
+  out := std.yaml.stringify(doc);
+  printlns!("stringified:", out);
+
+  std.yaml.free(doc);
+}

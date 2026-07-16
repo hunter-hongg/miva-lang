@@ -1178,4 +1178,803 @@ inline void mvp_xml_free(mvp_builtin_ptrany v) {
     delete static_cast<MivaXml*>(v);
 }
 
+// ── TOML parsing and serialization (mirrors std/json) ──────────────────────────
+//
+// TOML documents are parsed into the same `MivaJson` value tree used by JSON
+// (the model is identical: Null/Bool/Number/String/Array/Object), so the
+// `mvp_toml_*` accessors can delegate to the JSON ones. A parsed document is
+// owned by its root handle; child handles are borrowed views (do not free them).
+//
+// Supported subset:
+//   * comments (# ...) and blank lines
+//   * dotted and bare keys, `key = value`
+//   * values: basic strings, integers (dec/hex/oct/bin), floats, booleans,
+//     arrays of scalars, nested [table] and arrays of tables [[table]]
+//   * local date/time values are stored as strings
+
+using MivaToml = MivaJson;
+
+struct MivaTomlParser {
+    mvp_builtin_string const& s;
+    size_t i = 0;
+
+    explicit MivaTomlParser(mvp_builtin_string const& src) : s(src) {}
+
+    [[noreturn]] void fail(char const* msg) {
+        mvp_panic(mvp_builtin_string("toml: ") + msg +
+                   " (at position " + std::to_string(i) + ")");
+    }
+
+    void ws_inline() {
+        while (i < s.size()) {
+            char c = s[i];
+            if (c == ' ' || c == '\t' || c == '\r') ++i;
+            else break;
+        }
+    }
+
+    void skip_comment() {
+        if (i < s.size() && s[i] == '#') {
+            while (i < s.size() && s[i] != '\n') ++i;
+        }
+    }
+
+    bool eol() { return i >= s.size() || s[i] == '\n'; }
+
+    char get() {
+        if (i >= s.size()) fail("unexpected end of input");
+        return s[i++];
+    }
+
+    std::string parse_string() {
+        // current char is the opening quote
+        get();
+        std::string out;
+        out.reserve(16);
+        while (true) {
+            if (i >= s.size()) fail("unterminated string");
+            char c = get();
+            if (c == '"') break;
+            if (c == '\\') {
+                if (i >= s.size()) fail("bad escape");
+                char e = get();
+                switch (e) {
+                    case '"': out.push_back('"'); break;
+                    case '\\': out.push_back('\\'); break;
+                    case '/': out.push_back('/'); break;
+                    case 'b': out.push_back('\b'); break;
+                    case 'f': out.push_back('\f'); break;
+                    case 'n': out.push_back('\n'); break;
+                    case 'r': out.push_back('\r'); break;
+                    case 't': out.push_back('\t'); break;
+                    case 'u': {
+                        if (i + 4 > s.size()) fail("bad \\u escape");
+                        unsigned v = 0;
+                        for (int k = 0; k < 4; ++k) {
+                            char ch = s[i++];
+                            v <<= 4;
+                            if (ch >= '0' && ch <= '9') v |= static_cast<unsigned>(ch - '0');
+                            else if (ch >= 'a' && ch <= 'f') v |= static_cast<unsigned>(ch - 'a' + 10);
+                            else if (ch >= 'A' && ch <= 'F') v |= static_cast<unsigned>(ch - 'A' + 10);
+                            else fail("bad hex digit");
+                        }
+                        MivaJsonParser::encode_utf8(v, out);
+                        break;
+                    }
+                    default: fail("bad escape");
+                }
+            } else {
+                out.push_back(c);
+            }
+        }
+        return out;
+    }
+
+    std::string parse_key() {
+        std::string key;
+        while (i < s.size()) {
+            char c = s[i];
+            if (c == '=' || c == '.' || c == ' ' || c == '\t' || c == '\n'
+                || c == '#' || c == ']')
+                break;
+            key.push_back(c);
+            ++i;
+        }
+        if (key.empty()) fail("empty key");
+        return key;
+    }
+
+    std::unique_ptr<MivaJson> parse_value() {
+        ws_inline();
+        if (i >= s.size()) fail("expected value");
+        char c = s[i];
+        if (c == '"') {
+            auto v = std::make_unique<MivaJson>(MivaJson::Kind::String);
+            v->str = parse_string();
+            return v;
+        }
+        if (c == '[') return parse_array();
+        if (c == '{') return parse_inline_table();
+        if (c == 't' && s.compare(i, 4, "true") == 0) {
+            i += 4;
+            auto v = std::make_unique<MivaJson>(MivaJson::Kind::Bool);
+            v->b = true;
+            return v;
+        }
+        if (c == 'f' && s.compare(i, 5, "false") == 0) {
+            i += 5;
+            auto v = std::make_unique<MivaJson>(MivaJson::Kind::Bool);
+            v->b = false;
+            return v;
+        }
+        if (c == '-' || (c >= '0' && c <= '9')) {
+            size_t start = i;
+            bool is_float = false;
+            if (s.compare(i, 2, "0x") == 0 || s.compare(i, 2, "0o") == 0 ||
+                s.compare(i, 2, "0b") == 0) {
+                i += 2;
+                while (i < s.size() && ((s[i] >= '0' && s[i] <= '9') ||
+                       (s[i] >= 'a' && s[i] <= 'f') || (s[i] >= 'A' && s[i] <= 'F') ||
+                       s[i] == '_'))
+                    ++i;
+                auto v = std::make_unique<MivaJson>(MivaJson::Kind::Number);
+                v->num = std::strtoll(s.substr(start, i - start).c_str(), nullptr, 0);
+                return v;
+            }
+            if (s[i] == '-') ++i;
+            while (i < s.size() && s[i] >= '0' && s[i] <= '9') ++i;
+            if (i < s.size() && s[i] == '.') { is_float = true; ++i; while (i < s.size() && s[i] >= '0' && s[i] <= '9') ++i; }
+            if (i < s.size() && (s[i] == 'e' || s[i] == 'E')) {
+                is_float = true; ++i;
+                if (i < s.size() && (s[i] == '+' || s[i] == '-')) ++i;
+                while (i < s.size() && s[i] >= '0' && s[i] <= '9') ++i;
+            }
+            if (is_float) {
+                auto v = std::make_unique<MivaJson>(MivaJson::Kind::Number);
+                v->num = std::strtod(s.substr(start, i - start).c_str(), nullptr);
+                return v;
+            }
+            auto v = std::make_unique<MivaJson>(MivaJson::Kind::Number);
+            v->num = static_cast<double>(std::strtoll(s.substr(start, i - start).c_str(), nullptr, 10));
+            return v;
+        }
+        // bare / date-time value: treat as string
+        std::string raw;
+        while (i < s.size() && s[i] != '\n' && s[i] != '#' && s[i] != '\r') {
+            raw.push_back(s[i++]);
+        }
+        size_t b = 0, e = raw.size();
+        while (b < e && (raw[b] == ' ' || raw[b] == '\t')) ++b;
+        while (e > b && (raw[e - 1] == ' ' || raw[e - 1] == '\t')) --e;
+        auto v = std::make_unique<MivaJson>(MivaJson::Kind::String);
+        v->str = raw.substr(b, e - b);
+        return v;
+    }
+
+    std::unique_ptr<MivaJson> parse_array() {
+        get(); // '['
+        auto v = std::make_unique<MivaJson>(MivaJson::Kind::Array);
+        for (;;) {
+            ws_inline();
+            skip_comment();
+            if (eol()) { ++i; ws_inline(); skip_comment(); }
+            if (i >= s.size()) fail("unterminated array");
+            if (s[i] == ']') { get(); break; }
+            v->arr.push_back(parse_value());
+            ws_inline();
+            skip_comment();
+            if (eol()) { ++i; ws_inline(); }
+            if (i >= s.size()) fail("unterminated array");
+            char c = get();
+            if (c == ',') { ws_inline(); skip_comment(); if (eol()) { ++i; ws_inline(); } continue; }
+            if (c == ']') break;
+            fail("expected ',' or ']' in array");
+        }
+        return v;
+    }
+
+    std::unique_ptr<MivaJson> parse_inline_table() {
+        get(); // '{'
+        auto v = std::make_unique<MivaJson>(MivaJson::Kind::Object);
+        ws_inline();
+        if (i < s.size() && s[i] == '}') { get(); return v; }
+        for (;;) {
+            ws_inline();
+            std::string key = parse_key();
+            ws_inline();
+            if (get() != '=') fail("expected '=' in inline table");
+            auto val = parse_value();
+            v->obj.emplace_back(std::move(key), std::move(val));
+            ws_inline();
+            if (i >= s.size()) fail("unterminated inline table");
+            char c = get();
+            if (c == ',') { ws_inline(); continue; }
+            if (c == '}') break;
+            fail("expected ',' or '}' in inline table");
+        }
+        return v;
+    }
+
+    // Descend into (creating as needed) the intermediate node for `key`,
+    // descending into the last element when the node is an array of tables.
+    MivaJson* descend(MivaJson* cur, std::string const& key) {
+        MivaJson* next = nullptr;
+        for (auto& kv : cur->obj) {
+            if (kv.first == key) { next = kv.second.get(); break; }
+        }
+        if (!next) {
+            cur->obj.emplace_back(key, std::make_unique<MivaJson>(MivaJson::Kind::Object));
+            next = cur->obj.back().second.get();
+        }
+        if (next->kind == MivaJson::Kind::Array) {
+            if (next->arr.empty())
+                next->arr.push_back(std::make_unique<MivaJson>(MivaJson::Kind::Object));
+            return next->arr.back().get();
+        }
+        return next;
+    }
+
+    void assign(std::unique_ptr<MivaJson>& root, std::vector<std::string> const& path,
+                std::unique_ptr<MivaJson> val, bool as_array) {
+        MivaJson* cur = root.get();
+        for (size_t k = 0; k + 1 < path.size(); ++k) {
+            cur = descend(cur, path[k]);
+        }
+        std::string const& leaf = path.back();
+        if (as_array) {
+            MivaJson* arr = nullptr;
+            for (auto& kv : cur->obj) {
+                if (kv.first == leaf) { arr = kv.second.get(); break; }
+            }
+            if (!arr) {
+                cur->obj.emplace_back(leaf, std::make_unique<MivaJson>(MivaJson::Kind::Array));
+                arr = cur->obj.back().second.get();
+            }
+            arr->arr.push_back(std::move(val));
+        } else {
+            cur->obj.emplace_back(leaf, std::move(val));
+        }
+    }
+
+    // For `[[a.b]]`: ensure `a.b` is an array of tables and append a new
+    // empty object as the current table.
+    void open_array_table(std::unique_ptr<MivaJson>& root,
+                         std::vector<std::string> const& path) {
+        MivaJson* cur = root.get();
+        for (size_t k = 0; k < path.size(); ++k) {
+            cur = descend(cur, path[k]);
+            if (k + 1 == path.size()) {
+                if (cur->kind != MivaJson::Kind::Array) {
+                    cur->kind = MivaJson::Kind::Array;
+                    cur->arr.clear();
+                }
+                cur->arr.push_back(std::make_unique<MivaJson>(MivaJson::Kind::Object));
+            }
+        }
+    }
+
+    std::unique_ptr<MivaJson> parse_document() {
+        auto root = std::make_unique<MivaJson>(MivaJson::Kind::Object);
+        std::vector<std::string> cur_path;
+        for (;;) {
+            // skip blank/comment lines
+            while (i < s.size()) {
+                char c = s[i];
+                if (c == '\n') { ++i; continue; }
+                if (c == ' ' || c == '\t' || c == '\r') { ++i; continue; }
+                if (c == '#') { while (i < s.size() && s[i] != '\n') ++i; continue; }
+                break;
+            }
+            if (i >= s.size()) break;
+            if (s[i] == '[') {
+                get();
+                bool array_table = false;
+                if (i < s.size() && s[i] == '[') { array_table = true; get(); }
+                std::vector<std::string> path;
+                for (;;) {
+                    ws_inline();
+                    path.push_back(parse_key());
+                    ws_inline();
+                    if (i < s.size() && s[i] == '.') { get(); continue; }
+                    break;
+                }
+                if (array_table) {
+                    if (s[i] != ']') fail("expected ']' for array of tables");
+                    get();
+                    if (s[i] != ']') fail("expected ']' for array of tables");
+                    get();
+                    open_array_table(root, path);
+                } else {
+                    if (s[i] != ']') fail("expected ']' in table header");
+                    get();
+                }
+                // consume rest of line
+                while (i < s.size() && s[i] != '\n') ++i;
+                cur_path = std::move(path);
+                continue;
+            }
+            // key = value
+            ws_inline();
+            std::vector<std::string> path = cur_path;
+            for (;;) {
+                path.push_back(parse_key());
+                ws_inline();
+                if (i < s.size() && s[i] == '.') { get(); ws_inline(); continue; }
+                break;
+            }
+            ws_inline();
+            if (get() != '=') fail("expected '='");
+            auto val = parse_value();
+            assign(root, path, std::move(val), false);
+            // consume rest of line
+            while (i < s.size() && s[i] != '\n') ++i;
+        }
+        return root;
+    }
+};
+
+inline mvp_builtin_ptrany mvp_toml_parse(mvp_builtin_string const& src) {
+    MivaTomlParser parser(src);
+    auto doc = parser.parse_document();
+    return static_cast<mvp_builtin_ptrany>(doc.release());
+}
+
+// The TOML value model is identical to JSON, so all accessors delegate to the
+// JSON runtime (MivaToml == MivaJson).
+inline mvp_builtin_int mvp_toml_kind(mvp_builtin_ptrany v) { return mvp_json_kind(v); }
+inline mvp_builtin_int mvp_toml_bool(mvp_builtin_ptrany v) { return mvp_json_bool(v); }
+inline mvp_builtin_float mvp_toml_number(mvp_builtin_ptrany v) { return mvp_json_number(v); }
+inline mvp_builtin_string mvp_toml_string(mvp_builtin_ptrany v) { return mvp_json_string(v); }
+inline mvp_builtin_int mvp_toml_array_len(mvp_builtin_ptrany v) { return mvp_json_array_len(v); }
+inline mvp_builtin_ptrany mvp_toml_array_get(mvp_builtin_ptrany v, mvp_builtin_int i) { return mvp_json_array_get(v, i); }
+inline mvp_builtin_int mvp_toml_object_len(mvp_builtin_ptrany v) { return mvp_json_object_len(v); }
+inline mvp_builtin_string mvp_toml_object_key(mvp_builtin_ptrany v, mvp_builtin_int i) { return mvp_json_object_key(v, i); }
+inline mvp_builtin_ptrany mvp_toml_object_get(mvp_builtin_ptrany v, mvp_builtin_int i) { return mvp_json_object_get(v, i); }
+inline mvp_builtin_ptrany mvp_toml_object_find(mvp_builtin_ptrany v, mvp_builtin_string const& k) { return mvp_json_object_find(v, k); }
+inline void mvp_toml_free(mvp_builtin_ptrany v) { mvp_json_free(v); }
+
+static void mvp_toml_stringify_impl(MivaJson const* j, std::string& out, std::string const& prefix) {
+    // serialize an object as TOML [section] tables
+    if (j->kind == MivaJson::Kind::Object) {
+        bool any_scalar = false;
+        for (auto const& kv : j->obj) {
+            if (kv.second->kind != MivaJson::Kind::Object &&
+                kv.second->kind != MivaJson::Kind::Array) {
+                any_scalar = true;
+                out += kv.first;
+                out += " = ";
+                mvp_toml_stringify_impl(kv.second.get(), out, prefix);
+                out += "\n";
+            }
+        }
+        if (any_scalar) out += "\n";
+        for (auto const& kv : j->obj) {
+            if (kv.second->kind == MivaJson::Kind::Object) {
+                std::string p = prefix.empty() ? kv.first : prefix + "." + kv.first;
+                out += "[";
+                out += p;
+                out += "]\n";
+                mvp_toml_stringify_impl(kv.second.get(), out, p);
+            } else if (kv.second->kind == MivaJson::Kind::Array) {
+                // array of tables? emit [[...]] when elements are objects
+                bool all_obj = !kv.second->arr.empty();
+                for (auto const& el : kv.second->arr) {
+                    if (el->kind != MivaJson::Kind::Object) { all_obj = false; break; }
+                }
+                if (all_obj) {
+                    for (auto const& el : kv.second->arr) {
+                        std::string p = prefix.empty() ? kv.first : prefix + "." + kv.first;
+                        out += "[[";
+                        out += p;
+                        out += "]]\n";
+                        mvp_toml_stringify_impl(el.get(), out, p);
+                    }
+                } else {
+                    out += kv.first;
+                    out += " = ";
+                    mvp_toml_stringify_impl(kv.second.get(), out, prefix);
+                    out += "\n\n";
+                }
+            }
+        }
+        return;
+    }
+    if (j->kind == MivaJson::Kind::Array) {
+        out.push_back('[');
+        for (size_t k = 0; k < j->arr.size(); ++k) {
+            if (k) out.push_back(',');
+            out.push_back(' ');
+            mvp_toml_stringify_impl(j->arr[k].get(), out, prefix);
+        }
+        out.push_back(']');
+        return;
+    }
+    switch (j->kind) {
+        case MivaJson::Kind::Null: out += "null"; break;
+        case MivaJson::Kind::Bool: out += j->b ? "true" : "false"; break;
+        case MivaJson::Kind::Number: {
+            std::string n = std::to_string(j->num);
+            auto dot = n.find('.');
+            if (dot != std::string::npos) {
+                size_t last = n.find_last_not_of('0');
+                if (last == std::string::npos || last <= dot) n.erase(dot);
+                else n.erase(last + 1);
+            }
+            out += n;
+            break;
+        }
+        case MivaJson::Kind::String:
+            out.push_back('"');
+            out += j->str;
+            out.push_back('"');
+            break;
+        default: break;
+    }
+}
+
+inline mvp_builtin_string mvp_toml_stringify(mvp_builtin_ptrany v) {
+    MivaJson* j = mvp_json_as_node(v);
+    std::string out;
+    out.reserve(64);
+    mvp_toml_stringify_impl(j, out, "");
+    return out;
+}
+
+// ── YAML parsing and serialization (mirrors std/json) ──────────────────────────
+//
+// YAML documents (block style subset) are parsed into the same `MivaJson` value
+// tree used by JSON. The `mvp_yaml_*` accessors delegate to the JSON ones.
+//
+// Supported subset:
+//   * block mappings (indentation-based nesting), inline `{k: v}` maps
+//   * block sequences (`- item`), inline `[a, b]` sequences
+//   * scalars: plain / single- / double-quoted strings, ints, floats,
+//     booleans, null (~/null/empty)
+
+using MivaYaml = MivaJson;
+
+struct MivaYamlParser {
+    mvp_builtin_string const& s;
+    size_t i = 0;
+    std::vector<int> indent_stack;
+
+    explicit MivaYamlParser(mvp_builtin_string const& src) : s(src) {}
+
+    [[noreturn]] void fail(char const* msg) {
+        mvp_panic(mvp_builtin_string("yaml: ") + msg +
+                   " (at position " + std::to_string(i) + ")");
+    }
+
+    void skip_ws() {
+        while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r')) ++i;
+    }
+    // Indentation of the current line (scan back to the last newline so the
+    // measurement is correct even when `i` points mid-line, e.g. at a dash).
+    int cur_indent() {
+        size_t start = i;
+        while (start > 0 && s[start - 1] != '\n') --start;
+        int n = 0;
+        while (start < s.size() && (s[start] == ' ' || s[start] == '\t')) {
+            if (s[start] != '\t') ++n;
+            ++start;
+        }
+        return n;
+    }
+    bool eol() { return i >= s.size() || s[i] == '\n'; }
+    char peek() { return i < s.size() ? s[i] : '\0'; }
+    char get() {
+        if (i >= s.size()) fail("unexpected end of input");
+        return s[i++];
+    }
+    void skip_line() { while (i < s.size() && s[i] != '\n') ++i; if (i < s.size()) ++i; }
+    void skip_comment() {
+        skip_ws();
+        if (i < s.size() && s[i] == '#') skip_line();
+    }
+
+    std::string parse_scalar() {
+        // assumes i points at first scalar char (after optional quote)
+        std::string out;
+        if (i < s.size() && (s[i] == '"' || s[i] == '\'')) {
+            char q = get();
+            while (i < s.size() && s[i] != q) out.push_back(get());
+            if (i < s.size()) get(); // closing quote
+            return out;
+        }
+        while (i < s.size() && s[i] != '\n' && s[i] != '#' && s[i] != ',' &&
+               !(s[i] == ' ' && (i + 1 >= s.size() || s[i + 1] == '#'))) {
+            out.push_back(s[i++]);
+        }
+        size_t b = 0, e = out.size();
+        while (b < e && (out[b] == ' ' || out[b] == '\t')) ++b;
+        while (e > b && (out[e - 1] == ' ' || out[e - 1] == '\t')) --e;
+        return out.substr(b, e - b);
+    }
+
+    // Parse a mapping/sequence key: stop at ':' (or ws immediately before
+    // ':', newline, or '#'). Unlike parse_scalar, this never consumes
+    // the value following the colon.
+    std::string parse_key() {
+        std::string out;
+        while (i < s.size()) {
+            char c = s[i];
+            if (c == ':' || c == '\n' || c == '#') break;
+            if (c == ' ' || c == '\t') {
+                size_t j = i;
+                while (j < s.size() && (s[j] == ' ' || s[j] == '\t')) ++j;
+                if (j >= s.size() || s[j] == ':' || s[j] == '#' || s[j] == '\n') break;
+            }
+            out.push_back(c);
+            ++i;
+        }
+        size_t b = 0, e = out.size();
+        while (b < e && (out[b] == ' ' || out[b] == '\t')) ++b;
+        while (e > b && (out[e - 1] == ' ' || out[e - 1] == '\t')) --e;
+        return out.substr(b, e - b);
+    }
+
+    std::unique_ptr<MivaJson> coerce(std::string const& raw) {
+        if (raw == "true") { auto v = std::make_unique<MivaJson>(MivaJson::Kind::Bool); v->b = true; return v; }
+        if (raw == "false") { auto v = std::make_unique<MivaJson>(MivaJson::Kind::Bool); v->b = false; return v; }
+        if (raw == "~" || raw == "null" || raw == "Null" || raw == "NULL" || raw.empty()) {
+            return std::make_unique<MivaJson>(MivaJson::Kind::Null);
+        }
+        // int
+        bool is_int = !raw.empty();
+        for (size_t k = 0; k < raw.size(); ++k) {
+            char c = raw[k];
+            if (k == 0 && c == '-') continue;
+            if (c < '0' || c > '9') { is_int = false; break; }
+        }
+        if (is_int) {
+            auto v = std::make_unique<MivaJson>(MivaJson::Kind::Number);
+            v->num = static_cast<double>(std::strtoll(raw.c_str(), nullptr, 10));
+            return v;
+        }
+        // float
+        bool is_float = !raw.empty();
+        bool dot = false;
+        for (size_t k = 0; k < raw.size(); ++k) {
+            char c = raw[k];
+            if (k == 0 && c == '-') continue;
+            if (c == '.') { dot = true; continue; }
+            if ((c < '0' || c > '9') && c != 'e' && c != 'E' && c != '+' && c != '-') { is_float = false; break; }
+        }
+        if (is_float && dot) {
+            auto v = std::make_unique<MivaJson>(MivaJson::Kind::Number);
+            v->num = std::strtod(raw.c_str(), nullptr);
+            return v;
+        }
+        auto v = std::make_unique<MivaJson>(MivaJson::Kind::String);
+        v->str = raw;
+        return v;
+    }
+
+    // Parse a mapping at the given indent level (block style).
+    std::unique_ptr<MivaJson> parse_mapping(int ind) {
+        auto obj = std::make_unique<MivaJson>(MivaJson::Kind::Object);
+        for (;;) {
+            skip_ws();
+            if (eol()) { if (i < s.size()) { ++i; continue; } break; }
+            if (i >= s.size()) break;
+            if (cur_indent() < ind) break;
+            if (cur_indent() > ind) break; // shouldn't happen
+            // key:
+            std::string key = parse_key();
+            skip_ws();
+            if (peek() != ':') break;
+            get(); // ':'
+            skip_ws();
+            if (eol() || i >= s.size()) {
+                // nested block
+                if (i < s.size()) ++i;
+                skip_ws();
+                if (i < s.size() && s[i] == '-') {
+                    obj->obj.emplace_back(key, parse_sequence(ind + 2));
+                } else {
+                    obj->obj.emplace_back(key, parse_mapping(ind + 2));
+                }
+            } else if (peek() == '[') {
+                obj->obj.emplace_back(key, parse_flow());
+                skip_line();
+            } else if (peek() == '{') {
+                obj->obj.emplace_back(key, parse_flow());
+                skip_line();
+            } else {
+                std::string val = parse_scalar();
+                obj->obj.emplace_back(key, coerce(val));
+                skip_line();
+            }
+        }
+        return obj;
+    }
+
+    // Parse a block sequence (`- item`) at current indent.
+    std::unique_ptr<MivaJson> parse_sequence(int ind) {
+        auto arr = std::make_unique<MivaJson>(MivaJson::Kind::Array);
+        for (;;) {
+            skip_ws();
+            if (eol()) { if (i < s.size()) { ++i; continue; } break; }
+            if (i >= s.size()) break;
+            if (cur_indent() < ind) break;
+            if (peek() != '-') break;
+            get(); // '-'
+            skip_ws();
+            if (eol() || i >= s.size()) {
+                if (i < s.size()) ++i;
+                skip_ws();
+                if (i < s.size() && s[i] == '-') {
+                    arr->arr.push_back(parse_sequence(ind + 2));
+                } else {
+                    arr->arr.push_back(parse_mapping(ind + 2));
+                }
+            } else if (peek() == '[') {
+                arr->arr.push_back(parse_flow());
+                skip_line();
+            } else if (peek() == '{') {
+                arr->arr.push_back(parse_flow());
+                skip_line();
+            } else {
+                // could be `key: value` (sequence of mappings) or a scalar
+                size_t j = i;
+                std::string first = parse_key();
+                skip_ws();
+                if (i < s.size() && peek() == ':' && (i + 1 >= s.size() || s[i + 1] == ' ')) {
+                    // sequence of mappings: rewind and parse a mapping at this dash indent
+                    i = j;
+                    auto m = std::make_unique<MivaJson>(MivaJson::Kind::Object);
+                    // parse one mapping block that follows, treating it as nested under this item.
+                    // Keys in `- k: v` items live at dash_indent + 2.
+                    for (;;) {
+                        skip_ws();
+                        if (eol()) { if (i < s.size()) { ++i; continue; } break; }
+                        if (i >= s.size()) break;
+                        // a dash starts the next sequence item -> this mapping is done
+                        if (peek() == '-') break;
+                        int ci = cur_indent() + 2;
+                        if (ci <= ind) break;
+                        std::string key = parse_key();
+                        skip_ws();
+                        if (peek() != ':') break;
+                        get();
+                        skip_ws();
+                        if (eol() || i >= s.size()) {
+                            if (i < s.size()) ++i;
+                            skip_ws();
+                            if (i < s.size() && s[i] == '-') m->obj.emplace_back(key, parse_sequence(ci));
+                            else m->obj.emplace_back(key, parse_mapping(ci));
+                        } else if (peek() == '[') {
+                            m->obj.emplace_back(key, parse_flow()); skip_line();
+                        } else if (peek() == '{') {
+                            m->obj.emplace_back(key, parse_flow()); skip_line();
+                        } else {
+                            m->obj.emplace_back(key, coerce(parse_scalar())); skip_line();
+                        }
+                    }
+                    arr->arr.push_back(std::move(m));
+                } else {
+                    arr->arr.push_back(coerce(first));
+                    skip_line();
+                }
+            }
+        }
+        return arr;
+    }
+
+    std::unique_ptr<MivaJson> parse_flow() {
+        char open = get();
+        auto node = (open == '[')
+            ? std::make_unique<MivaJson>(MivaJson::Kind::Array)
+            : std::make_unique<MivaJson>(MivaJson::Kind::Object);
+        skip_ws();
+        if (i < s.size() && (s[i] == ']' || s[i] == '}')) { get(); return node; }
+        for (;;) {
+            skip_ws();
+            if (open == '[') {
+                if (i < s.size() && s[i] == ']') { get(); break; }
+                if (i < s.size() && (s[i] == '"' || s[i] == '\'')) {
+                    node->arr.push_back(coerce(parse_scalar()));
+                } else {
+                    node->arr.push_back(coerce(parse_scalar()));
+                }
+            } else {
+                if (i < s.size() && s[i] == '}') { get(); break; }
+                std::string k = parse_key();
+                skip_ws();
+                if (i < s.size() && s[i] == ':') { get(); skip_ws(); }
+                if (i < s.size() && s[i] == '[') node->obj.emplace_back(k, parse_flow());
+                else if (i < s.size() && s[i] == '{') node->obj.emplace_back(k, parse_flow());
+                else node->obj.emplace_back(k, coerce(parse_key()));
+            }
+            skip_ws();
+            if (i < s.size() && s[i] == ',') { get(); skip_ws(); continue; }
+            if (i < s.size() && (s[i] == ']' || s[i] == '}')) { get(); break; }
+            skip_line();
+        }
+        return node;
+    }
+
+    std::unique_ptr<MivaJson> parse_document() {
+        skip_ws();
+        skip_comment();
+        if (i >= s.size()) return std::make_unique<MivaJson>(MivaJson::Kind::Null);
+        if (peek() == '-') return parse_sequence(0);
+        if (peek() == '[' || peek() == '{') return parse_flow();
+        return parse_mapping(0);
+    }
+};
+
+inline mvp_builtin_ptrany mvp_yaml_parse(mvp_builtin_string const& src) {
+    MivaYamlParser parser(src);
+    auto doc = parser.parse_document();
+    return static_cast<mvp_builtin_ptrany>(doc.release());
+}
+
+inline mvp_builtin_int mvp_yaml_kind(mvp_builtin_ptrany v) { return mvp_json_kind(v); }
+inline mvp_builtin_int mvp_yaml_bool(mvp_builtin_ptrany v) { return mvp_json_bool(v); }
+inline mvp_builtin_float mvp_yaml_number(mvp_builtin_ptrany v) { return mvp_json_number(v); }
+inline mvp_builtin_string mvp_yaml_string(mvp_builtin_ptrany v) { return mvp_json_string(v); }
+inline mvp_builtin_int mvp_yaml_array_len(mvp_builtin_ptrany v) { return mvp_json_array_len(v); }
+inline mvp_builtin_ptrany mvp_yaml_array_get(mvp_builtin_ptrany v, mvp_builtin_int i) { return mvp_json_array_get(v, i); }
+inline mvp_builtin_int mvp_yaml_object_len(mvp_builtin_ptrany v) { return mvp_json_object_len(v); }
+inline mvp_builtin_string mvp_yaml_object_key(mvp_builtin_ptrany v, mvp_builtin_int i) { return mvp_json_object_key(v, i); }
+inline mvp_builtin_ptrany mvp_yaml_object_get(mvp_builtin_ptrany v, mvp_builtin_int i) { return mvp_json_object_get(v, i); }
+inline mvp_builtin_ptrany mvp_yaml_object_find(mvp_builtin_ptrany v, mvp_builtin_string const& k) { return mvp_json_object_find(v, k); }
+inline void mvp_yaml_free(mvp_builtin_ptrany v) { mvp_json_free(v); }
+
+static void mvp_yaml_stringify_impl(MivaJson const* j, std::string& out, int ind) {
+    auto pad = [&](int n) { for (int k = 0; k < n; ++k) out.push_back(' '); };
+    if (j->kind == MivaJson::Kind::Object) {
+        bool first = true;
+        for (auto const& kv : j->obj) {
+            if (!first) out.push_back('\n');
+            first = false;
+            pad(ind);
+            out += kv.first;
+            out += ":";
+            if (kv.second->kind == MivaJson::Kind::Object) { out.push_back('\n'); mvp_yaml_stringify_impl(kv.second.get(), out, ind + 2); }
+            else if (kv.second->kind == MivaJson::Kind::Array) { out.push_back('\n'); mvp_yaml_stringify_impl(kv.second.get(), out, ind + 2); }
+            else { out.push_back(' '); mvp_yaml_stringify_impl(kv.second.get(), out, 0); }
+        }
+        return;
+    }
+    if (j->kind == MivaJson::Kind::Array) {
+        bool first = true;
+        for (auto const& el : j->arr) {
+            if (!first) out.push_back('\n');
+            first = false;
+            pad(ind);
+            out += "-";
+            if (el->kind == MivaJson::Kind::Object || el->kind == MivaJson::Kind::Array) { out.push_back('\n'); mvp_yaml_stringify_impl(el.get(), out, ind + 2); }
+            else { out.push_back(' '); mvp_yaml_stringify_impl(el.get(), out, 0); }
+        }
+        return;
+    }
+    switch (j->kind) {
+        case MivaJson::Kind::Null: out += "null"; break;
+        case MivaJson::Kind::Bool: out += j->b ? "true" : "false"; break;
+        case MivaJson::Kind::Number: {
+            std::string n = std::to_string(j->num);
+            auto dot = n.find('.');
+            if (dot != std::string::npos) {
+                size_t last = n.find_last_not_of('0');
+                if (last == std::string::npos || last <= dot) n.erase(dot);
+                else n.erase(last + 1);
+            }
+            out += n;
+            break;
+        }
+        case MivaJson::Kind::String: out += j->str; break;
+        default: break;
+    }
+}
+
+inline mvp_builtin_string mvp_yaml_stringify(mvp_builtin_ptrany v) {
+    MivaJson* j = mvp_json_as_node(v);
+    std::string out;
+    out.reserve(64);
+    mvp_yaml_stringify_impl(j, out, 0);
+    return out;
+}
+
 #endif // MVP_BUILTIN_H

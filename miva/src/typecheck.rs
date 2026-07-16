@@ -181,6 +181,22 @@ fn builtin_return_typ(name: &str) -> Option<Typ> {
         | "xml_comment" | "xml_cdata" | "xml_pi_target" | "xml_pi_data"
         | "xml_stringify" => Some(Typ::TString),
         "xml_free" => Some(Typ::TNull),
+        "toml_parse" | "toml_array_get" | "toml_object_get" | "toml_object_find" => {
+            Some(Typ::TPtrAny)
+        }
+        "toml_kind" | "toml_array_len" | "toml_object_len" => Some(Typ::TInt),
+        "toml_bool" => Some(Typ::TBool),
+        "toml_number" => Some(Typ::TFloat64),
+        "toml_string" | "toml_stringify" => Some(Typ::TString),
+        "toml_free" => Some(Typ::TNull),
+        "yaml_parse" | "yaml_array_get" | "yaml_object_get" | "yaml_object_find" => {
+            Some(Typ::TPtrAny)
+        }
+        "yaml_kind" | "yaml_array_len" | "yaml_object_len" => Some(Typ::TInt),
+        "yaml_bool" => Some(Typ::TBool),
+        "yaml_number" => Some(Typ::TFloat64),
+        "yaml_string" | "yaml_stringify" => Some(Typ::TString),
+        "yaml_free" => Some(Typ::TNull),
         _ => None,
     }
 }

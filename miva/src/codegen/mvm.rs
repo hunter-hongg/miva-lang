@@ -32,6 +32,11 @@ pub struct MvmCodegen {
 
     // --- Current function compilation state ---
     code: Vec<u8>,
+    /// Opcode of the most recently emitted instruction (None before any emit).
+    /// Used to decide whether a trailing `Ret`/`RetVal` already terminates the
+    /// function body, so we don't double-return or misread a multi-byte
+    /// instruction's operand byte as a terminal opcode.
+    last_emitted: Option<MvmOp>,
     locals_count: u32,
     local_indices: HashMap<String, Vec<u32>>, // name -> stack of indices (handles shadowing)
     scope_stack: Vec<u32>,
@@ -65,8 +70,18 @@ impl MvmCodegen {
             ("xml_attr_count", 40), ("xml_attr_name", 41), ("xml_attr_value", 42),
             ("xml_attr_find", 43), ("xml_child_count", 44), ("xml_child_get", 45),
             ("xml_text", 46), ("xml_comment", 47), ("xml_cdata", 48),
-            ("xml_pi_target", 49), ("xml_pi_data", 50), ("xml_stringify", 51),
+            ("xml_pi_target", 49), ("xml_pi_data", 50),             ("xml_stringify", 51),
             ("xml_free", 52),
+            ("toml_parse", 53), ("toml_kind", 54), ("toml_bool", 55),
+            ("toml_number", 56), ("toml_string", 57), ("toml_array_len", 58),
+            ("toml_array_get", 59), ("toml_object_len", 60), ("toml_object_key", 61),
+            ("toml_object_get", 62), ("toml_object_find", 63), ("toml_free", 64),
+            ("toml_stringify", 65),
+            ("yaml_parse", 66), ("yaml_kind", 67), ("yaml_bool", 68),
+            ("yaml_number", 69), ("yaml_string", 70), ("yaml_array_len", 71),
+            ("yaml_array_get", 72), ("yaml_object_len", 73), ("yaml_object_key", 74),
+            ("yaml_object_get", 75), ("yaml_object_find", 76), ("yaml_free", 77),
+            ("yaml_stringify", 78),
         ];
         for (name, idx) in builtins {
             builtin_indices.insert(name.to_string(), idx);
@@ -80,6 +95,7 @@ impl MvmCodegen {
             struct_field_indices: HashMap::new(),
             impl_map: HashMap::new(),
             code: Vec::new(),
+            last_emitted: None,
             locals_count: 0,
             local_indices: HashMap::new(),
             scope_stack: Vec::new(),
@@ -89,9 +105,6 @@ impl MvmCodegen {
             current_func_name: String::new(),
         }
     }
-
-    // --- String pool helpers ---
-
     fn resolve_string(&mut self, s: &str) -> u32 {
         if let Some(&idx) = self.string_indices.get(s) {
             return idx;
@@ -124,11 +137,11 @@ impl MvmCodegen {
         self.code.extend_from_slice(&v.to_le_bytes());
     }
 
+    // --- Label management ---
     fn emit_op(&mut self, op: MvmOp) {
         self.code.push(op as u8);
+        self.last_emitted = Some(op);
     }
-
-    // --- Label management ---
 
     fn new_label(&mut self) -> u32 {
         let id = self.next_label;
@@ -256,7 +269,6 @@ impl MvmCodegen {
     }
 
     // --- Main compilation entry ---
-
     pub fn build_ir(defs: &[Def]) -> MvmProgram {
         let mut cg = MvmCodegen::new();
         cg.collect_struct_info(defs);
@@ -352,14 +364,16 @@ impl MvmCodegen {
         self.compile_expr(body);
         self.pop_scope();
 
-        // If the function body didn't end with a return, add one
-        // Check if the last instruction is already a Ret or RetVal
-        let needs_ret = !self.code.is_empty() && self.code.last().map_or(true, |&b| {
-            !matches!(MvmOp::from_u8(b), Some(MvmOp::Ret | MvmOp::RetVal))
-        });
+        // If the function body didn't end with a return, add one. Use the
+        // tracked last-emitted opcode so a multi-byte instruction's operand
+        // byte (e.g. CallBuiltin's u8 index) is never mistaken for a terminal
+        // Ret/RetVal opcode.
+        let needs_ret = !self.code.is_empty()
+            && !matches!(self.last_emitted, Some(MvmOp::Ret | MvmOp::RetVal));
         if needs_ret {
             self.emit_op(MvmOp::RetVal);
         }
+        self.last_emitted = None;
 
         // Update function in table
         let arity = params.len() as u32;
