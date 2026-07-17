@@ -89,6 +89,18 @@ pub enum BinOp {
     Eq,
     #[serde(rename = "neq")]
     Neq,
+    #[serde(rename = "lt")]
+    Lt,
+    #[serde(rename = "gt")]
+    Gt,
+    #[serde(rename = "le")]
+    Le,
+    #[serde(rename = "ge")]
+    Ge,
+    #[serde(rename = "and")]
+    And,
+    #[serde(rename = "or")]
+    Or,
 }
 
 // ── Parameters ────────────────────────────────────────────────────────────
@@ -134,6 +146,15 @@ pub enum Stmt {
     SAssign {
         loc: Loc,
         name: String,
+        expr: Box<Expr>,
+    },
+    /// `target.field = expr` / `target.field := expr` — in-place field write.
+    /// `target` is stored as an expression (usually a var or field access).
+    #[serde(rename = "fieldAssign")]
+    SFieldAssign {
+        loc: Loc,
+        target: Box<Expr>,
+        field: String,
         expr: Box<Expr>,
     },
     #[serde(rename = "return")]

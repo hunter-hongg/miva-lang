@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 
@@ -23,6 +23,14 @@ pub struct MvmCodegen {
     functions: Vec<MvmFunction>,
     func_indices: HashMap<String, usize>,
     builtin_indices: HashMap<String, u8>,
+    /// For each function, the list of PRef parameter names.
+    func_ref_params: HashMap<String, Vec<String>>,
+    /// For each function that is `void` AND has at least one PRef parameter,
+    /// the list of its PRef parameter names. Such functions return the mutated
+    /// struct to the caller, which then stores it back into the arg's local.
+    /// Non-void ref-param functions (e.g. `get`, `len`, `pop`) return their real
+    /// result and must NOT trigger the caller-side store-back.
+    void_ref_params: HashMap<String, Vec<String>>,
 
     // --- Struct field maps ---
     struct_field_indices: HashMap<String, Vec<(String, usize)>>, // struct name -> [(field_name, index)]
@@ -41,6 +49,8 @@ pub struct MvmCodegen {
     local_indices: HashMap<String, Vec<u32>>, // name -> stack of indices (handles shadowing)
     scope_stack: Vec<u32>,
     param_types: HashMap<String, Typ>, // parameter name -> type
+    /// Set of local indices that hold reference pointers (PRef params).
+    ptr_params: HashSet<u32>,
 
     // --- Label management ---
     labels: HashMap<u32, Label>,
@@ -82,6 +92,8 @@ impl MvmCodegen {
             ("yaml_array_get", 72), ("yaml_object_len", 73), ("yaml_object_key", 74),
             ("yaml_object_get", 75), ("yaml_object_find", 76), ("yaml_free", 77),
             ("yaml_stringify", 78),
+            ("ptr_alloc", 79), ("ptr_free", 80), ("ptr_realloc", 81),
+            ("ptr_offset", 82), ("ptr_set", 83), ("ptr_ref", 84),
         ];
         for (name, idx) in builtins {
             builtin_indices.insert(name.to_string(), idx);
@@ -92,6 +104,8 @@ impl MvmCodegen {
             functions: Vec::new(),
             func_indices: HashMap::new(),
             builtin_indices,
+            func_ref_params: HashMap::new(),
+            void_ref_params: HashMap::new(),
             struct_field_indices: HashMap::new(),
             impl_map: HashMap::new(),
             code: Vec::new(),
@@ -100,6 +114,7 @@ impl MvmCodegen {
             local_indices: HashMap::new(),
             scope_stack: Vec::new(),
             param_types: HashMap::new(),
+            ptr_params: HashSet::new(),
             labels: HashMap::new(),
             next_label: 0,
             current_func_name: String::new(),
@@ -126,7 +141,11 @@ impl MvmCodegen {
     }
 
     fn emit_i32(&mut self, v: i32) {
+        let before = self.code.len();
         self.code.extend_from_slice(&v.to_le_bytes());
+        let after = self.code.len();
+        if after - before != 4 {
+        }
     }
 
     fn emit_i64(&mut self, v: i64) {
@@ -274,9 +293,12 @@ impl MvmCodegen {
         cg.collect_struct_info(defs);
 
         // Pass 1: collect function names and signatures
+        // Store both the bare name (for lookup_name compatibility) and the
+        // fully qualified name (to disambiguate functions with the same name
+        // from different modules, e.g. `free` in both vec.miva and mem.miva).
         for def in defs {
             match def {
-                Def::DFunc { name, params, is_async, .. } => {
+                Def::DFunc { name, params, is_async, returns, .. } => {
                     if !cg.func_indices.contains_key(name) {
                         let idx = cg.functions.len();
                         cg.func_indices.insert(name.clone(), idx);
@@ -288,6 +310,22 @@ impl MvmCodegen {
                             is_async: *is_async,
                             code: Vec::new(),
                         });
+                    }
+                    // Collect PRef parameter names for reference-parameter
+                    // analysis (used by SExpr caller-store-back logic).
+                    let ref_param_names: Vec<String> = params
+                        .iter()
+                        .filter_map(|p| {
+                            if let Param::PRef { name, .. } = p {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    cg.func_ref_params.insert(name.clone(), ref_param_names.clone());
+                    if returns.is_none() && !ref_param_names.is_empty() {
+                        cg.void_ref_params.insert(name.clone(), ref_param_names);
                     }
                 }
                 Def::DTest { name, .. } => {
@@ -310,15 +348,15 @@ impl MvmCodegen {
         // Pass 2: compile each function body
         for def in defs {
             match def {
-                Def::DFunc { name, params, returns: _, body, .. } => {
+                Def::DFunc { name, params, returns, body, .. } => {
                     let func_idx = cg.func_indices[name];
                     cg.current_func_name = name.clone();
-                    cg.compile_function(func_idx, params, body, false);
+                    cg.compile_function(func_idx, params, body, false, returns);
                 }
                 Def::DTest { name, body, .. } => {
                     let func_idx = cg.func_indices[name];
                     cg.current_func_name = name.clone();
-                    cg.compile_function(func_idx, &[], body, true);
+                    cg.compile_function(func_idx, &[], body, true, &None);
                 }
                 _ => {}
             }
@@ -339,7 +377,7 @@ impl MvmCodegen {
         }
     }
 
-    fn compile_function(&mut self, func_idx: usize, params: &[Param], body: &Expr, _is_test: bool) {
+    fn compile_function(&mut self, func_idx: usize, params: &[Param], body: &Expr, _is_test: bool, returns: &Option<Typ>) {
         // Reset state for new function
         self.code = Vec::new();
         self.locals_count = 0;
@@ -360,6 +398,36 @@ impl MvmCodegen {
         }
 
         // Compile the function body
+        // For non-void functions, handle implicit return from EBlock last expression.
+        if returns.is_some() {
+            if let Expr::EBlock { stmts, result, .. } = body {
+                if result.is_none() && !stmts.is_empty() {
+                    self.push_scope();
+                    // Compile all stmts except the last one normally.
+                    for stmt in &stmts[..stmts.len() - 1] {
+                        self.compile_stmt(stmt);
+                    }
+                    // Compile the last stmt as an expression (no trailing Drop).
+                    if let Stmt::SExpr { expr, .. } = &stmts[stmts.len() - 1] {
+                        self.compile_expr(expr);
+                    } else {
+                        self.compile_stmt(&stmts[stmts.len() - 1]);
+                    }
+                    self.pop_scope();
+                    if !matches!(self.last_emitted, Some(MvmOp::Ret | MvmOp::RetVal)) {
+                        self.emit_op(MvmOp::RetVal);
+                    }
+                    // IMPORTANT: update function table BEFORE returning, otherwise
+                    // the bytecode we just generated is lost (the normal path's
+                    // function table update at the end of this method is skipped).
+                    let arity = params.len() as u32;
+                    self.functions[func_idx].arity = arity;
+                    self.functions[func_idx].locals = self.locals_count;
+                    self.functions[func_idx].code = std::mem::take(&mut self.code);
+                    return; // skip the `compile_expr(body)` and PushUnit below
+                }
+            }
+        }
         self.push_scope();
         self.compile_expr(body);
         self.pop_scope();
@@ -371,6 +439,25 @@ impl MvmCodegen {
         let needs_ret = !self.code.is_empty()
             && !matches!(self.last_emitted, Some(MvmOp::Ret | MvmOp::RetVal));
         if needs_ret {
+            // If this function has ref parameters AND returns void, return
+            // the value of the first ref param so the caller can store the
+            // modified struct back (ref params are passed by value in the
+            // MVM backend; returning and re-storing is the simplest way to
+            // propagate mutations).
+            if returns.is_none() {
+                let ref_param_names = self.func_ref_params.get(&self.current_func_name);
+                if let Some(names) = ref_param_names {
+                    if let Some(ref_name) = names.first() {
+                        if let Some(idx) = self.resolve_local(ref_name) {
+                            // Drop the body's result (typically Unit) and
+                            // push the ref param value instead.
+                            self.emit_op(MvmOp::Drop);
+                            self.emit_op(MvmOp::LoadLocal);
+                            self.emit_u32(idx);
+                        }
+                    }
+                }
+            }
             self.emit_op(MvmOp::RetVal);
         }
         self.last_emitted = None;
@@ -487,9 +574,13 @@ impl MvmCodegen {
 
                 self.compile_expr(cond);
                 self.emit_jmp_if_false(else_label);
+                let before_then = self.code.len();
                 self.compile_expr(then);
+                let after_then = self.code.len();
                 self.emit_jmp(end_label);
+                let after_jmp = self.code.len();
                 self.define_label(else_label);
+                let after_else_label = self.code.len();
                 if let Some(else_expr) = else_ {
                     self.compile_expr(else_expr);
                 } else {
@@ -754,11 +845,85 @@ impl MvmCodegen {
                     self.emit_op(MvmOp::Drop);
                 }
             }
+            Stmt::SFieldAssign { target, field, expr, .. } => {
+                // `target.field = expr` — MVM backend field write.
+                // Compile the target struct, the new value, emit StructSet
+                // with the field index, then store the modified struct back
+                // into the target local slot.
+                if let Expr::EVar { name, .. } | Expr::EMove { name, .. } = target.as_ref() {
+                    if let Some(local_idx) = self.resolve_local(name) {
+                        if let Some(field_list) = self.find_field_list(target) {
+                            if let Some(idx) = field_list.iter().position(|(fname, _)| fname == field) {
+                                self.compile_expr(target);
+                                self.compile_expr(expr);
+                                self.emit_op(MvmOp::StructSet);
+                                self.emit_u32(idx as u32);
+                                self.emit_op(MvmOp::StoreLocal);
+                                self.emit_u32(local_idx);
+                                return;
+                            }
+                        }
+                    }
+                }
+                // Fallback for unhandled targets: evaluate both and discard.
+                self.compile_expr(target);
+                self.compile_expr(expr);
+                self.emit_op(MvmOp::Drop);
+                self.emit_op(MvmOp::Drop);
+            }
             Stmt::SReturn { expr, .. } => {
                 self.compile_expr(expr);
-                self.emit_op(MvmOp::RetVal);
+                // For void functions with ref parameters, the return should
+                // carry the modified ref-param value back to the caller so
+                // that the caller's SExpr store-back logic works correctly.
+                // Drop the expression result and push the ref param instead.
+                if self.current_func_name.is_empty() {
+                    // Not inside a function (shouldn't happen)
+                    self.emit_op(MvmOp::RetVal);
+                } else {
+                    // Only void functions with ref parameters return the mutated
+                    // ref-param struct; non-void ref-param functions (e.g. `get`,
+                    // `pop`) return their real expression result.
+                    let is_void_ref = self.void_ref_params.contains_key(&self.current_func_name);
+                    if is_void_ref {
+                        let ref_param_names = self.func_ref_params.get(&self.current_func_name);
+                        if let Some(names) = ref_param_names {
+                            if let Some(ref_name) = names.first() {
+                                if let Some(idx) = self.resolve_local(ref_name) {
+                                    self.emit_op(MvmOp::Drop);
+                                    self.emit_op(MvmOp::LoadLocal);
+                                    self.emit_u32(idx);
+                                }
+                            }
+                        }
+                    }
+                    self.emit_op(MvmOp::RetVal);
+                }
             }
             Stmt::SExpr { expr, .. } => {
+                // If the expression is a call to a function with ref
+                // parameters, the called function now returns the modified
+                // ref-param value (instead of Unit). Store it back into
+                // the corresponding local slot.
+                if let Expr::ECall { name, args, .. } = expr.as_ref() {
+                    let lookup_name = name.rsplit('.').next().unwrap_or(name);
+                    if let Some(ref_names) = self.void_ref_params.get(lookup_name) {
+                        if let Some(first_ref) = ref_names.first() {
+                            if let Some(pos) = ref_names.iter().position(|n| n == first_ref) {
+                                if pos < args.len() {
+                                    if let Expr::EVar { name, .. } | Expr::EMove { name, .. } = &args[pos] {
+                                        if let Some(idx) = self.resolve_local(name) {
+                                            self.compile_expr(expr);
+                                            self.emit_op(MvmOp::StoreLocal);
+                                            self.emit_u32(idx);
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 self.compile_expr(expr);
                 self.emit_op(MvmOp::Drop);
             }
@@ -779,6 +944,12 @@ impl MvmCodegen {
             BinOp::Mul => self.emit_op(MvmOp::I64Mul),
             BinOp::Eq => self.emit_op(MvmOp::CmpEq),
             BinOp::Neq => self.emit_op(MvmOp::CmpNeq),
+            BinOp::Lt => self.emit_op(MvmOp::CmpLt),
+            BinOp::Gt => self.emit_op(MvmOp::CmpGt),
+            BinOp::Le => self.emit_op(MvmOp::CmpLe),
+            BinOp::Ge => self.emit_op(MvmOp::CmpGe),
+            BinOp::And => self.emit_op(MvmOp::I64And),
+            BinOp::Or => self.emit_op(MvmOp::I64Or),
         }
     }
 
@@ -824,6 +995,12 @@ impl MvmCodegen {
             BinOp::Mul => "mul",
             BinOp::Eq => "eq",
             BinOp::Neq => "neq",
+            BinOp::Lt => "lt",
+            BinOp::Gt => "gt",
+            BinOp::Le => "le",
+            BinOp::Ge => "ge",
+            BinOp::And => "and",
+            BinOp::Or => "or",
         };
 
         // Try to find any impl that matches this operator

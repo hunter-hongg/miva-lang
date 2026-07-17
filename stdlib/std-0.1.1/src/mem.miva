@@ -8,7 +8,7 @@ unsafe realloc = (ref p: ptrany, size: int): ptrany => {
   ptr_realloc(p, size);
 }
 
-unsafe free = (ref p: ptrany) => {
+unsafe mem_free = (ref p: ptrany) => {
   ptr_free(p);
 }
 
@@ -16,5 +16,5 @@ unsafe offset = (ref p: ptrany, n: int): ptrany => ptr_offset(p, n)
 
 export alloc;
 export realloc;
-export free;
+export mem_free;
 export offset;

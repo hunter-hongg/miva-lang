@@ -266,6 +266,10 @@ fn check_stmt(stmt: &Stmt, modname: &str, warnings: &mut Vec<Warning>) {
         Stmt::SAssign { expr, .. } => {
             check_expr(expr, modname, warnings);
         }
+        Stmt::SFieldAssign { target, expr, .. } => {
+            check_expr(target, modname, warnings);
+            check_expr(expr, modname, warnings);
+        }
         Stmt::SReturn { expr, .. } => {
             check_expr(expr, modname, warnings);
         }

@@ -168,6 +168,10 @@ pub struct Mvm {
     exit_code: i64,
     /// Maximum stack depth for safety.
     max_stack: usize,
+    /// Linear memory for ptr_alloc/ptr_free/ptr_realloc etc.
+    /// ptr_alloc(n) allocates n/8 Value slots (since elem_size[T]() = 8 for all T).
+    /// pointer = start slot index.
+    memory: Vec<Value>,
 }
 
 impl Mvm {
@@ -221,6 +225,7 @@ impl Mvm {
             halted: false,
             exit_code: 0,
             max_stack: 100_000,
+            memory: Vec::new(),
         }
     }
 
@@ -405,6 +410,9 @@ impl Mvm {
                 .ok_or_else(|| format!("Unknown opcode: 0x{:02X} at pc={}", op_byte, self.pc))?;
             self.pc += 1;
 
+            // Debug: trace execution
+            let func_name = func.name(&self.program.strings).to_string();
+
             match op {
                 Opcode::Nop => {}
 
@@ -521,8 +529,24 @@ impl Mvm {
                 Opcode::I64Neg => { let a = self.pop().as_i64().unwrap(); self.push(Value::Int(-a)); }
                 Opcode::I64Shl => { let b = self.pop().as_i64().unwrap(); let a = self.pop().as_i64().unwrap(); self.push(Value::Int(a << b)); }
                 Opcode::I64Shr => { let b = self.pop().as_i64().unwrap(); let a = self.pop().as_i64().unwrap(); self.push(Value::Int(a >> b)); }
-                Opcode::I64And => { let b = self.pop().as_i64().unwrap(); let a = self.pop().as_i64().unwrap(); self.push(Value::Int(a & b)); }
-                Opcode::I64Or => { let b = self.pop().as_i64().unwrap(); let a = self.pop().as_i64().unwrap(); self.push(Value::Int(a | b)); }
+                Opcode::I64And => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    match (a, b) {
+                        (Value::Bool(x), Value::Bool(y)) => self.push(Value::Bool(x && y)),
+                        (Value::Int(x), Value::Int(y)) => self.push(Value::Int(x & y)),
+                        (x, y) => return Err(format!("I64And: expected bool or int operands, got {} and {}", x.type_name(), y.type_name())),
+                    }
+                }
+                Opcode::I64Or => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    match (a, b) {
+                        (Value::Bool(x), Value::Bool(y)) => self.push(Value::Bool(x || y)),
+                        (Value::Int(x), Value::Int(y)) => self.push(Value::Int(x | y)),
+                        (x, y) => return Err(format!("I64Or: expected bool or int operands, got {} and {}", x.type_name(), y.type_name())),
+                    }
+                }
                 Opcode::I64Xor => { let b = self.pop().as_i64().unwrap(); let a = self.pop().as_i64().unwrap(); self.push(Value::Int(a ^ b)); }
 
                 // Float64 arithmetic
@@ -610,7 +634,6 @@ impl Mvm {
                         let f = &self.program.functions[func_idx];
                         (f.arity as usize, f.locals as usize, f.is_async)
                     };
-
                     if is_async {
                         // Collect args from stack
                         let arg_start = if self.stack.len() >= arity { self.stack.len() - arity } else { 0 };
@@ -664,9 +687,9 @@ impl Mvm {
                         self.call_stack.push(frame);
 
                         // Execute the called function
-                        let call_result = self.execute_loop();
+                        self.execute_loop()?;
                         if self.halted {
-                            return call_result;
+                            return Ok(());
                         }
 
                         // Restore caller context
@@ -786,9 +809,7 @@ impl Mvm {
                                 return Err(format!("Struct field index {} out of bounds", field_idx));
                             }
                             fields[field_idx] = value;
-                            // We can't push back the struct easily since we consumed it
-                            // We need to push the result
-                            self.push(Value::Unit);
+                            self.push(Value::Struct(fields));
                         }
                         v => return Err(format!("StructSet expected struct, got {}", v.type_name())),
                     }
@@ -835,6 +856,14 @@ impl Mvm {
                             let val = locals.lock().unwrap()[idx].clone();
                             self.push(val);
                         }
+                        Value::Int(addr) => {
+                            // Raw memory pointer: load from self.memory[addr]
+                            let addr = addr as usize;
+                            if addr >= self.memory.len() {
+                                return Err(format!("PtrLoad: out of bounds memory access at {}", addr));
+                            }
+                            self.push(self.memory[addr].clone());
+                        }
                         v => return Err(format!("PtrLoad expected ptr, got {}", v.type_name())),
                     }
                 }
@@ -844,6 +873,14 @@ impl Mvm {
                     match ptr_val {
                         Value::Ptr(idx, locals) => {
                             locals.lock().unwrap()[idx] = val;
+                        }
+                        Value::Int(addr) => {
+                            // Raw memory pointer: store to self.memory[addr]
+                            let addr = addr as usize;
+                            if addr >= self.memory.len() {
+                                self.memory.resize(addr + 1, Value::Unit);
+                            }
+                            self.memory[addr] = val;
                         }
                         v => return Err(format!("PtrStore expected ptr, got {}", v.type_name())),
                     }
@@ -1803,6 +1840,64 @@ impl Mvm {
                     _ => return Err("yaml_stringify: expected yaml value".into()),
                 };
                 self.push(Value::String(Arc::new(s)));
+            }
+            // ptr_alloc(n_bytes) -> allocate n_bytes/8 Value slots, return start index
+            // Since elem_size[T]() = 8 for all T (stdlib), byte counts are always
+            // multiples of 8. We divide by 8 to get the number of Value slots.
+            79 => {
+                let bytes = self.pop().as_i64().ok_or("ptr_alloc expected int")? as usize;
+                let n = bytes / 8 + (if bytes % 8 > 0 { 1 } else { 0 });
+                let base = self.memory.len();
+                self.memory.resize(base + n, Value::Unit);
+                self.push(Value::Int(base as i64));
+            }
+            // ptr_free(p) -> free (no-op in flat memory)
+            80 => {
+                let _p = self.pop().as_i64().ok_or("ptr_free expected int")?;
+                self.push(Value::Unit);
+            }
+            // ptr_realloc(p, n_bytes) -> reallocate to n_bytes/8 Value slots
+            81 => {
+                let bytes = self.pop().as_i64().ok_or("ptr_realloc expected int")? as usize;
+                let p = self.pop().as_i64().ok_or("ptr_realloc expected int")? as usize;
+                let n = bytes / 8 + (if bytes % 8 > 0 { 1 } else { 0 });
+                let old_size = if p < self.memory.len() {
+                    self.memory.len() - p
+                } else { 0 };
+                let base = self.memory.len();
+                self.memory.resize(base + n, Value::Unit);
+                let copy_len = old_size.min(n);
+                for i in 0..copy_len {
+                    self.memory[base + i] = std::mem::replace(&mut self.memory[p + i], Value::Unit);
+                }
+                self.push(Value::Int(base as i64));
+            }
+            // ptr_offset(p, n_bytes) -> p + n_bytes/8 (slot index)
+            82 => {
+                let n_val = self.pop();
+                let p_val = self.pop();
+                let n = n_val.as_i64().ok_or("ptr_offset expected int")? as i64;
+                let p = p_val.as_i64().ok_or("ptr_offset expected int")?;
+                let slot_offset = n / 8;
+                self.push(Value::Int(p + slot_offset));
+            }
+            // ptr_set(p, val) -> write val at memory[p]
+            83 => {
+                let val = self.pop();
+                let p = self.pop().as_i64().ok_or("ptr_set expected int")? as usize;
+                if p >= self.memory.len() {
+                    self.memory.resize(p + 1, Value::Unit);
+                }
+                self.memory[p] = val;
+                self.push(Value::Unit);
+            }
+            // ptr_ref(p) -> read from memory[p]
+            84 => {
+                let p = self.pop().as_i64().ok_or("ptr_ref expected int")? as usize;
+                if p >= self.memory.len() {
+                    return Err("ptr_ref: out of bounds".into());
+                }
+                self.push(self.memory[p].clone());
             }
             _ => return Err(format!("Unknown builtin index: {}", idx)),
         }

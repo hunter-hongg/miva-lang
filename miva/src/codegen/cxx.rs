@@ -59,7 +59,7 @@ pub fn cxx_type(typ: &Typ) -> String {
 
 fn cxx_param(param: &Param) -> String {
     match param {
-        Param::PRef { name, typ } => format!("{} const& {}", cxx_type(typ), name),
+        Param::PRef { name, typ } => format!("{}& {}", cxx_type(typ), name),
         Param::POwn { name, typ } => format!("{} {}", cxx_type(typ), name),
     }
 }
@@ -67,7 +67,34 @@ fn cxx_param(param: &Param) -> String {
 fn cxx_func_decl(name: &str, params: &[Param], ret: &Option<Typ>) -> String {
     let param_list: Vec<_> = params.iter().map(cxx_param).collect();
     let ret_type = ret.as_ref().map_or("mvp_builtin_unit".into(), cxx_type);
-    format!("{} {}({});\n", ret_type, name, param_list.join(", "))
+    format!("{} {}({});\n", ret_type, mangle_cpp_kw(name), param_list.join(", "))
+}
+
+/// Mangle a Miva identifier that collides with a C++ keyword so the emitted
+/// C++ compiles. `new`, `delete`, `class`, `template`, `typename`, etc. get an
+/// `mvp_` prefix. Applied to every function/definition name we emit and every
+/// call name we reference, so caller and callee stay in sync.
+fn mangle_cpp_kw(name: &str) -> String {
+    // Only mangle the bare (last) identifier — qualified names like
+    // `mvp_std::mem::offset` have namespace separators we must preserve.
+    // Split on '::' and mangle only the trailing segment.
+    let last_seg_start = name.rfind("::").map(|i| i + 2).unwrap_or(0);
+    let prefix = &name[..last_seg_start];
+    let tail = &name[last_seg_start..];
+    let mangled_tail = match tail {
+        "new" | "delete" | "class" | "template" | "typename" | "operator"
+        | "public" | "private" | "protected" | "virtual" | "namespace"
+        | "using" | "struct" | "enum" | "union" | "typedef" | "auto"
+        | "static" | "extern" | "const" | "volatile" | "register" | "inline"
+        | "friend" | "this" | "throw" | "try" | "catch" | "goto" | "return"
+        | "break" | "continue" | "if" | "else" | "while" | "for" | "switch"
+        | "case" | "default" | "do" | "sizeof" | "and" | "or" | "not"
+        | "xor" | "bitand" | "bitor" | "compl" | "true" | "false" => {
+            format!("mvp_{}", tail)
+        }
+        _ => tail.to_string(),
+    };
+    format!("{}{}", prefix, mangled_tail)
 }
 
 pub fn map_builtin(name: &str) -> String {
@@ -157,7 +184,11 @@ pub fn map_builtin(name: &str) -> String {
             if parts.first() == Some(&"ffi") {
                 parts[1..].join("::")
             } else {
-                parts.join("::")
+                // qualified name like `std.vec.new` → `mvp_std::vec::mvp_new`;
+                // mangle only the trailing identifier so C++ keywords (new,
+                // delete, class, ...) don't collide at the call site.
+                let joined = parts.join("::");
+                mangle_cpp_kw(&joined)
             }
         }
     }
@@ -285,7 +316,17 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
             ..
         } => cxx_call(name, args, type_args, depth),
         Expr::ECast { expr, to, .. } => {
-            format!("static_cast<{}>({})", cxx_type(to), cxx_expr(expr, depth))
+            // Integer <-> pointer reinterpret needs reinterpret_cast (static_cast
+            // between int and void* is not legal C++). All other casts go
+            // through static_cast as before.
+            let from_int = matches!(expr.as_ref(), Expr::EInt { .. })
+                || matches!(expr.as_ref(), Expr::EVar { .. });
+            let is_ptr_cast = matches!(to, Typ::TPtrAny) || from_int && matches!(to, Typ::TPtrAny);
+            if is_ptr_cast {
+                format!("reinterpret_cast<{}>({})", cxx_type(to), cxx_expr(expr, depth))
+            } else {
+                format!("static_cast<{}>({})", cxx_type(to), cxx_expr(expr, depth))
+            }
         }
         Expr::EBlock { stmts, result, .. } => cxx_block(stmts, result, depth),
         Expr::EChoose {
@@ -311,6 +352,13 @@ fn cxx_binop(op: &BinOp, left: &Expr, right: &Expr, depth: usize) -> String {
         BinOp::Mul => " * ",
         BinOp::Eq => " == ",
         BinOp::Neq => " != ",
+        BinOp::Lt => " < ",
+        BinOp::Gt => " > ",
+        BinOp::Le => " <= ",
+        BinOp::Ge => " >= ",
+        // Short-circuit logical: C++ `&&`/`||` already short-circuit on bool.
+        BinOp::And => " && ",
+        BinOp::Or => " || ",
     };
     format!(
         "({}{}{})",
@@ -340,11 +388,19 @@ fn cxx_if(cond: &Expr, then: &Expr, else_: &Option<Box<Expr>>, depth: usize) -> 
     let cond_str = cxx_expr(cond, depth);
     let then_str = cxx_expr(then, depth + 1);
     let else_str = match else_ {
-        Some(e) => format!(" else {{ return {}; }}", cxx_expr(e, depth + 1)),
+        Some(e) => format!(" else {{ {}; }}", cxx_expr(e, depth + 1)),
         None => String::new(),
     };
+    // Lambda returns void explicitly: when the if-condition is false and
+    // there's no else, control falls through to the lambda's closing brace
+    // and returns void — no `return` expression for g++ to infer a non-void
+    // return type from, so no `ud2`/[[noreturn]] trap on the fall-through
+    // path. The then/else bodies are emitted as expression statements
+    // (`{ body; }`) rather than `return body;` so a nested lambda inside
+    // the body (e.g. an inner if) doesn't make g++ infer this lambda's
+    // return type as the inner lambda's.
     format!(
-        "([&]() {{ if ({}) {{ return {}; }}{} }})()",
+        "([&]() -> void {{ if ({}) {{ {}; }}{} }})()",
         cond_str, then_str, else_str
     )
 }
@@ -501,6 +557,18 @@ fn cxx_stmt(depth: usize, stmt: &Stmt) -> String {
         Stmt::SAssign { name, expr, .. } => {
             format!("{}{} = {};\n", ind, name, cxx_expr(expr, depth))
         }
+        Stmt::SFieldAssign { target, field, expr, .. } => {
+            // `target.field = expr` → `(target).field = (expr);` in C++.
+            // The parens around target protect chained field writes like
+            // `a.b.c = x` from mis-grouping at the C++ level.
+            format!(
+                "{}({}).{} = ({});\n",
+                ind,
+                cxx_expr(target, depth),
+                field,
+                cxx_expr(expr, depth)
+            )
+        }
         Stmt::SCIntro { .. } | Stmt::SEmpty { .. } => String::new(),
     }
 }
@@ -627,7 +695,7 @@ fn cxx_cfunc(
 ) -> String {
     let param_strs: Vec<_> = params.iter().map(cxx_param).collect();
     let ret_type = returns.as_ref().map_or("mvp_builtin_unit".into(), cxx_type);
-    let signature = format!("{} {}({})", ret_type, name, param_strs.join(", "));
+    let signature = format!("{} {}({})", ret_type, mangle_cpp_kw(name), param_strs.join(", "));
     format!("{} {} {{\n{}{}}}\n\n", ind, signature, code, ind)
 }
 
@@ -642,7 +710,7 @@ fn cxx_normal_func(
 ) -> String {
     let param_strs: Vec<_> = params.iter().map(cxx_param).collect();
     let ret_type = returns.as_ref().map_or("mvp_builtin_unit".into(), cxx_type);
-    let signature = format!("{} {}({})", ret_type, name, param_strs.join(", "));
+    let signature = format!("{} {}({})", ret_type, mangle_cpp_kw(name), param_strs.join(", "));
     let template_header = if type_params.is_empty() {
         String::new()
     } else {
@@ -732,7 +800,7 @@ fn cxx_async_func(
     };
     let inner_ret = cxx_type(&inner_typ);
     let param_strs: Vec<_> = params.iter().map(cxx_param).collect();
-    let signature = format!("{} {}({})", ret_type, name, param_strs.join(", "));
+    let signature = format!("{} {}({})", ret_type, mangle_cpp_kw(name), param_strs.join(", "));
     let template_header = if type_params.is_empty() {
         String::new()
     } else {
@@ -919,7 +987,25 @@ fn generate_header(defs: &[Def]) -> String {
     if exported.is_empty() {
         return String::new();
     }
-    format!("#pragma once\n\n#include <mvp_builtin.h>\n\n{}\n", exported)
+    // Emit #include for every imported module header so cross-module symbols
+    // (e.g. `mvp_std::mem::alloc` used by vec.miva's template bodies) are
+    // declared at the point of instantiation. C++ templates require the
+    // callee's declaration be visible in the header that holds the template
+    // body, so this is necessary not just nice-to-have.
+    let mut includes = String::from("#include <mvp_builtin.h>\n");
+    for d in defs.iter() {
+        let path = match d {
+            Def::SImport { path, .. }
+            | Def::SImportHere { path, .. }
+            | Def::SImportAs { path, .. } => path,
+            _ => continue,
+        };
+        let inc = cxx_include_path(path);
+        if !inc.is_empty() {
+            includes.push_str(&inc);
+        }
+    }
+    format!("#pragma once\n\n{}\n{}\n", includes, exported)
 }
 
 fn collect_exported_rec(

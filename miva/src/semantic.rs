@@ -342,6 +342,10 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
                     Stmt::SReturn { loc, expr } => {
                         errs.extend(check_expr(ctx, symbol_table, expr));
                     }
+                    Stmt::SFieldAssign { loc, target, expr, .. } => {
+                        errs.extend(check_expr(ctx, symbol_table, target));
+                        errs.extend(check_expr(ctx, symbol_table, expr));
+                    }
                     Stmt::SExpr { loc, expr } => {
                         errs.extend(check_expr(ctx, symbol_table, expr));
                     }
@@ -360,11 +364,15 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
             errs.extend(check_expr(ctx, symbol_table, expr));
         }
         Expr::EDeref { loc, .. } => {
-            errs.push(Error::new(
-                "E0010",
-                loc,
-                "cannot dereference a ptr in a safe function.",
-            ));
+            // Pointer dereference is allowed inside `unsafe` (and `trusted`)
+            // functions; only flag it when the enclosing function is safe.
+            if ctx.caller_safety == Safety::Safe {
+                errs.push(Error::new(
+                    "E0010",
+                    loc,
+                    "cannot dereference a ptr in a safe function.",
+                ));
+            }
         }
         Expr::EWhile { loc, cond, body } => {
             errs.extend(check_expr(ctx, symbol_table, cond));

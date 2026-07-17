@@ -390,6 +390,12 @@ fn compile_src_to_obj(
                 src_path.to_str().unwrap(),
                 "-o",
                 obj_path.to_str().unwrap(),
+                // Cross-module template bodies (e.g. vec.miva calling
+                // mvp_std::mem::alloc inside a template) trip g++'s
+                // -Wtemplate-body diagnostic even when the declaration IS
+                // visible via #include. vec's headers emit the include, so
+                // silence this pedantic warning.
+                "-Wno-template-body",
             ];
 
             if !pic_flag.is_empty() {
@@ -716,7 +722,18 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
                                 params,
                                 returns,
                                 ..
-                            } => (type_params.clone(), params.clone(), returns.clone()),
+                            } => {
+                                // Normalize generic types so cross-module
+                                // signatures use TGenericParam (not TStruct)
+                                // for type parameter names — otherwise typecheck
+                                // cannot resolve `T` during instantiation.
+                                let norm_params =
+                                    typecheck::normalize_params(params, type_params);
+                                let norm_returns = returns
+                                    .as_ref()
+                                    .map(|r| typecheck::normalize_typ(r, type_params));
+                                (type_params.clone(), norm_params, norm_returns)
+                            }
                             _ => (Vec::new(), Vec::new(), None),
                         };
                         (type_params, params, returns)

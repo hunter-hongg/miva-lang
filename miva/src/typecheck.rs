@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // ── Generic type helpers ────────────────────────────────────────────────
 
 /// Convert TStruct references to TGenericParam when they match a type parameter name.
-fn normalize_typ(typ: &Typ, type_params: &[String]) -> Typ {
+pub(crate) fn normalize_typ(typ: &Typ, type_params: &[String]) -> Typ {
     match typ {
         Typ::TStruct { name, .. } if type_params.contains(name) => {
             Typ::TGenericParam { name: name.clone() }
@@ -38,7 +38,7 @@ fn normalize_typ(typ: &Typ, type_params: &[String]) -> Typ {
     }
 }
 
-fn normalize_params(params: &[Param], type_params: &[String]) -> Vec<Param> {
+pub(crate) fn normalize_params(params: &[Param], type_params: &[String]) -> Vec<Param> {
     params
         .iter()
         .map(|p| {
@@ -124,6 +124,24 @@ struct TypeEnv {
 }
 
 fn types_equal(a: &Typ, b: &Typ) -> bool {
+    // Generic-param equivalence: a bare `TStruct{name:"T"}` (no fields, no
+    // type args) that names a generic type parameter is the same type as the
+    // normalized `TGenericParam{name:"T"}` form. This lets the rest of type
+    // checking treat the two shapes — produced by different code paths
+    // (let-annotation parsing keeps TStruct; func_sigs normalize to
+    // TGenericParam) — as interchangeable without chasing every producer.
+    if let (Typ::TStruct { name: n1, fields: f1, type_args: ta1 },
+            Typ::TGenericParam { name: n2 }) = (a, b) {
+        if n1 == n2 && f1.is_empty() && ta1.is_empty() {
+            return true;
+        }
+    }
+    if let (Typ::TGenericParam { name: n1 },
+            Typ::TStruct { name: n2, fields: f2, type_args: ta2 }) = (a, b) {
+        if n1 == n2 && f2.is_empty() && ta2.is_empty() {
+            return true;
+        }
+    }
     match (a, b) {
         (
             Typ::TStruct {
@@ -480,6 +498,47 @@ fn infer_type(
                         (Typ::TBool, errs)
                     }
                 }
+                BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+                    // Ordering comparisons: both sides must be numeric (and
+                    // equal-typed) so the C++ backend can emit `<`/`>`/`<=`/`>=`.
+                    if !is_numeric(&lt) || !is_numeric(&rt) {
+                        errs.push(Error::new(
+                            "E0014",
+                            loc,
+                            &format!(
+                                "ordering comparison requires numeric types, got {:?} and {:?}",
+                                lt, rt
+                            ),
+                        ));
+                        (Typ::TInvalid, errs)
+                    } else if !types_equal(&lt, &rt) {
+                        errs.push(Error::new(
+                            "E0014",
+                            loc,
+                            &format!("type mismatch in comparison: {:?} vs {:?}", lt, rt),
+                        ));
+                        (Typ::TInvalid, errs)
+                    } else {
+                        (Typ::TBool, errs)
+                    }
+                }
+                BinOp::And | BinOp::Or => {
+                    // Logical AND/OR: both sides must be bool. Short-circuit
+                    // semantics are emitted by the C++ backend (`&&`/`||`).
+                    if lt != Typ::TBool || rt != Typ::TBool {
+                        errs.push(Error::new(
+                            "E0014",
+                            loc,
+                            &format!(
+                                "logical operator requires bool operands, got {:?} and {:?}",
+                                lt, rt
+                            ),
+                        ));
+                        (Typ::TInvalid, errs)
+                    } else {
+                        (Typ::TBool, errs)
+                    }
+                }
             }
         }
         Expr::EIf {
@@ -719,8 +778,26 @@ fn infer_type(
                                 ),
                             ));
                         } else {
+                            // fn_type_params: the callee's generic param names.
+                            // type_args: caller-supplied types (e.g. `push[T]`→`T`,
+                            // `push[int]`→`int`). A bare `TStruct{name:"T"}`
+                            // type arg that names an *outer* generic param must be
+                            // stored as `TGenericParam` so resolve_type can chain
+                            // substitutions correctly (else `Vec[T]` resolves to
+                            // `Vec<TStruct{name:"T"}>` which won't equal a real
+                            // `Vec<TGenericParam{name:"T"}>` arg type).
                             for (tp, ta) in fn_type_params.iter().zip(type_args.iter()) {
-                                type_subst.insert(tp.clone(), ta.clone());
+                                let norm_ta = match ta {
+                                    Typ::TStruct { name, fields, type_args }
+                                        if fields.is_empty()
+                                            && type_args.is_empty()
+                                            && name != "Vec" =>
+                                    {
+                                        Typ::TGenericParam { name: name.clone() }
+                                    }
+                                    _ => ta.clone(),
+                                };
+                                type_subst.insert(tp.clone(), norm_ta);
                             }
                         }
                     }
@@ -1033,7 +1110,17 @@ fn infer_type(
                 | (Typ::TFloat64, Typ::TFloat32)
                 | (Typ::TInt, Typ::TChar)
                 | (Typ::TChar, Typ::TInt)
-                | (Typ::TBool, Typ::TInt) => true,
+                | (Typ::TBool, Typ::TInt)
+                // Integer/pointer reinterpret: lets vec.miva materialise a
+                // null `ptrany` via `0 as ptrany` and recover an `int` handle
+                // from a `ptrany` when needed. The C++ backend lowers both
+                // through `static_cast<void*>(intptr_t)` / casts back.
+                | (Typ::TInt, Typ::TPtrAny)
+                | (Typ::TPtrAny, Typ::TInt)
+                // Opaque ptrany → typed ptr<T>: lets vec.miva turn the raw
+                // byte-offset pointer from std.mem.offset into a typed slot
+                // for ptr_set/deref. reinterpret_cast<void*> in cxx.rs.
+                | (Typ::TPtrAny, Typ::TPtr { .. }) => true,
                 _ if types_equal(&et, to) => true,
                 _ => false,
             };
@@ -1110,6 +1197,65 @@ fn infer_type(
                                 }
                             }
                             None => {}
+                        }
+                    }
+                    Stmt::SFieldAssign { target, field, expr, loc } => {
+                        // `target.field = expr`: require target to be a struct,
+                        // field to exist with type F, and expr to have type F.
+                        let (tt, te) = require_type(
+                            env,
+                            func_sigs,
+                            structs,
+                            struct_type_params,
+                            func_return,
+                            target,
+                        );
+                        errs.extend(te);
+                        let (et, ee) = require_type(
+                            env,
+                            func_sigs,
+                            structs,
+                            struct_type_params,
+                            func_return,
+                            expr,
+                        );
+                        errs.extend(ee);
+                        if let Typ::TStruct { name, .. } = &tt {
+                            match structs.get(name) {
+                                Some(fields) => {
+                                    match fields.iter().find(|f| f.name == *field) {
+                                        Some(f) => {
+                                            if !types_equal(&f.typ, &et) {
+                                                errs.push(Error::new(
+                                                    "E0014",
+                                                    loc,
+                                                    &format!(
+                                                        "field '{}' of struct '{}' has wrong type",
+                                                        field, name
+                                                    ),
+                                                ));
+                                            }
+                                        }
+                                        None => {
+                                            errs.push(Error::new(
+                                                "E0014",
+                                                loc,
+                                                &format!(
+                                                    "struct '{}' has no field '{}'",
+                                                    name, field
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                }
+                                None => {}
+                            }
+                        } else {
+                            errs.push(Error::new(
+                                "E0014",
+                                loc,
+                                "field assignment target is not a struct",
+                            ));
                         }
                     }
                     Stmt::SReturn { expr, loc } => {

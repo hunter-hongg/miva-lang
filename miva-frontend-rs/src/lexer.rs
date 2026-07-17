@@ -34,6 +34,12 @@ pub enum Token<'input> {
     Neq,          // !=
     Lt,           // <
     Gt,           // >
+    LtEq,         // <=
+    GtEq,         // >=
+    AndAnd,       // &&
+    OrOr,         // ||
+    Amp,          // &
+    Pipe,         // |
     Not,          // !
     // Keywords
     Let,
@@ -461,11 +467,35 @@ impl<'input> Iterator for Lexer<'input> {
                 }
                 b'<' => {
                     self.advance();
+                    if self.peek() == Some(b'=') {
+                        self.advance();
+                        return Some(Ok((start, Token::LtEq, self.pos)));
+                    }
                     return Some(Ok((start, Token::Lt, self.pos)));
                 }
                 b'>' => {
                     self.advance();
+                    if self.peek() == Some(b'=') {
+                        self.advance();
+                        return Some(Ok((start, Token::GtEq, self.pos)));
+                    }
                     return Some(Ok((start, Token::Gt, self.pos)));
+                }
+                b'&' => {
+                    self.advance();
+                    if self.peek() == Some(b'&') {
+                        self.advance();
+                        return Some(Ok((start, Token::AndAnd, self.pos)));
+                    }
+                    return Some(Ok((start, Token::Amp, self.pos)));
+                }
+                b'|' => {
+                    self.advance();
+                    if self.peek() == Some(b'|') {
+                        self.advance();
+                        return Some(Ok((start, Token::OrOr, self.pos)));
+                    }
+                    return Some(Ok((start, Token::Pipe, self.pos)));
                 }
                 b'+' => {
                     self.advance();

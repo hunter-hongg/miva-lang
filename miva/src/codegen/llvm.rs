@@ -479,6 +479,20 @@ fn emit_fresh_loads(ctx: &mut LlvmCtx, body: &mut String, before: &HashMap<Strin
     }
 }
 
+/// Whether the last non-empty instruction emitted into `body` is a block
+/// terminator (a `ret` or `br`). Used to avoid emitting a fall-through
+/// `br` (and a malformed merge `phi`) after a branch that already returns.
+fn body_ends_in_terminator(body: &str) -> bool {
+    for line in body.lines().rev() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        return t.starts_with("ret ") || t.starts_with("br ");
+    }
+    false
+}
+
 fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
     match expr {
         Expr::EInt { value, .. } => format!("{}", value),
@@ -556,6 +570,20 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
                 BinOp::Mul => { let tmp = ctx.gen_tmp("mul"); body.push_str(&format!("{}{} = mul i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); tmp }
                 BinOp::Eq => { let tmp = ctx.gen_tmp("cmp"); body.push_str(&format!("{}{} = icmp eq i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); let tmp2 = ctx.gen_tmp("cmpz"); body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp)); tmp2 }
                 BinOp::Neq => { let tmp = ctx.gen_tmp("cmp"); body.push_str(&format!("{}{} = icmp ne i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); let tmp2 = ctx.gen_tmp("cmpz"); body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp)); tmp2 }
+                BinOp::Lt => { let tmp = ctx.gen_tmp("cmp"); body.push_str(&format!("{}{} = icmp slt i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); let tmp2 = ctx.gen_tmp("cmpz"); body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp)); tmp2 }
+                BinOp::Gt => { let tmp = ctx.gen_tmp("cmp"); body.push_str(&format!("{}{} = icmp sgt i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); let tmp2 = ctx.gen_tmp("cmpz"); body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp)); tmp2 }
+                BinOp::Le => { let tmp = ctx.gen_tmp("cmp"); body.push_str(&format!("{}{} = icmp sle i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); let tmp2 = ctx.gen_tmp("cmpz"); body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp)); tmp2 }
+                BinOp::Ge => { let tmp = ctx.gen_tmp("cmp"); body.push_str(&format!("{}{} = icmp sge i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); let tmp2 = ctx.gen_tmp("cmpz"); body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp)); tmp2 }
+                // Short-circuit logical: LLVM has no native short-circuit icmp;
+                // emit `and i1`/`or i1` over the two bool i64 operands (each
+                // truncated to i1 first). vec.miva relies on these only inside
+                // `if (...)` conditions, so eager evaluation is fine for now.
+                BinOp::And => {
+                    let tmp = ctx.gen_tmp("and"); body.push_str(&format!("{}{} = and i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); tmp
+                }
+                BinOp::Or => {
+                    let tmp = ctx.gen_tmp("or"); body.push_str(&format!("{}{} = or i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); tmp
+                }
             }
         }
         Expr::EIf { cond, then, else_, .. } => {
@@ -571,15 +599,36 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
             body.push_str(&format!("{}:\n", label_then));
             ctx.indent += 1; let then_val = gen_expr(then, ctx, body); ctx.indent -= 1;
             let var_reloads_after_then = ctx.var_reloads.clone();
-            body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_end));
+            // If the `then` branch already terminates (e.g. it `return`s), do not
+            // emit a fall-through `br` and do not list it as a phi predecessor.
+            let then_terminated = body_ends_in_terminator(body);
+            if !then_terminated {
+                body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_end));
+            }
             ctx.var_reloads = var_reloads_before.clone();
             ctx.var_addrs = var_addrs_before.clone();
             body.push_str(&format!("{}:\n", label_else));
             ctx.indent += 1; let else_val = if let Some(else_expr) = else_ { gen_expr(else_expr, ctx, body) } else { "0".to_string() }; ctx.indent -= 1;
-            body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_end));
+            let else_terminated = body_ends_in_terminator(body);
+            if !else_terminated {
+                body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_end));
+            }
+            // Both branches terminate: the merge block is unreachable, drop it.
+            if then_terminated && else_terminated {
+                return "0".to_string();
+            }
             body.push_str(&format!("{}:\n", label_end));
             let phi_tmp = ctx.gen_tmp("phi");
-            body.push_str(&format!("{}{} = phi i64 [ {}, %{} ], [ {}, %{} ]\n", ctx.indent_str(), phi_tmp, then_val, label_then, else_val, label_else));
+            // Only non-terminated branches actually reach the merge block.
+            let mut phi_entries = String::new();
+            if !then_terminated { phi_entries.push_str(&format!("[ {}, %{} ], ", then_val, label_then)); }
+            if !else_terminated { phi_entries.push_str(&format!("[ {}, %{} ], ", else_val, label_else)); }
+            if !phi_entries.is_empty() {
+                // Drop the trailing ", ".
+                phi_entries.truncate(phi_entries.trim_end_matches(char::is_whitespace).len());
+                phi_entries.truncate(phi_entries.trim_end_matches(',').len());
+                body.push_str(&format!("{}{} = phi i64 {}\n", ctx.indent_str(), phi_tmp, phi_entries));
+            }
             // Restore var_addrs to pre-if state (branch-scoped allocations don't dominate post-if code)
             ctx.var_addrs = var_addrs_before;
             // Only reload variables that existed before the if (not ones declared inside branches)
@@ -600,6 +649,19 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
             let var_addrs_before = ctx.var_addrs.clone();
             body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_cond));
             body.push_str(&format!("{}:\n", label_cond));
+            // Reload every variable that was live before the loop so that the
+            // condition references the latest values from memory (SSA is
+            // immutable, so the loop body can only communicate updates through
+            // memory). Without these reloads a while-loop whose condition
+            // reads a variable that the body writes will loop forever.
+            for (name, addr) in &var_addrs_before {
+                if var_reloads_before.contains_key(name) {
+                    let reload = format!("{}.reloop.{}", name, ctx.tmp_counter);
+                    ctx.tmp_counter += 1;
+                    body.push_str(&format!("{}%{} = load i64, ptr %{}, align 8\n", ctx.indent_str(), reload, addr));
+                    ctx.var_reloads.insert(name.clone(), reload);
+                }
+            }
             let cond_val = gen_expr(cond, ctx, body); let cmp = ctx.gen_tmp("wc");
             body.push_str(&format!("{}{} = icmp ne i64 {}, 0\n", ctx.indent_str(), cmp, cond_val));
             body.push_str(&format!("{}br i1 {}, label %{}, label %{}\n", ctx.indent_str(), cmp, label_body, label_end));
@@ -736,9 +798,14 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
         Expr::EArrayLit { .. } => "0".to_string(),
         Expr::EAddr { expr: aexpr, .. } => gen_expr(aexpr, ctx, body),
         Expr::EDeref { expr: dexpr, .. } => {
+            // Pointer values are modelled as i64 addresses in the LLVM backend,
+            // so `gen_expr(dexpr)` yields an i64 holding the address. Convert it
+            // back to a real pointer before dereferencing.
             let val = gen_expr(dexpr, ctx, body);
+            let ptr_tmp = ctx.gen_tmp("deref_ptr");
+            body.push_str(&format!("{}{} = inttoptr i64 {} to ptr\n", ctx.indent_str(), ptr_tmp, val));
             let tmp = ctx.gen_tmp("deref");
-            body.push_str(&format!("{}{} = load i64, ptr {}\n", ctx.indent_str(), tmp, val));
+            body.push_str(&format!("{}{} = load i64, ptr {}\n", ctx.indent_str(), tmp, ptr_tmp));
             tmp
         }
         Expr::EMacro { .. } | Expr::EMacroVar { .. } => "0".to_string(),
@@ -754,8 +821,10 @@ fn is_ptr_arg(func_name: &str, arg_idx: usize) -> bool {
         "@miva_string_concat" | "@miva_string_from_str" => true,
         "@miva_string_parse" | "@miva_string_length" => true,
         "@miva_string_make" => arg_idx == 0,
+        // @miva_box_new_string takes ptr for both args (the box ptr and the string value)
+        "@miva_box_new_string" => arg_idx == 0 || arg_idx == 1,
         "@miva_box_new_int" | "@miva_box_new_float" | "@miva_box_new_bool"
-        | "@miva_box_new_byte" | "@miva_box_new_string" => arg_idx == 0,
+        | "@miva_box_new_byte" => arg_idx == 0,
         "@miva_box_deref_int" | "@miva_box_deref_float" | "@miva_box_deref_bool"
         | "@miva_box_deref_byte" => false,
         "@miva_box_deref_string" => true,
@@ -768,6 +837,10 @@ fn is_ptr_arg(func_name: &str, arg_idx: usize) -> bool {
         "@miva_toml_object_find" => arg_idx == 1,
         "@miva_yaml_parse" => arg_idx == 0,
         "@miva_yaml_object_find" => arg_idx == 1,
+        // Pointer-manipulation builtins (all take ptr as first arg)
+        "@miva_realloc" | "@miva_free" | "@miva_ptr_offset" => arg_idx == 0,
+        "@miva_ptr_set_i64" | "@miva_ptr_set_double" | "@miva_ptr_set_i8" | "@miva_ptr_set_ptr" => arg_idx == 0,
+        "@miva_async_spawn" => arg_idx == 0,
         _ => false,
     }
 }
@@ -791,6 +864,9 @@ fn ret_type(func_name: &str) -> &'static str {
             || n == "@miva_yaml_stringify" => "ptr",
         n if n == "@miva_box_deref_float" => "double",
         n if n == "@miva_box_deref_bool" || n == "@miva_box_deref_byte" => "i8",
+        // Pointer-manipulation builtins
+        "@miva_ptr_offset" => "ptr",
+        "@miva_free" | "@miva_ptr_set_i64" | "@miva_ptr_set_double" | "@miva_ptr_set_i8" | "@miva_ptr_set_ptr" => "void",
         n if n.starts_with("@miva_") || n.starts_with("@ffi_") => "i64",
         _ => "i64",
     }
@@ -906,7 +982,7 @@ fn gen_call(name: &str, args: &[Expr], type_args: &[Typ], ctx: &mut LlvmCtx, bod
     let ret_ty = ret_type(&func_name);
     if ret_ty == "void" {
         body.push_str(&format!("{}call void {}({})\n", ctx.indent_str(), func_name, arg_strs.join(", ")));
-        String::new()
+        "0".to_string()
     } else {
         let tmp = ctx.gen_tmp("call");
         body.push_str(&format!("{}{} = call {} {}({})\n", ctx.indent_str(), tmp, ret_ty, func_name, arg_strs.join(", ")));
@@ -992,6 +1068,20 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut LlvmCtx, body: &mut String) {
             let val = gen_expr(expr, ctx, body);
             body.push_str(&format!("  ret i64 {}\n", val));
         }
+        Stmt::SFieldAssign { target, field, expr, .. } => {
+            // `target.field = expr` — LLVM backend field write. Compute the
+            // base struct pointer (i64), GEP to the field's offset, store the
+            // value. Field indices come from the per-module struct field map
+            // in `ctx` (same source as EFieldAccess reads).
+            let base = gen_expr(target, ctx, body);
+            let val = gen_expr(expr, ctx, body);
+            let field_idx = ctx.field_idx.get(field.as_str()).copied().unwrap_or(0);
+            let ptr_tmp = ctx.gen_tmp("fa");
+            body.push_str(&format!("  {} = inttoptr i64 {} to ptr\n", ptr_tmp, base));
+            let gep = ctx.gen_tmp("g");
+            body.push_str(&format!("  {} = getelementptr i64, ptr {}, i64 {}\n", gep, ptr_tmp, field_idx));
+            body.push_str(&format!("  store i64 {}, ptr {}\n", val, gep));
+        }
         Stmt::SExpr { expr, .. } => { gen_expr(expr, ctx, body); }
         Stmt::SCIntro { content, .. } => { body.push_str(&format!("  ; {}\n", content)); }
         Stmt::SEmpty { .. } => {}
@@ -1038,7 +1128,26 @@ fn gen_func_def(
         }
     }
     let mut body_str = String::new();
-    let ret_val = gen_expr(body, &mut ctx, &mut body_str);
+    // Implicit return: for non-void functions whose body is a block with no
+    // explicit result expression, the last SExpr is treated as the block value
+    // (matching CXX's take_last_expr in cxx_func_inner).  Without this a
+    // function like `{ ptr_alloc(n); }` returns 0 instead of the allocation.
+    let ret_val = if _returns.is_some() {
+        if let Expr::EBlock { stmts, result: None, .. } = body {
+            if let Some((Stmt::SExpr { expr, .. }, leading)) = stmts.split_last() {
+                for s in leading {
+                    gen_stmt(s, &mut ctx, &mut body_str);
+                }
+                gen_expr(expr.as_ref(), &mut ctx, &mut body_str)
+            } else {
+                gen_expr(body, &mut ctx, &mut body_str)
+            }
+        } else {
+            gen_expr(body, &mut ctx, &mut body_str)
+        }
+    } else {
+        gen_expr(body, &mut ctx, &mut body_str)
+    };
     let mut out = String::new();
     out.push_str(&ctx.string_constants);
     out.push_str(&format!("define i64 @{}({}) {{\n", global_name, param_strs.join(", ")));

@@ -1,0 +1,56 @@
+module main;
+import "std/vec";
+
+// `std.vec.Vec[T]` is a growable, owned array backed by raw memory from
+// `std.mem`. It is constructed empty via `std.vec.new[T]()`, grown with
+// `push`, indexed with `get`/`set`, and must be released once via `free`.
+//
+// Most operations are `unsafe` because they dereference raw pointers; the
+// caller is responsible for freeing exactly once and not using a vec after
+// free. This demo walks the full lifecycle: build, query, mutate, copy,
+// shrink, and release.
+unsafe main = () => {
+  // ── Build ────────────────────────────────────────────────────────────
+  mut v := std.vec.new[int]();
+  std.vec.push[int](v, 10);
+  std.vec.push[int](v, 20);
+  std.vec.push[int](v, 30);
+  std.vec.push[int](v, 40);
+
+  printlns!("len=", std.vec.len[int](v), " cap=", std.vec.capacity[int](v));
+  printlns!("empty? ", std.vec.is_empty[int](v));
+
+  // ── Index ────────────────────────────────────────────────────────────
+  // `get` checks bounds and panics on out-of-range; `get_unchecked` skips
+  // the check for hot paths where the caller already proved `0 <= i < len`.
+  printlns!("v[0]=", std.vec.get[int](v, 0));
+  printlns!("v[3]=", std.vec.get[int](v, 3));
+
+  // ── Mutate ───────────────────────────────────────────────────────────
+  std.vec.set[int](v, 1, 99);
+  printlns!("after set v[1]=", std.vec.get[int](v, 1));
+
+  let last int = std.vec.pop[int](v);
+  printlns!("popped=", last, " len=", std.vec.len[int](v));
+
+  // ── Copy ─────────────────────────────────────────────────────────────
+  // `copy` makes an independent deep copy that owns its own buffer; it must
+  // be freed separately from the source.
+  mut w := std.vec.copy[int](v);
+  std.vec.push[int](w, 777);
+  printlns!("copy len=", std.vec.len[int](w), " src len=", std.vec.len[int](v));
+
+  // ── Truncate / shrink ────────────────────────────────────────────────
+  // truncate reduces len without reallocating; shrink_to_fit releases the
+  // unused tail so cap == len.
+  std.vec.truncate[int](v, 1);
+  printlns!("after truncate len=", std.vec.len[int](v));
+  std.vec.shrink_to_fit[int](v);
+  printlns!("after shrink_to_fit cap=", std.vec.capacity[int](v));
+
+  // ── Release ──────────────────────────────────────────────────────────
+  std.vec.free[int](v);
+  std.vec.free[int](w);
+
+  println("vec demo ok");
+}

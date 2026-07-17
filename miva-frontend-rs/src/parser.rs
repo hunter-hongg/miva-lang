@@ -723,12 +723,18 @@ impl<'input> Parser<'input> {
             };
             match self.peek_token()? {
                 Some(&Token::ColonEq) => {
+                    // `name := expr` (no `let`/`mut` prefix) is an assignment
+                    // to an existing variable, NOT a const re-declaration.
+                    // Emitting `SLet { mutable: false }` here would make the
+                    // C++ backend re-declare `const auto name = (expr)`
+                    // shadowing the outer binding and referencing the not-yet-
+                    // deducted inner name (g++ error "use of 'i' before
+                    // deduction of 'auto'"). `SAssign` emits `name = (expr);`.
                     self.advance()?; // ":="
                     let expr = self.parse_expr()?;
                     self.expect(&Token::Semi)?;
-                    Ok(Stmt::SLet {
+                    Ok(Stmt::SAssign {
                         loc: self.loc(start),
-                        mutable: false,
                         name,
                         expr: Box::new(expr),
                     })
@@ -742,6 +748,51 @@ impl<'input> Parser<'input> {
                         name,
                         expr: Box::new(expr),
                     })
+                }
+                Some(&Token::Dot) => {
+                    // `target.field := expr` / `target.field = expr`
+                    // (chained `.field` allowed; each segment stores one
+                    // SFieldAssign with `target` being the inner expression)
+                    let mut target = Expr::EVar {
+                        loc: self.loc(start),
+                        name: name.clone(),
+                    };
+                    // Walk one `.field` segment at a time; if after consuming
+                    // a segment the next token is `:=` or `=`, we emit a field
+                    // assignment whose target is everything parsed so far.
+                    // If instead there are more call/field suffixes, we fall
+                    // through to the regular expression-statement path.
+                    self.advance()?; // consume "."
+                    let (field, _) = self.expect_ident()?;
+                    match self.peek_token()? {
+                        Some(&Token::ColonEq) | Some(&Token::Eq) => {
+                            self.advance()?; // consume ":=" or "="
+                            let rhs = self.parse_expr()?;
+                            self.expect(&Token::Semi)?;
+                            Ok(Stmt::SFieldAssign {
+                                loc: self.loc(start),
+                                target: Box::new(target),
+                                field,
+                                expr: Box::new(rhs),
+                            })
+                        }
+                        _ => {
+                            // Not a field assignment: rebuild as a field-access
+                            // expression and continue parsing call/field suffixes
+                            // the way a normal ident-statement would.
+                            let mut expr = Expr::EFieldAccess {
+                                loc: self.loc(start),
+                                expr: Box::new(target),
+                                field,
+                            };
+                            expr = self.parse_call_suffix(expr)?;
+                            self.expect(&Token::Semi)?;
+                            Ok(Stmt::SExpr {
+                                loc: self.loc(start),
+                                expr: Box::new(expr),
+                            })
+                        }
+                    }
                 }
                 _ => {
                     // Expression starting with ident — continue parsing call/macro/field suffixes
@@ -1175,11 +1226,18 @@ impl<'input> Parser<'input> {
     }
 
     // Operator precedence levels (higher = tighter binding)
+    //   1: ||          (lowest)
+    //   2: &&
+    //   3: == != < > <= >=
+    //   4: + -
+    //   5: *            (highest)
     fn prece(&self, op: &Token<'input>) -> i32 {
         match op {
-            Token::EqEq | Token::Neq => 1,
-            Token::Plus | Token::Minus => 2,
-            Token::Star => 3,
+            Token::OrOr => 1,
+            Token::AndAnd => 2,
+            Token::EqEq | Token::Neq | Token::Lt | Token::Gt | Token::LtEq | Token::GtEq => 3,
+            Token::Plus | Token::Minus => 4,
+            Token::Star => 5,
             _ => 0,
         }
     }
@@ -1189,8 +1247,17 @@ impl<'input> Parser<'input> {
 
         loop {
             let op = match self.peek_token()? {
-                Some(&Token::Plus) | Some(&Token::Minus) | Some(&Token::Star)
-                | Some(&Token::EqEq) | Some(&Token::Neq) => {
+                Some(&Token::OrOr)
+                | Some(&Token::AndAnd)
+                | Some(&Token::EqEq)
+                | Some(&Token::Neq)
+                | Some(&Token::Lt)
+                | Some(&Token::Gt)
+                | Some(&Token::LtEq)
+                | Some(&Token::GtEq)
+                | Some(&Token::Plus)
+                | Some(&Token::Minus)
+                | Some(&Token::Star) => {
                     let tok = self.peek_token()?.unwrap().clone();
                     tok
                 }
@@ -1204,7 +1271,9 @@ impl<'input> Parser<'input> {
 
             self.advance()?; // consume operator
 
-            let right = self.parse_binary_expr(prec)?;
+            // All operators are left-associative: recurse with prec + 1 so a
+            // same-precedence operator to the right doesn't bind into us.
+            let right = self.parse_binary_expr(prec + 1)?;
 
             let binop = match &op {
                 Token::Plus => BinOp::Add,
@@ -1212,6 +1281,12 @@ impl<'input> Parser<'input> {
                 Token::Star => BinOp::Mul,
                 Token::EqEq => BinOp::Eq,
                 Token::Neq => BinOp::Neq,
+                Token::Lt => BinOp::Lt,
+                Token::Gt => BinOp::Gt,
+                Token::LtEq => BinOp::Le,
+                Token::GtEq => BinOp::Ge,
+                Token::AndAnd => BinOp::And,
+                Token::OrOr => BinOp::Or,
                 _ => unreachable!(),
             };
 
