@@ -1,6 +1,6 @@
 # Miva Programming Language
 
-Miva is a compiled systems programming language that transpiles to C++ and compiles to native binaries via g++. It features a strong static type system, generic programming, pattern matching, move semantics, a safety system, macros, and zero-cost C FFI.
+Miva is a compiled systems programming language. The compiler transpiles Miva source to C++ (the default backend), or to LLVM IR, or to Miva Virtual Machine (MVM) bytecode, and compiles to native binaries or runs directly on the interpreter. It features a strong static type system, generic programming, pattern matching, move semantics, a safety system, macros, and zero-cost C FFI.
 
 ## Table of Contents
 
@@ -20,6 +20,7 @@ Miva is a compiled systems programming language that transpiles to C++ and compi
 - [Generics](#generics)
 - [Safety Levels](#safety-levels)
 - [Move Semantics & Ownership](#move-semantics--ownership)
+- [Async](#async)
 - [Method Call Sugar](#method-call-sugar)
 - [Macros](#macros)
 - [Built-in Functions](#built-in-functions)
@@ -37,16 +38,28 @@ Miva is a compiled systems programming language that transpiles to C++ and compi
 Miva is a full-stack programming language compiler:
 
 1. **Frontend** (`miva-frontend-rs`) — lexes and parses `.miva` source files, producing a JSON AST.
-2. **Compiler** (`miva`) — loads the JSON AST, performs macro expansion, semantic analysis, type checking, and generates C++ code.
-3. **Backend** (`g++`) — compiles the emitted C++ to native machine code (`.o` files) and links them into an executable or shared library.
+2. **Compiler** (`miva`) — loads the JSON AST, performs macro expansion, semantic analysis, type checking, and generates code for the selected backend.
+3. **Backend** — one of three backends (see below) turns the generated artifact into a native binary or runs it on the MVM interpreter.
 
 The compilation pipeline:
 
 ```
 .miva source → Lexer/Parser → JSON AST
   → Macro Expansion → Symbol Table → Semantic Analysis
-  → Type Checking → C++ Codegen → g++ → Native Binary
+  → Type Checking → Codegen (C++ / LLVM IR / MVM bytecode) → Native Binary / MVM
 ```
+
+### Backends
+
+Miva supports three backends, selectable per-build via the `-b` flag or the `[project] backend` field in `miva.toml`:
+
+| Backend | `-b` value | Output | Notes |
+|---------|------------|--------|-------|
+| **C++** (`cxx`) | `cxx` | Native executable / `.so` | Default. Emits C++20 compiled by `g++`. |
+| **LLVM** (`llvm`) | `llvm` | Native executable / `.so` | Emits LLVM IR compiled via `llc` + `g++` linker. |
+| **MVM** (`mvm`) | `mvm` | `.mvm` bytecode | Emits Miva Virtual Machine bytecode, run by the `mvm` interpreter (no native linker needed). |
+
+The `cxx` and `llvm` backends both produce native binaries. The `mvm` backend produces portable bytecode executed by the bundled `mvm` interpreter (`miva-vm`), which is useful for quick iteration and cross-platform runs.
 
 ---
 
@@ -68,27 +81,35 @@ After building, add both `miva-frontend-rs/target/release/miva-frontend` and `mi
 ### Creating a New Project
 
 ```bash
-# Initialize a new project named "myapp"
-miva init myapp
+# Initialize a new binary project named "myapp"
+miva init myapp -t bin
+
+# Initialize a shared-library project
+miva init mylib -t lib
 ```
 
-This creates the following structure:
+`-t` selects the project type: `bin` (executable) or `lib` (shared library). This creates the following structure:
 
 ```
 myapp/
 ├── miva.toml      # Project configuration
 └── src/
-    └── main.miva  # Entry point
+    └── main.miva  # Entry point (src/lib.miva for lib projects)
 ```
 
 ### Building and Running
 
 ```bash
-# Build the project
+# Build the project (default cxx backend)
 miva build --release
 
 # Build and run
 miva run --release
+
+# Build/run with a specific backend
+miva run -b llvm          # LLVM backend
+miva run -b mvm           # MVM backend (alias: --mvm)
+miva build -b mvm         # emit .mvm bytecode
 
 # Compile a single file (quick test)
 miva sin-build path/to/file.miva
@@ -127,25 +148,40 @@ Every Miva project must have a `miva.toml` in its root directory:
 ```toml
 [project]
 name = "myapp"
-type = "exe"         # "exe" for executable, "lib" for shared library
+type = "bin"         # "bin" for executable, "lib" for shared library
 version = "0.1.0"
+backend = "cxx"      # optional: cxx (default), llvm, or mvm
+
+[env]
+
+[scripts]
+dev = "miva run -b mvm"
+release = "miva build -b llvm --release"
 
 [dependencies]
-std = "0.1.0"        # Standard library dependency
+std = "0.1.2"        # Standard library dependency
 ```
 
 ### Project Types
 
-- **`exe`** — compiles to a native executable with a `main()` entry point.
+- **`bin`** — compiles to a native executable with a `main()` entry point (uses `src/main.miva`).
 - **`lib`** — compiles to a shared library (`.so`), with `-fPIC` and `-shared` flags. Uses `src/lib.miva` as entry.
+
+### Backend Selection
+
+The backend is chosen from, in priority order: the `-b` / `--mvm` command-line flag, then the `[project] backend` field in `miva.toml` (default `cxx`). See [Compiler Pipeline & Commands](#compiler-pipeline--commands) for backend details.
+
+### Scripts
+
+The `[scripts]` section defines custom commands runnable as `miva <name>`. Built-in command names (`init`, `build`, `run`, `clean`, `sin-build`, `sin-run`, `get`, `dep`, `test`, `reinit`) always take precedence over scripts.
 
 ### Dependencies
 
-Dependencies are fetched from the standard library path. The standard library is bundled as `std-0.1.0`:
+Dependencies are fetched from the standard library path. The standard library is bundled as `std-0.1.2`:
 
 ```toml
 [dependencies]
-std = "0.1.0"
+std = "0.1.2"
 ```
 
 Dependencies from GitHub can be installed with:
@@ -816,6 +852,85 @@ After an `if` expression, if a variable is moved in **all** branches, it's consi
 
 ---
 
+## Async
+
+Miva provides a thread-based async model: a function declared with the `async` keyword is launched on its own OS thread when called and immediately returns a `future[T]` handle; the result is retrieved later with `.await()` or `await(...)`, which blocks and joins the task.
+
+### Syntax
+
+An `async` function must annotate its return type as `future[T]` — the element type `T` is the task's result type:
+
+```miva
+async square = (x: int): future[int] => {
+  return x * x;
+}
+```
+
+Calling an `async` function does not block: it immediately returns a `future[int]`. Calling `.await()` on that handle (or `await(handle)`) waits for the thread to finish and yields the inner `int`.
+
+### Example
+
+From `examples/async/src/main.miva`:
+
+```miva
+module main;
+
+async square = (x: int): future[int] => {
+  return x * x;
+}
+
+async add = (a: int, b: int): future[int] => {
+  return a + b;
+}
+
+async greet = (name: string): future[string] => {
+  return "hello " + name;
+}
+
+async combine = (x: int): future[int] => {
+  return add(x, square(x).await()).await();
+}
+
+main = () => {
+  f := square(5);                       // f is immediately a future[int]; task runs in background
+  g := greet("miva");                   // same
+  a := square(3).await();               // blocks until square(3) finishes
+  b := square(4).await();
+  printlns!(f.await(), g.await(), a, b);
+  printlns!(combine(7).await());
+  printlns!(add(square(2).await(), square(3).await()).await());
+}
+```
+
+Key points:
+
+- Calling an `async` function **returns immediately** with a `future[T]`; the task runs concurrently on a background thread.
+- `.await()` is method-call sugar for `await(...)`; the two are equivalent.
+- `.await()` can be chained (as inside `combine`) to compose multiple async tasks.
+- Calling `await(...)` on a **non**-future value is an identity operation — it returns the value as-is, so `await` can safely wrap any expression.
+
+### Types
+
+`future[T]` is a built-in composite type. An `async` function's declared return type must be of the form `future[T]`, otherwise type checking rejects it ("async function must return future[T]"). The type argument `T` may be any Miva type, including `string` and structs.
+
+| Type | Description | C++ mapping |
+|------|-------------|-------------|
+| `future[T]` | Handle to a task of `T` | `mvp_future<T>` |
+
+### Backend implementations
+
+- **C++ (`cxx`)** — an `async` function compiles to a wrapper that returns `mvp_future<T>`; the body is captured into a lambda and run via `mvp_async_spawn` over `std::async(std::launch::async)` on a `std::future`. `.await()` maps to `mvp_async_await`, calling `std::future::get()`. A `shared_ptr` keeps the future copyable, so both `let f = task(); f.await()` and `task().await()` work.
+- **LLVM (`llvm`)** — calling an `async` function spawns a dedicated OS thread through the runtime bridge `miva_async_spawn` (a `std::thread`-based struct) and returns a task handle (i64); `await(...)` calls `miva_async_await`, which waits via a `std::condition_variable` and joins the thread.
+- **MVM (`mvm`)** — the `Call` bytecode spawns, when the target is an `async` function, a fresh `Mvm` instance on a new thread to run that function, pushing a `Value::Future` (holding the result and thread handle). The `await` bytecode (`Opcode::Await`) joins the thread and takes its result.
+
+### Safety & concurrency semantics
+
+- `async` functions are **safe** by default; they may call other safe / trusted functions and are subject to the move/ownership rules. Their parameters are captured by value into the background thread (including `ref` parameters, which are copied to avoid dangling references).
+- Async tasks run concurrently on separate threads with the caller; sharing immutable data safely is the programmer's responsibility — Miva does not yet ship language-level locks, so mutual exclusion is provided by the standard library or `inline unsafe` C/C++ code.
+- `await` blocks the current thread until the future completes, so awaiting the same handle multiple times is safe and idempotent.
+
+---
+
 ## Method Call Sugar
 
 Method call syntax `receiver.method(args...)` automatically desugars to `method(receiver, args...)` at compile time.
@@ -1022,7 +1137,7 @@ There is no automatic C binding generation; the C function must be linked manual
 
 ## Standard Library
 
-The Miva standard library (`std-0.1.0`) provides:
+The Miva standard library (`std-0.1.2`) provides:
 
 ### `std.str` — String Utilities
 
@@ -1075,34 +1190,105 @@ std.term.color_cyan()     // "\x1b[0;36m"
 std.term.color_white()    // "\x1b[0;37m"
 ```
 
-### `std.vec` / `std.box`
+### `std.vec` — Vector
 
-These modules exist as stubs for future functionality.
+```miva
+import "std/vec";
+
+std.vec.new[T]()                  // Create an empty vector
+std.vec.push[T](ref v, x)         // Append element
+std.vec.get[T](ref v, i)          // Get element by index
+std.vec.len[T](ref v)             // Number of elements
+std.vec.pop[T](ref v)             // Remove and return last element
+```
+
+### `std.box` — Boxed Values
+
+```miva
+import "std/box";
+
+std.box.new[T](x)                 // Create a boxed value
+std.box.get[T](ref b)             // Dereference a box
+std.box.set[T](ref b, x)          // Update boxed value
+```
+
+### `std.json` — JSON Parsing
+
+```miva
+import "std/json";
+
+std.json.parse(ref s)             // Parse string -> ptrany (JSON tree)
+std.json.object_get(ref v, i)     // Get object/array element by index
+std.json.object_len(ref v)        // Number of keys/elements
+std.json.object_key(ref v, i)     // Get object key by index
+std.json.object_find(ref v, k)    // Find object value by key
+std.json.kind(ref v)              // JSON node kind (bool/number/string/array/object)
+std.json.bool(ref v)              // Extract bool value
+std.json.number(ref v)            // Extract number value
+std.json.string(ref v)            // Extract string value
+std.json.stringify(ref v)         // Serialize JSON tree to string
+std.json.free(ref v)              // Free the JSON tree
+```
+
+### `std.xml` — XML Parsing
+
+```miva
+import "std/xml";
+
+std.xml.parse(ref s)              // Parse string -> ptrany (XML tree)
+std.xml.kind(ref v)               // Node kind (element/text/comment/cdata/pi)
+std.xml.tag(ref v)                // Element tag name
+std.xml.attr_count(ref v)         // Number of attributes
+std.xml.attr_name(ref v, i)       // Attribute name by index
+std.xml.attr_value(ref v, i)      // Attribute value by index
+std.xml.attr_find(ref v, k)       // Find attribute value by name
+std.xml.child_count(ref v)        // Number of child nodes
+std.xml.child_get(ref v, i)       // Child node by index
+std.xml.text(ref v)               // Text content of a text node
+std.xml.comment(ref v)            // Comment content
+std.xml.cdata(ref v)              // CDATA content
+std.xml.pi_target(ref v)          // Processing-instruction target
+std.xml.pi_data(ref v)            // Processing-instruction data
+std.xml.stringify(ref v)          // Serialize XML tree to string
+std.xml.free(ref v)              // Free the XML tree
+```
+
+### `std.toml` / `std.yaml` — TOML & YAML Parsing
+
+Both expose the same tree API as JSON (parse → `ptrany`, then `object_get`/`object_len`/etc.) and reuse the JSON node representation.
+
+```miva
+import "std/toml";
+import "std/yaml";
+
+std.toml.parse(ref s)             // Parse TOML string -> ptrany
+std.yaml.parse(ref s)             // Parse YAML string -> ptrany
+```
 
 ---
 
 ## C FFI (Foreign Function Interface)
 
-Miva allows embedding raw C++ code via the `c unsafe` function syntax:
+Miva allows embedding raw C++ code via the `inline unsafe` function syntax:
 
 ```miva
-// Using "c" keyword (deprecated, generates W0004 warning)
-c unsafe puts = (s: string): int => {
-  return puts(s);
-}
-
 // Using "inline" keyword (preferred)
 inline unsafe printf_wrapper = (fmt: string): int => {
   return printf("%s", fmt);
 }
+
+// Using "c" keyword (deprecated, generates W0004 warning)
+c unsafe puts = (s: string): int => {
+  return puts(s);
+}
 ```
 
-The C++ code between `{ }` is inserted directly into the generated C++ translation unit.
+The C++ code between `{ }` is inserted directly into the generated C++ translation unit. On the `llvm` and `mvm` backends, `inline`/`c` raw blocks are not available and such functions must be provided externally or omitted.
 
 ### Raw Braceless C Function (String Body)
 
 ```miva
-c unsafe custom_fn = (x: int): int => "return x * 2;"
+inline unsafe custom_fn = (x: int): int => "return x * 2;"
 ```
 
 This avoids the brace-delimited raw block and uses a string literal for the body.
@@ -1148,10 +1334,10 @@ JSON AST
     • Generic type substitution
     • Type consistency verification
   ↓ Warning generation & filtering
-  ↓ C++ code generation
-C++ source (.cpp, .h)
-  ↓ g++ (C++20)
-  ↓ Object files (.o)
+  ↓ Code generation (C++ / LLVM IR / MVM bytecode)
+C++ source (.cpp, .h)        LLVM IR (.ll)          MVM bytecode (.mvm)
+  ↓ g++ (C++20)               ↓ llc + g++ linker         ↓ mvm interpreter
+  ↓ Object files (.o)                                    (no native linker needed)
   ↓ Linking
 Native binary (.exe / .so)
 ```
@@ -1160,35 +1346,43 @@ Native binary (.exe / .so)
 
 | Command | Description |
 |---------|-------------|
-| `miva init <name>` | Initialize a new project |
-| `miva build` | Build the project |
-| `miva run` | Build and run |
+| `miva init <name> -t <bin\|lib>` | Initialize a new project |
+| `miva reinit` | Regenerate `miva.toml` from the template and remove `miva.lock` |
+| `miva build [-b <cxx\|llvm\|mvm>]` | Build the project |
+| `miva run [-b <cxx\|llvm\|mvm>]` | Build and run (`-b mvm` / `--mvm` runs on the interpreter) |
 | `miva clean` | Clean build artifacts |
 | `miva sin-build <file>` | Compile a single file |
 | `miva sin-run <file>` | Compile and run a single file |
 | `miva test <file>` | Run test files |
 | `miva get <url>` | Install a dependency |
-| `miva dep` | Show dependency graph |
+| `miva dep` | Show the dependency graph starting from `main.miva` |
+| `miva <script>` | Run a custom script defined in `[scripts]` |
 
 Options:
 - `--release` — Release mode (optimized, `-O2`)
-- `--verbose` — Verbose output
+- `--verbose` / `-v` — Verbose output
+- `-b <backend>` / `--backend <backend>` — Backend: `cxx` (default), `llvm`, or `mvm`
+- `--mvm` — Equivalent to `-b mvm`; builds bytecode and runs it on the MVM interpreter
 
 ### Output Structure
 
 ```
 build/
 ├── debug/
-│   └── <project_name>    # Debug executable
+│   ├── <project_name>      # Debug native executable (cxx/llvm)
+│   └── <project_name>.mvm  # Debug bytecode (mvm backend)
 └── release/
-    └── <project_name>    # Release executable
+    ├── <project_name>
+    └── <project_name>.mvm
 
 build/debug/cache/
 ├── src/
-│   ├── main.miva.cpp     # Generated C++ source
-│   ├── main.miva.h       # Generated C++ header (exports)
-│   ├── main.miva.o       # Compiled object
-│   └── main.miva.sha256  # Source hash for caching
+│   ├── main.miva.cpp       # Generated C++ source (cxx backend)
+│   ├── main.miva.h         # Generated C++ header (exports)
+│   ├── main.miva.ll        # Generated LLVM IR (llvm backend)
+│   ├── main.miva.mvm       # Generated bytecode (mvm backend)
+│   ├── main.miva.o         # Compiled object
+│   └── main.miva.sha256    # Source hash for caching
 ├── std/src/
 │   ├── str.miva.cpp
 │   ├── str.miva.o

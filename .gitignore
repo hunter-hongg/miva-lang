@@ -8,3 +8,4 @@ miva/build/
 stdlib/std
 .nightshift-logs/
 .nightshift-report.md
+.worktrees/
