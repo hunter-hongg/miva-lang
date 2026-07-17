@@ -71,6 +71,24 @@ fn _write_dep_cache(path: &Path, deps: &[String]) {
     let _ = std::fs::write(path, content);
 }
 
+/// Locate a C compiler for compiling the project's libhost.so. Prefers `cc`,
+/// falls back to `gcc`, then `clang`.
+fn which_cc() -> anyhow::Result<std::path::PathBuf> {
+    for candidate in ["cc", "gcc", "clang"] {
+        if Command::new(candidate)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return Ok(std::path::PathBuf::from(candidate));
+        }
+    }
+    Err(anyhow::anyhow!(
+        "MVM user unsafe functions require a C toolchain (cc/gcc/clang) but none was found in PATH"
+    ))
+}
+
 fn collect_imports_with_graph(
     frontend: &str,
     work_dir: &Option<String>,
@@ -835,6 +853,51 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
             // Write .mvm file
             std::fs::create_dir_all(&build_dir)?;
             std::fs::write(&mvm_path, &output.program)?;
+
+            // Generate and compile the project's single libhost.so for any
+            // user `unsafe fn` (raw C) definitions.
+            if !output.host_defs.is_empty() {
+                let libhost_so = build_dir.join("libhost.so");
+                let libhost_c = build_dir.join("libhost.c");
+                let libhost_h = build_dir.join("mvp_host.h");
+                let header = miva_vm::host::host_header();
+                std::fs::write(&libhost_h, &header)?;
+                let mut c_src = String::new();
+                c_src.push_str("#include <mvp_host.h>\n\n");
+                for hd in &output.host_defs {
+                    c_src.push_str(&format!(
+                        "MivaValue miva_host_{}(const MivaValue* args, int argc) {{\n",
+                        hd.name
+                    ));
+                    c_src.push_str(&hd.code);
+                    c_src.push_str("\n}\n\n");
+                }
+                std::fs::write(&libhost_c, &c_src)?;
+
+                let cc = which_cc()?;
+                let status = std::process::Command::new(&cc)
+                    .arg("-shared")
+                    .arg("-fPIC")
+                    .arg("-O2")
+                    .arg("-I")
+                    .arg(&build_dir)
+                    .arg(&libhost_c)
+                    .arg("-o")
+                    .arg(&libhost_so)
+                    .status()
+                    .map_err(|e| anyhow::anyhow!("failed to invoke C compiler for libhost.so: {}", e))?;
+                if !status.success() {
+                    return Err(anyhow::anyhow!(
+                        "failed to compile libhost.so from user unsafe functions"
+                    ));
+                }
+                eprintln!(
+                    "{}",
+                    color::success(&format!("libhost.so -> {}", libhost_so.display()))
+                );
+            } else if build_dir.join("libhost.so").exists() {
+                let _ = std::fs::remove_file(build_dir.join("libhost.so"));
+            }
 
             // Update hash cache for all files
             for file in &files {

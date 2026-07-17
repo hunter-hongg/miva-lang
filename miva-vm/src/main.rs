@@ -41,6 +41,15 @@ fn main() {
     }
 
     let mut vm = Mvm::new(program);
+
+    // Auto-detect a sibling libhost.so next to the bytecode file and load any
+    // user `unsafe fn` host functions it provides.
+    let host_lib = std::path::Path::new(file).with_file_name("libhost.so");
+    if let Err(e) = vm.load_host_lib(&host_lib) {
+        eprintln!("MVM host library error: {}", e);
+        process::exit(1);
+    }
+
     match vm.run() {
         Ok(code) => {
             process::exit(code as i32);

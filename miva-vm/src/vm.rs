@@ -172,6 +172,10 @@ pub struct Mvm {
     /// ptr_alloc(n) allocates n/8 Value slots (since elem_size[T]() = 8 for all T).
     /// pointer = start slot index.
     memory: Vec<Value>,
+    /// Host functions loaded from the project's libhost.so (user `unsafe fn`s).
+    host_table: HashMap<String, crate::host::HostFn>,
+    /// Keeps the dlopen'd library alive for the lifetime of the VM.
+    host_lib: Option<libloading::Library>,
 }
 
 impl Mvm {
@@ -226,6 +230,52 @@ impl Mvm {
             exit_code: 0,
             max_stack: 100_000,
             memory: Vec::new(),
+            host_table: HashMap::new(),
+            host_lib: None,
+        }
+    }
+
+    /// Load host functions from the project's `libhost.so`. Each user `unsafe fn`
+    /// named `name` is resolved to a `miva_host_<name>` symbol. A missing file
+    /// is not an error (no user unsafe functions); a missing symbol is.
+    pub fn load_host_lib(&mut self, path: &std::path::Path) -> Result<(), String> {
+        if !path.exists() {
+            return Ok(());
+        }
+        let lib = unsafe {
+            libloading::Library::new(path)
+                .map_err(|e| format!("failed to load host library {}: {}", path.display(), e))?
+        };
+        // Collect host function names from the program's string pool by scanning
+        // CallHost operands would require decoding; instead we probe known names
+        // by deriving from the builtin-free user unsafe set is unavailable here,
+        // so we register a resolver that lazily resolves on first call.
+        self.host_lib = Some(lib);
+        Ok(())
+    }
+
+    /// Register a host function directly (used by tests and embedders that
+    /// provide host functions without a libhost.so).
+    pub fn register_host(&mut self, name: &str, f: crate::host::HostFn) {
+        self.host_table.insert(name.to_string(), f);
+    }
+
+    /// Resolve (and cache) a host function by name. Returns the symbol handle.
+    fn resolve_host(&mut self, name: &str) -> Result<crate::host::HostFn, String> {
+        if let Some(&f) = self.host_table.get(name) {
+            return Ok(f);
+        }
+        let sym_name = format!("miva_host_{}", name);
+        let lib = self.host_lib.as_ref()
+            .ok_or_else(|| format!("unsafe host function '{}' requires libhost.so but it was not loaded", name))?;
+        unsafe {
+            let f: libloading::Symbol<crate::host::HostFn> = lib
+                .get(sym_name.as_bytes())
+                .map_err(|e| format!("unsafe host function '{}' not found in libhost.so: {}", name, e))?;
+            // Leak the symbol into a static lifetime handle stored in the table.
+            let f: crate::host::HostFn = *f;
+            self.host_table.insert(name.to_string(), f);
+            Ok(f)
         }
     }
 
@@ -704,6 +754,29 @@ impl Mvm {
                     let builtin_idx = Self::read_u8(code, self.pc);
                     self.pc += 1;
                     self.call_builtin(builtin_idx)?;
+                }
+                Opcode::CallHost => {
+                    let name_idx = Self::read_u32(code, self.pc) as usize;
+                    self.pc += 4;
+                    let arity = Self::read_u8(code, self.pc) as usize;
+                    self.pc += 1;
+                    if name_idx >= self.program.strings.len() {
+                        return Err(format!("CallHost string index {} out of bounds", name_idx));
+                    }
+                    let name = self.program.strings[name_idx].clone();
+                    // Pop arity args (left-to-right order preserved).
+                    let mut raw: Vec<Value> = Vec::with_capacity(arity);
+                    for _ in 0..arity {
+                        raw.push(self.pop());
+                    }
+                    raw.reverse();
+                    let host_args: Vec<crate::host::MivaValue> =
+                        raw.into_iter().map(crate::host::MivaValue::from).collect();
+                    let f = self.resolve_host(&name)?;
+                    let result = unsafe {
+                        f(host_args.as_ptr(), arity as i32)
+                    };
+                    self.push(result.into_value());
                 }
                 Opcode::Ret => {
                     self.push(Value::Unit);
@@ -1907,3 +1980,44 @@ impl Mvm {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::{MivaValue, HostFn};
+
+    // Host fn: returns args[0] + 1.
+    unsafe extern "C" fn host_add_one(args: *const MivaValue, _argc: i32) -> MivaValue {
+        let a = &*args;
+        MivaValue::int(a.data.i + 1)
+    }
+
+    #[test]
+    fn call_host_registered_fn() {
+        // main: push 41 -> CallHost("add_one", arity=1) -> RetVal
+        let mut code = Vec::new();
+        code.push(Opcode::PushI64 as u8);
+        code.extend_from_slice(&41i64.to_le_bytes());
+        code.push(Opcode::CallHost as u8);
+        // name string index = 0 ("add_one")
+        code.extend_from_slice(&0u32.to_le_bytes());
+        code.push(1u8); // arity
+        code.push(Opcode::RetVal as u8);
+
+        let program = MvmProgram {
+            strings: vec!["add_one".to_string()],
+            functions: vec![
+                MvmFunction { name_idx: 0, arity: 0, locals: 0, is_async: false, code },
+            ],
+        };
+
+        let mut vm = Mvm::new(program);
+        vm.register_host("add_one", host_add_one as HostFn);
+        vm.run().unwrap();
+
+        // Result of RetVal is left on the stack; pop it.
+        let result = vm.stack.pop().expect("result on stack");
+        assert_eq!(result, Value::Int(42));
+    }
+}
+

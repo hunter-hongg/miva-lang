@@ -179,6 +179,10 @@ pub enum Opcode {
     Clone = 0xB2,
     /// Await a future: if top is a future, push its inner value; else identity
     Await = 0xB4,
+
+    /// Call a host function (user `unsafe fn` implemented in libhost.so).
+    /// Operands: (4 bytes LE u32 name string-pool index, 1 byte u8 arity).
+    CallHost = 0xC0,
 }
 
 impl Opcode {
@@ -284,6 +288,7 @@ impl Opcode {
             0xB1 => Some(Debug),
             0xB2 => Some(Clone),
             0xB4 => Some(Await),
+            0xC0 => Some(CallHost),
             _ => None,
         }
     }
@@ -304,6 +309,7 @@ impl Opcode {
             CallBuiltin => 1,
             StructNew | StructGet | StructSet | StructDupAt => 4,
             Addr => 4,
+            CallHost => 5,
             _ => 0,
         }
     }
@@ -410,6 +416,7 @@ impl Opcode {
             Debug => "debug",
             Clone => "clone",
             Await => "await",
+            CallHost => "call_host",
         }
     }
 }

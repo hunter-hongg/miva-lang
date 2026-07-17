@@ -1372,5 +1372,5 @@ pub fn build_ir(defs: &[Def], func_sigs: &HashMap<String, crate::codegen::FuncSi
     let test_ir = generate_test(defs);
     let bridge = generate_bridge(defs);
 
-    crate::codegen::GeneratedOutput { program: program.into_bytes(), header: bridge, test: test_ir, extension: "ll" }
+    crate::codegen::GeneratedOutput { program: program.into_bytes(), header: bridge, test: test_ir, extension: "ll", host_defs: Vec::new() }
 }

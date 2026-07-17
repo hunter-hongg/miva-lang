@@ -1,0 +1,10 @@
+module main;
+
+inline unsafe add_one = (x: int): int => "return mvp_int(mvp_as_int(&args[0]) + 1);"
+
+inline unsafe greet = (who: string): string => "return mvp_string(strdup(mvp_as_string(&args[0])));"
+
+unsafe main = () => {
+  printlns!("add_one(41):", add_one(41));
+  printlns!("greet:", greet("miva"));
+}

@@ -13,6 +13,16 @@ struct Label {
     pending: Vec<(usize, bool)>,
 }
 
+/// A user `unsafe fn` whose body is raw C, implemented in the project's
+/// single `libhost.so`. Emitted as a `CallHost` at call sites and collected
+/// so the build step can generate the matching C shim.
+pub struct HostDef {
+    pub name: String,
+    pub arity: u32,
+    pub returns: Option<Typ>,
+    pub code: String,
+}
+
 /// Miva VM bytecode code generator.
 pub struct MvmCodegen {
     // --- String pool ---
@@ -23,8 +33,12 @@ pub struct MvmCodegen {
     functions: Vec<MvmFunction>,
     func_indices: HashMap<String, usize>,
     builtin_indices: HashMap<String, u8>,
+    /// Names of user `unsafe fn`s implemented as host functions in libhost.so.
+    host_funcs: HashSet<String>,
     /// For each function, the list of PRef parameter names.
     func_ref_params: HashMap<String, Vec<String>>,
+    /// Collected user `unsafe fn` definitions (raw C) for libhost.so generation.
+    host_defs: Vec<HostDef>,
     /// For each function that is `void` AND has at least one PRef parameter,
     /// the list of its PRef parameter names. Such functions return the mutated
     /// struct to the caller, which then stores it back into the arg's local.
@@ -104,7 +118,9 @@ impl MvmCodegen {
             functions: Vec::new(),
             func_indices: HashMap::new(),
             builtin_indices,
+            host_funcs: HashSet::new(),
             func_ref_params: HashMap::new(),
+            host_defs: Vec::new(),
             void_ref_params: HashMap::new(),
             struct_field_indices: HashMap::new(),
             impl_map: HashMap::new(),
@@ -288,7 +304,7 @@ impl MvmCodegen {
     }
 
     // --- Main compilation entry ---
-    pub fn build_ir(defs: &[Def]) -> MvmProgram {
+    pub fn build_ir(defs: &[Def]) -> (MvmProgram, Vec<HostDef>) {
         let mut cg = MvmCodegen::new();
         cg.collect_struct_info(defs);
 
@@ -341,6 +357,17 @@ impl MvmCodegen {
                         });
                     }
                 }
+                Def::DCFuncUnsafe { name, params, returns, code, .. } => {
+                    if !cg.host_funcs.contains(name) {
+                        cg.host_funcs.insert(name.clone());
+                        cg.host_defs.push(HostDef {
+                            name: name.clone(),
+                            arity: params.len() as u32,
+                            returns: returns.clone(),
+                            code: code.clone(),
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -371,10 +398,12 @@ impl MvmCodegen {
             cg.functions[*idx].name_idx = name_idx;
         }
 
-        MvmProgram {
+        let program = MvmProgram {
             strings: cg.string_pool,
             functions: cg.functions,
-        }
+        };
+
+        (program, cg.host_defs)
     }
 
     fn compile_function(&mut self, func_idx: usize, params: &[Param], body: &Expr, _is_test: bool, returns: &Option<Typ>) {
@@ -609,6 +638,15 @@ impl MvmCodegen {
                     }
                     self.emit_op(MvmOp::CallBuiltin);
                     self.emit_u8(builtin_idx);
+                } else if self.host_funcs.contains(lookup_name) {
+                    // User `unsafe fn` with raw C -> host call into libhost.so.
+                    for arg in args {
+                        self.compile_expr(arg);
+                    }
+                    let name_idx = self.resolve_string(lookup_name);
+                    self.emit_op(MvmOp::CallHost);
+                    self.emit_u32(name_idx);
+                    self.emit_u8(args.len() as u8);
                 } else if let Some(&func_idx) = self.func_indices.get(lookup_name) {
                     for arg in args {
                         self.compile_expr(arg);
@@ -1014,6 +1052,6 @@ impl MvmCodegen {
 }
 
 /// Build MVM bytecode for the given AST definitions.
-pub fn build_ir(defs: &[Def]) -> MvmProgram {
+pub fn build_ir(defs: &[Def]) -> (MvmProgram, Vec<HostDef>) {
     MvmCodegen::build_ir(defs)
 }

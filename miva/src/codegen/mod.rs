@@ -53,6 +53,9 @@ pub struct GeneratedOutput {
     pub header: String,
     pub test: String,
     pub extension: &'static str,
+    /// User `unsafe fn` defs (raw C) collected for the MVM backend; empty for
+    /// other backends. Used to generate the project's single `libhost.so`.
+    pub host_defs: Vec<mvm::HostDef>,
 }
 
 /// Cross-file function signature: type params + return type.
@@ -140,19 +143,23 @@ pub fn build_ir_with_backend(defs: &[Def], backend: Backend, func_sigs: &HashMap
                 header,
                 test,
                 extension: "cpp",
+                host_defs: Vec::new(),
             }
         }
         Backend::Llvm => {
-            llvm::build_ir(defs, func_sigs)
+            let mut out = llvm::build_ir(defs, func_sigs);
+            out.host_defs = Vec::new();
+            out
         }
         Backend::Mvm => {
-            let program = mvm::build_ir(defs);
+            let (program, host_defs) = mvm::build_ir(defs);
             let bytes = program.to_bytes();
             GeneratedOutput {
                 program: bytes,
                 header: String::new(),
                 test: String::new(),
                 extension: "mvm",
+                host_defs,
             }
         }
     }
