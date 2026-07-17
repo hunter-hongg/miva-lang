@@ -52,7 +52,7 @@ dev = \"miva run -b mvm\"
 release = \"miva build -b llvm --release\"
 
 [dependencies]
-std = \"0.1.1\"
+std = \"0.1.2\"
 "
     )
 }
@@ -82,6 +82,12 @@ pub fn exec(args: Args, _verbose: bool) -> Result<()> {
             .context("failed to write src/lib.miva")?;
     }
 
-    eprintln!("{}", color::info(&format!("initialized {} project '{}'", args.type_, args.name)));
+    eprintln!(
+        "{}",
+        color::info(&format!(
+            "initialized {} project '{}'",
+            args.type_, args.name
+        ))
+    );
     Ok(())
 }

@@ -1,0 +1,17 @@
+module std.str;
+
+concat = (ref a: string, ref b: string): string => string_concat(a, b)
+
+parse_int = (ref str: string): int => string_parse(str)
+
+len = (ref str: string): int => string_length(str)
+
+make = (ref str: string, ref size: int): string => string_make(str, size)
+
+from[T] = (f: T): string => string_from(f)
+
+export concat;
+export parse_int;
+export len;
+export make;
+export from;
