@@ -626,7 +626,8 @@ fn cxx_def(def: &Def, depth: usize) -> String {
         | Def::SImportHere { .. }
         | Def::DTest { .. }
         | Def::DCMagical { .. }
-        | Def::DCIntro { .. } => String::new(),
+        | Def::DCIntro { .. }
+        | Def::DEnum { .. } => String::new(),
     }
 }
 

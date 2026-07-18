@@ -599,7 +599,8 @@ pub fn check_program_with(
             | Def::SImportAs { .. }
             | Def::SImportHere { .. }
             | Def::DCIntro { .. }
-            | Def::DImpl { .. } => {}
+            | Def::DImpl { .. }
+            | Def::DEnum { .. } => {}
         }
     }
 

@@ -184,6 +184,7 @@ impl SymbolTable {
                 } => {
                     table.register_struct(name, type_params, fields, loc, &mut errors);
                 }
+                Def::DEnum { .. } => {}
                 Def::SExport { symbol, .. } => {
                     if table.function_index.contains_key(symbol)
                         && !table.exported_functions.contains(symbol)

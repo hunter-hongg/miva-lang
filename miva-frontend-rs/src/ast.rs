@@ -75,6 +75,12 @@ pub struct FieldDef {
     pub typ: Typ,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct EnumVariant {
+    pub name: String,
+    pub payload: Vec<Typ>,
+}
+
 // ── Operators ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -356,6 +362,14 @@ pub enum Def {
         loc: Loc,
         name: String,
         fields: Vec<FieldDef>,
+        #[serde(default)]
+        type_params: Vec<String>,
+    },
+    #[serde(rename = "enum")]
+    DEnum {
+        loc: Loc,
+        name: String,
+        variants: Vec<EnumVariant>,
         #[serde(default)]
         type_params: Vec<String>,
     },

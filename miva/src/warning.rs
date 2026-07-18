@@ -353,7 +353,8 @@ fn check_annotations(defs: &[Def]) -> Vec<Warning> {
                 | Def::SImportAs { loc, .. }
                 | Def::SImportHere { loc, .. }
                 | Def::DImpl { loc, .. }
-                | Def::DMacro { loc, .. } => loc,
+                | Def::DMacro { loc, .. }
+                | Def::DEnum { loc, .. } => loc,
                 // DCMagical and DCIntro don't need annotations
                 Def::DCMagical { .. } | Def::DCIntro { .. } => {
                     prev = Some(cur);
@@ -377,7 +378,8 @@ fn check_annotations(defs: &[Def]) -> Vec<Warning> {
                 | Def::SImportAs { .. }
                 | Def::SImportHere { .. }
                 | Def::DImpl { .. }
-                | Def::DMacro { .. } => false,
+                | Def::DMacro { .. }
+                | Def::DEnum { .. } => false,
                 // DCMagical/DCIntro already handled above (skipped)
                 Def::DCMagical { .. } | Def::DCIntro { .. } => unreachable!(),
             };
@@ -434,7 +436,8 @@ pub fn get_warnings(defs: &[Def]) -> Vec<Warning> {
             | Def::DCMagical { .. }
             | Def::DCIntro { .. }
             | Def::DImpl { .. }
-            | Def::DMacro { .. } => {}
+            | Def::DMacro { .. }
+            | Def::DEnum { .. } => {}
         }
     }
 

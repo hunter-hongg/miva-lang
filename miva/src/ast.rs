@@ -28,6 +28,12 @@ pub struct FieldDef {
     pub typ: Typ,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnumVariant {
+    pub name: String,
+    pub payload: Vec<Typ>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValueField {
     pub name: String,
@@ -332,6 +338,14 @@ pub enum Def {
         loc: Loc,
         name: String,
         fields: Vec<FieldDef>,
+        #[serde(default)]
+        type_params: Vec<String>,
+    },
+    #[serde(rename = "enum")]
+    DEnum {
+        loc: Loc,
+        name: String,
+        variants: Vec<EnumVariant>,
         #[serde(default)]
         type_params: Vec<String>,
     },
