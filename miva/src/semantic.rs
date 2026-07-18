@@ -89,6 +89,8 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
                         &format!("use of moved value {}", name),
                     ));
                 }
+            } else if symbol_table.lookup_enum(name).is_some() {
+                // Enum type name used as a constructor namespace (e.g. Shape in Shape.Circle).
             } else {
                 errs.push(Error::new(
                     "E0007",
@@ -131,6 +133,18 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
             type_args: _,
             args,
         } => {
+            // Enum variant constructor: Name.Variant(args) (dotted form) or
+            // Variant(EnumName, payload...) (method-call desugared form, where
+            // the first arg is `EVar(EnumName)`). The enum prefix/name is a type
+            // name, not a variable/function, so skip the unknown-function check.
+            let is_enum_ctor = name
+                .find('.')
+                .map(|dot| symbol_table.lookup_enum(&name[..dot]).is_some())
+                .unwrap_or(false)
+                || args.first().map(|a| match a {
+                    Expr::EVar { name: n, .. } => symbol_table.lookup_enum(n.as_str()).map_or(false, |e| e.variants.iter().any(|v| &v.name == name)),
+                    _ => false,
+                }).unwrap_or(false);
             let safety = symbol_table
                 .get_function_safety(name)
                 .or_else(|| ctx.global_safety.get(name).cloned());
@@ -149,7 +163,9 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
                 }
                 Some(Safety::Trusted) | Some(Safety::Safe) => {}
                 None => {
-                    if name.starts_with("ffi.") {
+                    if is_enum_ctor {
+                        // enum constructor — no function lookup needed
+                    } else if name.starts_with("ffi.") {
                         errs.push(Error::new(
                             "E0009",
                             loc,
@@ -183,8 +199,16 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
                 errs.extend(check_expr(ctx, symbol_table, elem));
             }
         }
-        Expr::EFieldAccess { loc, expr, .. } => {
-            errs.extend(check_expr(ctx, symbol_table, expr));
+        Expr::EFieldAccess { loc, expr, field } => {
+            // Enum variant discriminant: Name.Variant (used in `when (Name.Variant)`).
+            // `Name` is an enum type name, not a variable, so don't recurse into it.
+            let is_enum_discriminant = matches!(
+                expr.as_ref(),
+                Expr::EVar { name, .. } if symbol_table.lookup_enum(name).map_or(false, |e| e.variants.iter().any(|v| &v.name == field))
+            );
+            if !is_enum_discriminant {
+                errs.extend(check_expr(ctx, symbol_table, expr));
+            }
         }
         Expr::EBinOp {
             loc, left, right, ..

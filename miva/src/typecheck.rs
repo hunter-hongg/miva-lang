@@ -770,6 +770,7 @@ fn infer_type(
             args,
             loc,
         } => {
+            // Enum constructor in dotted-name form: `Name.Variant(args)`.
             if let Some(dot) = name.find('.') {
                 let enum_name = &name[..dot];
                 let variant_name = &name[dot + 1..];
@@ -791,6 +792,40 @@ fn infer_type(
                                 errs.push(Error::new("E0014", loc, &format!(
                                     "enum variant '{}' argument {} type mismatch: expected {:?}, got {:?}",
                                     variant_name, i, pt, at)));
+                            }
+                        }
+                        return (
+                            Typ::TStruct { name: enum_name.to_string(), fields: vec![], type_args: vec![] },
+                            errs,
+                        );
+                    }
+                }
+            } else if let Some(enum_name) = args.first().and_then(|a| match a {
+                Expr::EVar { name: n, .. } => Some(n.clone()),
+                _ => None,
+            }) {
+                // Enum constructor in desugared method-call form: `Variant(EnumName, payload...)`.
+                // The frontend parses `Shape.Circle(5)` as EMethodCall and macro_expand
+                // desugars it to `ECall { name: "Circle", args: [EVar("Shape"), EInt(5)] }`.
+                if let Some(variants) = enums.get(&enum_name) {
+                    if let Some(v) = variants.iter().find(|v| v.name == *name) {
+                        let payload_args = &args[1..];
+                        let mut errs = Vec::new();
+                        if v.payload.len() != payload_args.len() {
+                            errs.push(Error::new("E0016", loc, &format!(
+                                "enum variant '{}' expects {} argument(s), got {}",
+                                name, v.payload.len(), payload_args.len())));
+                        }
+                        for (i, (pt, a)) in v.payload.iter().zip(payload_args.iter()).enumerate() {
+                            let (at, ae) = require_type(
+                                env, func_sigs, structs, struct_type_params, enums,
+                                func_return, a,
+                            );
+                            errs.extend(ae);
+                            if !types_equal(pt, &at) {
+                                errs.push(Error::new("E0014", loc, &format!(
+                                    "enum variant '{}' argument {} type mismatch: expected {:?}, got {:?}",
+                                    name, i, pt, at)));
                             }
                         }
                         return (
@@ -1120,12 +1155,44 @@ fn infer_type(
                         (Typ::TInvalid, errs)
                     }
                     None => {
-                        errs.push(Error::new(
-                            "E0018",
-                            loc,
-                            &format!("unknown struct '{}'", sname),
-                        ));
-                        (Typ::TInvalid, errs)
+                        // Not a struct — check if it's an enum (numeric field access on payload)
+                        if let Some(variants) = enums.get(&sname) {
+                            if let Ok(idx) = field.parse::<usize>() {
+                                // Numeric payload field access on an enum discriminant
+                                // (`s.0`, `s.1`, ...). At typecheck time we don't know which
+                                // variant `s` currently holds, so accept the index if ANY
+                                // variant's payload is long enough. Use the field type from the
+                                // variant with the most payload fields (the "widest" variant),
+                                // which is the best static approximation of the runtime type.
+                                let widest = variants
+                                    .iter()
+                                    .filter(|v| idx < v.payload.len())
+                                    .max_by_key(|v| v.payload.len());
+                                if let Some(v) = widest {
+                                    return (v.payload[idx].clone(), errs);
+                                }
+                                errs.push(Error::new(
+                                    "E0019",
+                                    loc,
+                                    &format!("payload index {} out of bounds for enum '{}'", idx, sname),
+                                ));
+                                (Typ::TInvalid, errs)
+                            } else {
+                                errs.push(Error::new(
+                                    "E0019",
+                                    loc,
+                                    &format!("unknown variant '{}' in enum '{}'", field, sname),
+                                ));
+                                (Typ::TInvalid, errs)
+                            }
+                        } else {
+                            errs.push(Error::new(
+                                "E0018",
+                                loc,
+                                &format!("unknown struct '{}'", sname),
+                            ));
+                            (Typ::TInvalid, errs)
+                        }
                     }
                 },
                 _ => {

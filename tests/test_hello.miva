@@ -1,4 +1,0 @@
-module main;
-main = () => {
-  println("Hello, World");
-}

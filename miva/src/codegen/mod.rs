@@ -78,6 +78,13 @@ pub fn collect_func_sigs(defs: &[Def]) -> HashMap<String, FuncSig> {
                     is_async: *is_async,
                 });
             }
+            Def::DCFuncUnsafe { name, returns, .. } => {
+                sigs.entry(name.clone()).or_insert(FuncSig {
+                    type_params: vec![],
+                    returns: returns.clone(),
+                    is_async: false,
+                });
+            }
             _ => {}
         }
     }
@@ -147,8 +154,7 @@ pub fn build_ir_with_backend(defs: &[Def], backend: Backend, func_sigs: &HashMap
             }
         }
         Backend::Llvm => {
-            let mut out = llvm::build_ir(defs, func_sigs);
-            out.host_defs = Vec::new();
+            let out = llvm::build_ir(defs, func_sigs);
             out
         }
         Backend::Mvm => {

@@ -298,6 +298,16 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
         Expr::EFieldAccess { expr, field, .. } => {
             if field.chars().all(|c| c.is_ascii_digit()) {
                 format!("{}.__payload.field{}", cxx_expr(expr, depth), field)
+            } else if let Expr::EVar { name: enum_name, .. } = expr.as_ref() {
+                if enum_name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    // Enum discriminant: `Shape.Circle` in a `when (Shape.Circle)`
+                    // pattern evaluates to a unit enum value (tag-only) via the
+                    // generated `Shape_Circle()` constructor. Enum type names start
+                    // uppercase in Miva, so `p.x` (lowercase var) stays `p.x`.
+                    format!("{}_{}()", enum_name, field)
+                } else {
+                    format!("{}.{}", cxx_expr(expr, depth), field)
+                }
             } else {
                 format!("{}.{}", cxx_expr(expr, depth), field)
             }
@@ -378,6 +388,19 @@ fn cxx_call(name: &str, args: &[Expr], type_args: &[Typ], depth: usize) -> Strin
         let enum_name = &name[..dot];
         let variant = &name[dot + 1..];
         return format!("{}_{}({})", enum_name, variant, args_strs.join(", "));
+    } else if let Some(enum_name) = args.first().and_then(|a| match a {
+        Expr::EVar { name: n, .. } => Some(n.as_str()),
+        _ => None,
+    }) {
+        // Desugared method-call enum constructor: `Circle(Shape, 5)`
+        // (from `Shape.Circle(5)`) -> `Shape_Circle(5)`.
+        // Restrict by uppercase: enum type names start uppercase in Miva
+        // (e.g. `Shape`, `Color`), while variable names (e.g. `circle`)
+        // are lowercase — so `area(circle)` never matches here.
+        if enum_name.starts_with(|c: char| c.is_uppercase()) {
+            let payload_strs = &args_strs[1..];
+            return format!("{}_{}({})", enum_name, name, payload_strs.join(", "));
+        }
     }
     let type_arg_str = if type_args.is_empty() {
         String::new()
@@ -471,16 +494,17 @@ fn cxx_choose(
 ) -> String {
     let var_str = cxx_expr(var, depth);
     let ind = indent_str(depth);
+    let inner = depth + 1;
     let cases_str: String = cases.iter().fold(String::new(), |acc, c| {
         let value_str = cxx_expr(&c.when, depth);
-        let body_str = cxx_expr(&c.then, depth + 1);
+        let body_str = cxx_expr(&c.then, inner);
         format!(
-            "{}{}if ({} == {}) {{ {} }}\n",
+            "{}{}if ({} == {}) {{ return {}; }}\n",
             acc, ind, var_str, value_str, body_str
         )
     });
     let otherwise_str = match otherwise {
-        Some(e) => format!("{}else {{ {} }}", ind, cxx_expr(e, depth + 1)),
+        Some(e) => format!("{}else {{ return {}; }}", ind, cxx_expr(e, inner)),
         None => String::new(),
     };
     format!("([&]() {{\n{}{}\n{}\n}}())", cases_str, otherwise_str, ind)
@@ -693,8 +717,8 @@ fn cxx_enum_def(
         payload_fields.push_str(&format!("{}{} field{};\n", indent_str(inner), ty, i));
     }
     let struct_str = format!(
-        "{}struct {} {{\n{}mvp_builtin_int __tag;\n{}struct {{\n{}{}}} __payload;\n{}}};\n\n",
-        ind, name, indent_str(inner), indent_str(inner), payload_fields, indent_str(inner), ind
+        "{}struct {} {{\n{}mvp_builtin_int __tag;\n{}struct {{\n{}{}}} __payload;\n{}bool operator==(const {}& o) const {{ return __tag == o.__tag; }}\n{}bool operator!=(const {}& o) const {{ return __tag != o.__tag; }}\n{}}};\n\n",
+        ind, name, indent_str(inner), indent_str(inner), payload_fields, indent_str(inner), indent_str(inner), name, indent_str(inner), name, ind
     );
     let mut ctors = String::new();
     for (idx, v) in variants.iter().enumerate() {
@@ -724,6 +748,20 @@ fn cxx_enum_def(
             ind
         );
         ctors.push_str(&ctor);
+    }
+    // Unit constructors for enum discriminants: `Shape_Circle()` returns a
+    // `Shape` value with the variant's tag (payload zero-initialized), used
+    // in `when (Shape.Circle)` pattern matching. Skip 0-field variants,
+    // which already have a no-arg payload constructor with the same name.
+    for (idx, v) in variants.iter().enumerate() {
+        if v.payload.is_empty() {
+            continue;
+        }
+        let disc = format!(
+            "{}inline {} {}_{}() {{\n{} {} v;\n{} v.__tag = {};\n{} return v;\n{}}}\n\n",
+            ind, name, name, v.name, indent_str(inner), name, indent_str(inner), idx, indent_str(inner), ind
+        );
+        ctors.push_str(&disc);
     }
     struct_str + &ctors
 }

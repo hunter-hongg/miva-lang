@@ -430,6 +430,45 @@ fn call_returns_string(expr: &Expr, ctx: &LlvmCtx) -> bool {
     }
 }
 
+/// Check if an expression is an enum value (discriminant `Shape.Circle` or
+/// constructor `Shape.Circle(5)` / desugared `Circle(Shape, 5)`). Used so
+/// `==`/`!=` compares enum tags rather than heap pointer addresses.
+fn is_enum_value_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::EFieldAccess { field, expr, .. } => {
+            !field.chars().all(|c| c.is_ascii_digit())
+                && matches!(expr.as_ref(), Expr::EVar { .. })
+        }
+        Expr::ECall { name, args, .. } => {
+            if name.contains('.') {
+                true
+            } else if let Some(Expr::EVar { name: n, .. }) = args.first() {
+                n.chars().next().map_or(false, |c| c.is_uppercase())
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Load the `__tag` field (at offset 0) of an enum value held in `reg` and
+/// return the i64 tag register name.
+fn load_enum_tag(ctx: &mut LlvmCtx, body: &mut String, reg: &str) -> String {
+    let ptr = ctx.gen_tmp("etp");
+    body.push_str(&format!("{}{} = inttoptr i64 {} to ptr\n", ctx.indent_str(), ptr, reg));
+    let gep = ctx.gen_tmp("etg");
+    body.push_str(&format!(
+        "{}{} = getelementptr i64, ptr {}, i64 0\n",
+        ctx.indent_str(),
+        gep,
+        ptr
+    ));
+    let load = ctx.gen_tmp("etl");
+    body.push_str(&format!("{}{} = load i64, ptr {}\n", ctx.indent_str(), load, gep));
+    load
+}
+
 /// Check if an EVar/EMove refers to a register known to hold a string.
 fn is_string_var(expr: &Expr, ctx: &LlvmCtx) -> bool {
     match expr {
@@ -570,8 +609,40 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
                 }
                 BinOp::Sub => { let tmp = ctx.gen_tmp("sub"); body.push_str(&format!("{}{} = sub i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); tmp }
                 BinOp::Mul => { let tmp = ctx.gen_tmp("mul"); body.push_str(&format!("{}{} = mul i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); tmp }
-                BinOp::Eq => { let tmp = ctx.gen_tmp("cmp"); body.push_str(&format!("{}{} = icmp eq i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); let tmp2 = ctx.gen_tmp("cmpz"); body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp)); tmp2 }
-                BinOp::Neq => { let tmp = ctx.gen_tmp("cmp"); body.push_str(&format!("{}{} = icmp ne i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); let tmp2 = ctx.gen_tmp("cmpz"); body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp)); tmp2 }
+                BinOp::Eq => {
+                    if is_enum_value_expr(left.as_ref()) || is_enum_value_expr(right.as_ref()) {
+                        let lt = load_enum_tag(ctx, body, &l);
+                        let rt = load_enum_tag(ctx, body, &r);
+                        let tmp = ctx.gen_tmp("cmp");
+                        body.push_str(&format!("{}{} = icmp eq i64 {}, {}\n", ctx.indent_str(), tmp, lt, rt));
+                        let tmp2 = ctx.gen_tmp("cmpz");
+                        body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp));
+                        tmp2
+                    } else {
+                        let tmp = ctx.gen_tmp("cmp");
+                        body.push_str(&format!("{}{} = icmp eq i64 {}, {}\n", ctx.indent_str(), tmp, l, r));
+                        let tmp2 = ctx.gen_tmp("cmpz");
+                        body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp));
+                        tmp2
+                    }
+                }
+                BinOp::Neq => {
+                    if is_enum_value_expr(left.as_ref()) || is_enum_value_expr(right.as_ref()) {
+                        let lt = load_enum_tag(ctx, body, &l);
+                        let rt = load_enum_tag(ctx, body, &r);
+                        let tmp = ctx.gen_tmp("cmp");
+                        body.push_str(&format!("{}{} = icmp ne i64 {}, {}\n", ctx.indent_str(), tmp, lt, rt));
+                        let tmp2 = ctx.gen_tmp("cmpz");
+                        body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp));
+                        tmp2
+                    } else {
+                        let tmp = ctx.gen_tmp("cmp");
+                        body.push_str(&format!("{}{} = icmp ne i64 {}, {}\n", ctx.indent_str(), tmp, l, r));
+                        let tmp2 = ctx.gen_tmp("cmpz");
+                        body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp));
+                        tmp2
+                    }
+                }
                 BinOp::Lt => { let tmp = ctx.gen_tmp("cmp"); body.push_str(&format!("{}{} = icmp slt i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); let tmp2 = ctx.gen_tmp("cmpz"); body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp)); tmp2 }
                 BinOp::Gt => { let tmp = ctx.gen_tmp("cmp"); body.push_str(&format!("{}{} = icmp sgt i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); let tmp2 = ctx.gen_tmp("cmpz"); body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp)); tmp2 }
                 BinOp::Le => { let tmp = ctx.gen_tmp("cmp"); body.push_str(&format!("{}{} = icmp sle i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); let tmp2 = ctx.gen_tmp("cmpz"); body.push_str(&format!("{}{} = zext i1 {} to i64\n", ctx.indent_str(), tmp2, tmp)); tmp2 }
@@ -796,18 +867,68 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
                 let load = ctx.gen_tmp("fal");
                 body.push_str(&format!("{}{} = load i64, ptr {}\n", ctx.indent_str(), load, gep));
                 return load;
+            } else if let Expr::EVar { name: enum_name, .. } = fexpr.as_ref() {
+                if enum_name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    // Enum discriminant: `Shape.Circle` in `when (Shape.Circle)`
+                    // evaluates to a unit enum value (tag-only) via the generated
+                    // `@Shape_Circle_unit()` constructor. Enum type names start
+                    // uppercase in Miva, so `p.x` (lowercase var) is a normal
+                    // struct field access handled below.
+                    let tmp = ctx.gen_tmp("disc");
+                    body.push_str(&format!(
+                        "{}{} = call i64 @{}_{}_unit()\n",
+                        ctx.indent_str(),
+                        tmp,
+                        enum_name,
+                        field
+                    ));
+                    return tmp;
+                }
+                let val = gen_expr(fexpr, ctx, body);
+                let ptr_val = ctx.gen_tmp("fa_ptr");
+                body.push_str(&format!("{}{} = inttoptr i64 {} to ptr\n", ctx.indent_str(), ptr_val, val));
+                let field_idx = ctx.field_idx.get(field).copied().unwrap_or(0);
+                let gep = ctx.gen_tmp("fa");
+                body.push_str(&format!("{}{} = getelementptr i64, ptr {}, i64 {}\n", ctx.indent_str(), gep, ptr_val, field_idx));
+                let load = ctx.gen_tmp("fal");
+                body.push_str(&format!("{}{} = load i64, ptr {}\n", ctx.indent_str(), load, gep));
+                load
+            } else {
+                let val = gen_expr(fexpr, ctx, body);
+                let ptr_val = ctx.gen_tmp("fa_ptr");
+                body.push_str(&format!("{}{} = inttoptr i64 {} to ptr\n", ctx.indent_str(), ptr_val, val));
+                let field_idx = ctx.field_idx.get(field).copied().unwrap_or(0);
+                let gep = ctx.gen_tmp("fa");
+                body.push_str(&format!("{}{} = getelementptr i64, ptr {}, i64 {}\n", ctx.indent_str(), gep, ptr_val, field_idx));
+                let load = ctx.gen_tmp("fal");
+                body.push_str(&format!("{}{} = load i64, ptr {}\n", ctx.indent_str(), load, gep));
+                load
             }
-            let val = gen_expr(fexpr, ctx, body);
-            let ptr_val = ctx.gen_tmp("fa_ptr");
-            body.push_str(&format!("{}{} = inttoptr i64 {} to ptr\n", ctx.indent_str(), ptr_val, val));
-            let field_idx = ctx.field_idx.get(field).copied().unwrap_or(0);
-            let gep = ctx.gen_tmp("fa");
-            body.push_str(&format!("{}{} = getelementptr i64, ptr {}, i64 {}\n", ctx.indent_str(), gep, ptr_val, field_idx));
-            let load = ctx.gen_tmp("fal");
-            body.push_str(&format!("{}{} = load i64, ptr {}\n", ctx.indent_str(), load, gep));
-            load
         }
-        Expr::EChoose { .. } => "0".to_string(),
+        Expr::EChoose { loc, var, cases, otherwise, .. } => {
+            // Translate `choose` into a nested if/else chain, reusing the
+            // existing EIf codegen (phi merging, branch-terminator handling).
+            // Each case becomes `if (var == when) then else <rest>`.
+            let loc = loc.clone();
+            let mut chain: Expr = match otherwise {
+                Some(e) => *e.clone(),
+                None => Expr::EInt { loc: loc.clone(), value: 0 },
+            };
+            for case in cases.iter().rev() {
+                chain = Expr::EIf {
+                    loc: loc.clone(),
+                    cond: Box::new(Expr::EBinOp {
+                        loc: loc.clone(),
+                        op: BinOp::Eq,
+                        left: var.clone(),
+                        right: case.when.clone(),
+                    }),
+                    then: case.then.clone(),
+                    else_: Some(Box::new(chain)),
+                };
+            }
+            gen_expr(&chain, ctx, body)
+        }
         Expr::EArrayLit { .. } => "0".to_string(),
         Expr::EAddr { expr: aexpr, .. } => gen_expr(aexpr, ctx, body),
         Expr::EDeref { expr: dexpr, .. } => {
@@ -889,11 +1010,63 @@ fn gen_call(name: &str, args: &[Expr], type_args: &[Typ], ctx: &mut LlvmCtx, bod
     if let Some(dot) = name.find('.') {
         let enum_name = &name[..dot];
         let variant = &name[dot + 1..];
-        let arg_strs: Vec<String> = args.iter().map(|a| gen_expr(a, ctx, body)).collect();
+        let arg_strs: Vec<String> = args
+            .iter()
+            .map(|a| format!("i64 {}", gen_expr(a, ctx, body)))
+            .collect();
+        let tmp = ctx.gen_tmp("ecall");
         if arg_strs.is_empty() {
-            return format!("call i64 @{}_{}_tag()", enum_name, variant);
+            body.push_str(&format!(
+                "{}{} = call i64 @{}_{}_tag()\n",
+                ctx.indent_str(),
+                tmp,
+                enum_name,
+                variant
+            ));
         } else {
-            return format!("call i64 @{}_{}({})", enum_name, variant, arg_strs.join(", "));
+            body.push_str(&format!(
+                "{}{} = call i64 @{}_{}({})\n",
+                ctx.indent_str(),
+                tmp,
+                enum_name,
+                variant,
+                arg_strs.join(", ")
+            ));
+        }
+        return tmp;
+    } else if let Some(enum_name) = args.first().and_then(|a| match a {
+        Expr::EVar { name: n, .. } => Some(n.clone()),
+        _ => None,
+    }) {
+        // Desugared method-call enum constructor: `Circle(Shape, 5)`
+        // (from `Shape.Circle(5)`). Restrict by uppercase: enum type names
+        // start uppercase in Miva (e.g. `Shape`), while variable names
+        // (e.g. `circle`) are lowercase — so `area(circle)` never matches here.
+        if enum_name.chars().next().map_or(false, |c| c.is_uppercase()) {
+            let arg_strs: Vec<String> = args[1..]
+                .iter()
+                .map(|a| format!("i64 {}", gen_expr(a, ctx, body)))
+                .collect();
+            let tmp = ctx.gen_tmp("ecall");
+            if arg_strs.is_empty() {
+                body.push_str(&format!(
+                    "{}{} = call i64 @{}_{}_tag()\n",
+                    ctx.indent_str(),
+                    tmp,
+                    enum_name,
+                    name
+                ));
+            } else {
+                body.push_str(&format!(
+                    "{}{} = call i64 @{}_{}({})\n",
+                    ctx.indent_str(),
+                    tmp,
+                    enum_name,
+                    name,
+                    arg_strs.join(", ")
+                ));
+            }
+            return tmp;
         }
     }
         // string_from/to_string on already-string arg: skip conversion, pass through.
@@ -1306,6 +1479,15 @@ fn llvm_enum_def(name: &str, variants: &[crate::ast::EnumVariant]) -> String {
                 i, i + 1, i, i
             ));
         }
+        out.push_str("  %r = ptrtoint ptr %p to i64\n  ret i64 %r\n}\n\n");
+        // Unit constructor used for enum discriminants: `Shape.Circle` in a
+        // `when (Shape.Circle)` pattern evaluates to a full enum value (tag
+        // only, payload zero-initialized) so it can be compared tag-wise with
+        // the scrutinee.
+        out.push_str(&format!("define i64 @{}_{}_unit() {{\n", name, v.name));
+        out.push_str("entry:\n");
+        out.push_str(&format!("  %p = call ptr @miva_alloc(i64 {})\n", (max_fields + 1) * 8));
+        out.push_str(&format!("  %tg = getelementptr i64, ptr %p, i64 0\n  store i64 {}, ptr %tg\n", idx));
         out.push_str("  %r = ptrtoint ptr %p to i64\n  ret i64 %r\n}\n\n");
         out.push_str(&format!("define i64 @{}_{}_tag() {{\nentry:\n  ret i64 {}\n}}\n\n", name, v.name, idx));
     }

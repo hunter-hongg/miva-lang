@@ -1,6 +1,0 @@
-module main;
-add = (a: int, b: int): int => a + b
-mul = (a: int, b: int): int => a * b
-main = () => {
-  printlns!(add(3, 4), mul(5, 6), add(mul(2, 3), 1));
-}

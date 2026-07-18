@@ -264,6 +264,7 @@ fn compile_file_to_src(
     }
 
     let json_str = frontend::run_frontend(frontend, work_dir, file)?;
+    // eprintln!("DBG JSON: {}", &json_str[..std::cmp::min(json_str.len(), 3000)]);
     let ast = json_ast::from_str(&json_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse JSON AST from {}: {}", file, e))?;
 
@@ -702,6 +703,9 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
                                 returns.clone(),
                                 *is_async,
                             ),
+                            crate::ast::Def::DCFuncUnsafe { returns, .. } => {
+                                (Vec::new(), Vec::new(), returns.clone(), false)
+                            }
                             _ => (Vec::new(), Vec::new(), None, false),
                         };
                         v.insert(crate::codegen::FuncSig {
@@ -912,6 +916,62 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
         return Ok(());
     }
 
+    // LLVM backend: compile user inline-unsafe C functions into libhost.o and
+    // link it (same raw C shims as the MVM backend's libhost.so, but a static
+    // object linked directly into the executable).
+    let mut llvm_host_obj: Option<PathBuf> = None;
+    if backend == Backend::Llvm {
+        let mut all_defs: Vec<Def> = Vec::new();
+        for file in &files {
+            let json_str = frontend::run_frontend(&frontend, &frontend_work_dir, file)?;
+            let ast = json_ast::from_str(&json_str)
+                .map_err(|e| anyhow::anyhow!("Failed to parse JSON AST from {}: {}", file, e))?;
+            let defs = macro_expand::expand_macros(&ast.defs, &macro_table)?;
+            all_defs.extend(defs);
+        }
+        let output = codegen::build_ir_with_backend(&all_defs, backend, &all_func_sigs);
+        if !output.host_defs.is_empty() {
+            let libhost_c = build_dir.join("libhost.c");
+            let libhost_h = build_dir.join("mvp_host.h");
+            let header = miva_vm::host::host_header_llvm();
+            std::fs::write(&libhost_h, &header)?;
+            let mut c_src = String::new();
+            c_src.push_str("#include <mvp_host.h>\n\n");
+            for hd in &output.host_defs {
+                c_src.push_str(&format!(
+                    "MivaValue miva_host_{}(const MivaValue* args, int argc) {{\n",
+                    hd.name
+                ));
+                c_src.push_str(&hd.code);
+                c_src.push_str("\n}\n\n");
+            }
+            std::fs::write(&libhost_c, &c_src)?;
+
+            let cc = which_cc()?;
+            let libhost_o = build_dir.join("libhost.o");
+            let status = std::process::Command::new(&cc)
+                .arg("-c")
+                .arg("-O2")
+                .arg("-I")
+                .arg(&build_dir)
+                .arg(&libhost_c)
+                .arg("-o")
+                .arg(&libhost_o)
+                .status()
+                .map_err(|e| anyhow::anyhow!("failed to invoke C compiler for libhost.o: {}", e))?;
+            if !status.success() {
+                return Err(anyhow::anyhow!(
+                    "failed to compile libhost.o from user unsafe functions"
+                ));
+            }
+            llvm_host_obj = Some(libhost_o.clone());
+            eprintln!(
+                "{}",
+                color::success(&format!("libhost.o -> {}", libhost_o.display()))
+            );
+        }
+    }
+
     // Phase 2: Compile source to .o
     let mut obj_files: Vec<PathBuf> = Vec::new();
     let mut dep_include_dirs: Vec<PathBuf> = Vec::new();
@@ -1035,6 +1095,10 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
 
     obj_files.sort();
     obj_files.dedup();
+
+    if let Some(host_obj) = &llvm_host_obj {
+        obj_files.push(host_obj.clone());
+    }
 
     eprintln!("{}", color::step("link", name));
 

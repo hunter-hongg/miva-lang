@@ -1,0 +1,40 @@
+module main;
+
+OptionInt = enum {
+    Some(int),
+    None
+}
+
+Color = enum {
+    Red,
+    Green,
+    Blue
+}
+
+describe = (col: Color): string => choose (col) {
+    when (Color.Red) { return "red"; }
+    when (Color.Green) { return "green"; }
+    when (Color.Blue) { return "blue"; }
+    otherwise { return "unknown"; }
+}
+
+first = (xs: OptionInt): int => choose (xs) {
+    when (OptionInt.Some) { return xs.0; }
+    when (OptionInt.None) { return 0 - 1; }
+    otherwise { return 0 - 1; }
+}
+
+make = (n: int): OptionInt => choose (n > 0) {
+    when (true) { return OptionInt.Some(n); }
+    otherwise { return OptionInt.None; }
+}
+
+main = () => {
+    printlns!("describe(Red)    = ", describe(Color.Red));
+    printlns!("describe(Green)  = ", describe(Color.Green));
+    printlns!("describe(Blue)   = ", describe(Color.Blue));
+    printlns!("first(Some(42))  = ", first(OptionInt.Some(42)));
+    printlns!("first(None)      = ", first(OptionInt.None));
+    printlns!("first(make(7))   = ", first(make(7)));
+    printlns!("first(make(0))   = ", first(make(0)));
+}

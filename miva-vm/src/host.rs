@@ -138,3 +138,46 @@ static inline char*    mvp_as_string(const MivaValue* v) { return v->data.s; }
 /// Signature of a host function loaded from libhost.so. Matches the C typedef
 /// `MivaValue (*)(const MivaValue* args, int argc)`.
 pub type HostFn = unsafe extern "C" fn(*const MivaValue, i32) -> MivaValue;
+
+/// LLVM-backend variant of `host_header`. Uses a flat `{ int64_t tag; int64_t data; }`
+/// layout (no `double` member) so the struct is returned in RAX:RDX per the
+/// x86-64 System V ABI, matching the LLVM IR `%MivaValue = type { i64, i64 }`.
+/// The standard `host_header` contains a `double` in the union, which forces
+/// SSE-class return (XMM0) and breaks the LLVM IR struct-return convention.
+pub fn host_header_llvm() -> String {
+    r#"#ifndef MVP_HOST_LLVM_H
+#define MVP_HOST_LLVM_H
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct MivaValue MivaValue;
+struct MivaValue {
+    int64_t tag;
+    int64_t data;
+};
+
+#define MVP_TAG_INT    0
+#define MVP_TAG_F64    1
+#define MVP_TAG_BOOL   2
+#define MVP_TAG_STRING 3
+#define MVP_TAG_NULL   4
+#define MVP_TAG_UNIT   5
+
+static inline MivaValue mvp_int(int64_t v)   { MivaValue x; x.tag = MVP_TAG_INT;    x.data = v; return x; }
+static inline MivaValue mvp_f64(double v)    { MivaValue x; x.tag = MVP_TAG_F64;   memcpy(&x.data, &v, 8); return x; }
+static inline MivaValue mvp_bool(bool v)     { MivaValue x; x.tag = MVP_TAG_BOOL;  x.data = v ? 1 : 0; return x; }
+static inline MivaValue mvp_null(void)       { MivaValue x; x.tag = MVP_TAG_NULL;  x.data = 0; return x; }
+static inline MivaValue mvp_unit(void)       { MivaValue x; x.tag = MVP_TAG_UNIT;  x.data = 0; return x; }
+static inline MivaValue mvp_string(char* s)  { MivaValue x; x.tag = MVP_TAG_STRING; x.data = (int64_t)(intptr_t)s; return x; }
+
+static inline int64_t  mvp_as_int(const MivaValue* v)  { return v->data; }
+static inline double   mvp_as_f64(const MivaValue* v)  { double d; memcpy(&d, &v->data, 8); return d; }
+static inline bool     mvp_as_bool(const MivaValue* v) { return v->data != 0; }
+static inline char*    mvp_as_string(const MivaValue* v) { return (char*)(intptr_t)v->data; }
+
+#endif
+"#
+    .to_string()
+}

@@ -1,0 +1,22 @@
+module main;
+
+Shape = enum {
+    Circle(int),
+    Rect(int, int),
+    Empty
+}
+
+area = (s: Shape): int => choose (s) {
+    when (Shape.Circle) { let r int = s.0; return r * r; }
+    when (Shape.Rect) { let w int = s.0; let h int = s.1; return w + h; }
+    otherwise { return 0; }
+}
+
+main = () => {
+    let circle Shape = Shape.Circle(5);
+    let rect Shape = Shape.Rect(3, 4);
+    let empty Shape = Shape.Empty;
+    printlns!("area(Circle(5)) = ", area(circle));
+    printlns!("area(Rect(3,4)) = ", area(rect));
+    printlns!("area(Empty) = ", area(empty));
+}

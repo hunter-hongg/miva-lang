@@ -508,6 +508,10 @@ impl MvmCodegen {
     // --- Expression compilation ---
 
     fn compile_expr(&mut self, expr: &Expr) {
+        if let Expr::EVar { name, .. } = expr {
+            if name == "Shape" {
+            }
+        }
         match expr {
             Expr::EInt { value, .. } => {
                 self.emit_op(MvmOp::PushI64);
@@ -573,6 +577,22 @@ impl MvmCodegen {
                 }
             }
             Expr::EFieldAccess { expr: obj, field, .. } => {
+                // Enum discriminant: `Shape.Circle` where `Shape` is an enum type
+                // name (not a variable) and `Circle` is a variant. Emit the variant
+                // tag directly as a constant for pattern matching.
+                if let Expr::EVar { name: enum_name, .. } = obj.as_ref() {
+                    if let Some(variant_list) = self.struct_field_indices.get(enum_name) {
+                        if let Some(&(_, tag)) = variant_list.iter().find(|(vname, _)| *vname == field.as_str()) {
+                            // Emit a unit enum value `Enum(tag, [])` for pattern matching.
+                            // EnumNew expects [tag] (no payloads).
+                            self.emit_op(MvmOp::PushI64);
+                            self.emit_i64(tag as i64);
+                            self.emit_op(MvmOp::EnumNew);
+                            self.emit_u32(0);
+                            return;
+                        }
+                    }
+                }
                 if field.chars().all(|c| c.is_ascii_digit()) {
                     self.compile_expr(obj);
                     self.emit_op(MvmOp::EnumGet);
@@ -639,13 +659,33 @@ impl MvmCodegen {
                 if let Some((enum_name, variant)) = name.split_once('.') {
                     if let Some(variant_list) = self.struct_field_indices.get(enum_name) {
                         if let Some(&(_, tag)) = variant_list.iter().find(|(vname, _)| *vname == variant) {
+                            self.emit_op(MvmOp::PushI64);
+                            self.emit_i64(tag as i64);
                             for arg in args {
                                 self.compile_expr(arg);
                             }
-                            self.emit_op(MvmOp::PushI64);
-                            self.emit_i64(tag as i64);
                             self.emit_op(MvmOp::EnumNew);
                             self.emit_u32(args.len() as u32);
+                            return;
+                        }
+                    }
+                } else if let Some(enum_name) = args.first().and_then(|a| match a {
+                    Expr::EVar { name: n, .. } => Some(n.clone()),
+                    _ => None,
+                }) {
+                    // Desugared method-call enum constructor: `Circle(Shape, 5)`
+                    // (from `Shape.Circle(5)`) -> EnumNew(5, tag_of_Circle_in_Shape)
+                    if let Some(variant_list) = self.struct_field_indices.get(&enum_name) {
+                        if let Some(&(_, tag)) = variant_list.iter().find(|(vname, _)| *vname == name.as_str()) {
+                            // EnumNew expects: [tag, payload_0, ..., payload_{n-1}] on the
+                            // stack (tag pushed first/bottom, payloads on top).
+                            self.emit_op(MvmOp::PushI64);
+                            self.emit_i64(tag as i64);
+                            for arg in &args[1..] {
+                                self.compile_expr(arg);
+                            }
+                            self.emit_op(MvmOp::EnumNew);
+                            self.emit_u32((args.len() - 1) as u32);
                             return;
                         }
                     }
@@ -886,8 +926,22 @@ impl MvmCodegen {
             }
             Expr::EMacro { .. } => {} // Already expanded
             Expr::EMacroVar { .. } => { self.emit_op(MvmOp::PushUnit); }
-            Expr::EMethodCall { .. } => {
-                unreachable!("EMethodCall should be desugared by frontend");
+            Expr::EMethodCall { expr, method, args, .. } => {
+                if let Expr::EVar { name: enum_name, .. } = expr.as_ref() {
+                    if let Some(variant_list) = self.struct_field_indices.get(enum_name) {
+                        if let Some(&(_, tag)) = variant_list.iter().find(|(vname, _)| vname.as_str() == method.as_str()) {
+                            self.emit_op(MvmOp::PushI64);
+                            self.emit_i64(tag as i64);
+                            for arg in args {
+                                self.compile_expr(arg);
+                            }
+                            self.emit_op(MvmOp::EnumNew);
+                            self.emit_u32(args.len() as u32);
+                            return;
+                        }
+                    }
+                }
+                unreachable!("EMethodCall should be desugared by frontend or be an enum constructor");
             }
         }
     }
