@@ -69,6 +69,17 @@ impl<'input> Parser<'input> {
         }
     }
 
+    // Field name after `.`: a normal identifier, or a numeric literal for
+    // positional enum payload access (e.g. `x.0`, `x.1`).
+    fn parse_field_name(&mut self) -> Result<(String, usize), String> {
+        let (start, tok, _) = self.advance()?;
+        match tok {
+            Token::Ident(s) => Ok((s.to_string(), start)),
+            Token::IntLit(s) => Ok((s.to_string(), start)),
+            _ => Err(format!("Expected field name, found {:?}", tok)),
+        }
+    }
+
     fn expect_str_lit(&mut self) -> Result<(String, usize), String> {
         let (start, tok, _) = self.advance()?;
         match tok {
@@ -1010,7 +1021,7 @@ impl<'input> Parser<'input> {
                 // Field access or method call: expr.field or expr.method(args)
                 Some(&Token::Dot) => {
                     self.advance()?;
-                    let (method, _) = self.expect_ident()?;
+                    let (method, _) = self.parse_field_name()?;
                     match self.peek_token()? {
                         // Method call with type args: expr.method[T, U](args)
                         Some(&Token::LBracket)
