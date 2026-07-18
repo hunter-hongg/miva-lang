@@ -88,6 +88,7 @@ pub enum Token<'input> {
     Import,
     Implements,
     Macro,
+    Enum,
     Dollar,
 }
 
@@ -621,6 +622,7 @@ impl<'input> Iterator for Lexer<'input> {
                         "import" => Token::Import,
                         "impl" => Token::Implements,
                         "macro" => Token::Macro,
+                        "enum" => Token::Enum,
                         "true" => Token::BoolLit(true),
                         "false" => Token::BoolLit(false),
                         _ => Token::Ident(ident),
@@ -735,6 +737,11 @@ mod tests {
         assert_eq!(first_token("op_mul"), Some(Token::OpMul));
         assert_eq!(first_token("op_eq"), Some(Token::OpEq));
         assert_eq!(first_token("op_neq"), Some(Token::OpNeq));
+    }
+
+    #[test]
+    fn test_enum_keyword() {
+        assert_eq!(first_token("enum"), Some(Token::Enum));
     }
 
     #[test]
