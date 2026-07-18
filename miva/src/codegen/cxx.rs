@@ -296,7 +296,11 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
             ..
         } => cxx_struct_lit(name, type_args, fields, depth),
         Expr::EFieldAccess { expr, field, .. } => {
-            format!("{}.{}", cxx_expr(expr, depth), field)
+            if field.chars().all(|c| c.is_ascii_digit()) {
+                format!("{}.__payload.field{}", cxx_expr(expr, depth), field)
+            } else {
+                format!("{}.{}", cxx_expr(expr, depth), field)
+            }
         }
         Expr::EBinOp {
             op, left, right, ..
@@ -370,6 +374,11 @@ fn cxx_binop(op: &BinOp, left: &Expr, right: &Expr, depth: usize) -> String {
 
 fn cxx_call(name: &str, args: &[Expr], type_args: &[Typ], depth: usize) -> String {
     let args_strs: Vec<_> = args.iter().map(|a| cxx_expr(a, depth)).collect();
+    if let Some(dot) = name.find('.') {
+        let enum_name = &name[..dot];
+        let variant = &name[dot + 1..];
+        return format!("{}_{}({})", enum_name, variant, args_strs.join(", "));
+    }
     let type_arg_str = if type_args.is_empty() {
         String::new()
     } else {
@@ -583,6 +592,12 @@ fn cxx_def(def: &Def, depth: usize) -> String {
             type_params,
             ..
         } => cxx_struct_def(name, type_params, fields, ind, inner),
+        Def::DEnum {
+            name,
+            variants,
+            type_params,
+            ..
+        } => cxx_enum_def(name, type_params, variants, ind, inner),
         Def::DFunc {
             name,
             type_params,
@@ -626,8 +641,7 @@ fn cxx_def(def: &Def, depth: usize) -> String {
         | Def::SImportHere { .. }
         | Def::DTest { .. }
         | Def::DCMagical { .. }
-        | Def::DCIntro { .. }
-        | Def::DEnum { .. } => String::new(),
+        | Def::DCIntro { .. } => String::new(),
     }
 }
 
@@ -656,6 +670,62 @@ fn cxx_struct_def(
         "{}struct {} {{\n{}{}}};\n\n",
         template_header, name, field_strs, ind
     )
+}
+
+fn cxx_enum_def(
+    name: &str,
+    type_params: &[String],
+    variants: &[crate::ast::EnumVariant],
+    ind: String,
+    inner: usize,
+) -> String {
+    let max_fields = variants.iter().map(|v| v.payload.len()).max().unwrap_or(0);
+    let mut field_types: Vec<String> = Vec::new();
+    for i in 0..max_fields {
+        let ty = variants
+            .iter()
+            .find_map(|v| v.payload.get(i).map(cxx_type))
+            .unwrap_or_else(|| "mvp_builtin_int".to_string());
+        field_types.push(ty);
+    }
+    let mut payload_fields = String::new();
+    for (i, ty) in field_types.iter().enumerate() {
+        payload_fields.push_str(&format!("{}{} field{};\n", indent_str(inner), ty, i));
+    }
+    let struct_str = format!(
+        "{}struct {} {{\n{}mvp_builtin_int __tag;\n{}struct {{\n{}{}}} __payload;\n{}}};\n\n",
+        ind, name, indent_str(inner), indent_str(inner), payload_fields, indent_str(inner), ind
+    );
+    let mut ctors = String::new();
+    for (idx, v) in variants.iter().enumerate() {
+        let params: Vec<String> = v
+            .payload
+            .iter()
+            .enumerate()
+            .map(|(i, t)| format!("{} __a{}", cxx_type(t), i))
+            .collect();
+        let inits: Vec<String> = (0..v.payload.len())
+            .map(|i| format!("v.__payload.field{} = __a{};", i, i))
+            .collect();
+        let ctor = format!(
+            "{}inline {} {}_{}({}) {{\n{} {} v;\n{} v.__tag = {};\n{} {};\n{} return v;\n{}}}\n\n",
+            ind,
+            name,
+            name,
+            v.name,
+            params.join(", "),
+            indent_str(inner),
+            name,
+            indent_str(inner),
+            idx,
+            indent_str(inner),
+            inits.join(&format!("\n{}", indent_str(inner))),
+            indent_str(inner),
+            ind
+        );
+        ctors.push_str(&ctor);
+    }
+    struct_str + &ctors
 }
 
 fn cxx_main_func(ind: String, inner: usize, body: &Expr) -> String {
@@ -1245,6 +1315,24 @@ mod tests {
             &[0xe2, 0x95, 0x90],
             "Inner string value should be correct UTF-8, not C3 A2 C2 95 C2 90"
         );
+    }
+
+    #[test]
+    fn test_cxx_enum_def() {
+        use crate::ast::*;
+        let def = Def::DEnum {
+            loc: Loc { line: 1, col: 1 },
+            name: "Color".into(),
+            variants: vec![
+                EnumVariant { name: "Red".into(), payload: vec![] },
+                EnumVariant { name: "Green".into(), payload: vec![Typ::TInt] },
+            ],
+            type_params: vec![],
+        };
+        let out = cxx_def(&def, 0);
+        assert!(out.contains("struct Color"), "expected struct Color in:\n{}", out);
+        assert!(out.contains("__tag"), "expected __tag in:\n{}", out);
+        assert!(out.contains("Color_Green("), "expected Color_Green ctor in:\n{}", out);
     }
 
     #[test]
