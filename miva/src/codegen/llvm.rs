@@ -102,6 +102,8 @@ fn runtime_declarations() -> String {
     decls.push_str("declare ptr @miva_string_from_float(double)\n");
     decls.push_str("declare ptr @miva_string_from_bool(i8)\n");
     decls.push_str("declare ptr @miva_string_from_str(ptr)\n");
+    decls.push_str("declare ptr @miva_string_c_str(ptr)\n");
+    decls.push_str("declare ptr @miva_string_from_cstr(ptr)\n");
     decls.push_str("declare void @miva_box_new_int(ptr, i64)\n");
     decls.push_str("declare void @miva_box_new_float(ptr, double)\n");
     decls.push_str("declare void @miva_box_new_bool(ptr, i8)\n");
@@ -784,6 +786,17 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
             int_tmp
         }
         Expr::EFieldAccess { expr: fexpr, field, .. } => {
+            if field.chars().all(|c| c.is_ascii_digit()) {
+                let val = gen_expr(fexpr, ctx, body);
+                let ptr_val = ctx.gen_tmp("fa_ptr");
+                body.push_str(&format!("{}{} = inttoptr i64 {} to ptr\n", ctx.indent_str(), ptr_val, val));
+                let idx: i64 = field.parse::<i64>().unwrap_or(0) + 1;
+                let gep = ctx.gen_tmp("fa");
+                body.push_str(&format!("{}{} = getelementptr i64, ptr {}, i64 {}\n", ctx.indent_str(), gep, ptr_val, idx));
+                let load = ctx.gen_tmp("fal");
+                body.push_str(&format!("{}{} = load i64, ptr {}\n", ctx.indent_str(), load, gep));
+                return load;
+            }
             let val = gen_expr(fexpr, ctx, body);
             let ptr_val = ctx.gen_tmp("fa_ptr");
             body.push_str(&format!("{}{} = inttoptr i64 {} to ptr\n", ctx.indent_str(), ptr_val, val));
@@ -873,6 +886,16 @@ fn ret_type(func_name: &str) -> &'static str {
 }
 
 fn gen_call(name: &str, args: &[Expr], type_args: &[Typ], ctx: &mut LlvmCtx, body: &mut String) -> String {
+    if let Some(dot) = name.find('.') {
+        let enum_name = &name[..dot];
+        let variant = &name[dot + 1..];
+        let arg_strs: Vec<String> = args.iter().map(|a| gen_expr(a, ctx, body)).collect();
+        if arg_strs.is_empty() {
+            return format!("call i64 @{}_{}_tag()", enum_name, variant);
+        } else {
+            return format!("call i64 @{}_{}({})", enum_name, variant, arg_strs.join(", "));
+        }
+    }
         // string_from/to_string on already-string arg: skip conversion, pass through.
     // When the arg is NOT a string, still emit the conversion using the already
     // computed register — never re-evaluate args[0], which would double-evaluate
@@ -1193,7 +1216,100 @@ fn gen_cfunc(name: &str, params: &[Param], returns: &Option<Typ>, code: &str) ->
             match typ { Typ::TFloat64 => "double".to_string(), Typ::TFloat32 => "float".to_string(), Typ::TBool | Typ::TChar => "i8".to_string(), _ => "i64".to_string() }
         }}
     }).collect();
-    format!("define {} @{}({}) {{\n; raw code:\n; {}\n  ret {} 0\n}}\n\n", ret_type, name, param_strs.join(", "), code, ret_type)
+    let mut out = String::new();
+    out.push_str(&format!("define {} @{}({}) {{\n", ret_type, name, param_strs.join(", ")));
+    out.push_str("entry:\n");
+    out.push_str(&format!("  %args = alloca [{} x %MivaValue], align 8\n", params.len()));
+    out.push_str(&format!("  %args_ptr = getelementptr [{} x %MivaValue], ptr %args, i64 0, i64 0\n", params.len()));
+    for (i, p) in params.iter().enumerate() {
+        let arg_reg = if params.len() == 1 {
+            "%0".to_string()
+        } else {
+            format!("%{}", i)
+        };
+        match p {
+            Param::PRef { typ, .. } | Param::POwn { typ, .. } => {
+                match typ {
+                    Typ::TInt => {
+                        out.push_str(&format!("  %arg{}_gep = getelementptr %MivaValue, ptr %args_ptr, i64 {}, i32 0\n", i, i));
+                        out.push_str(&format!("  store i64 0, ptr %arg{}_gep\n", i));
+                        out.push_str(&format!("  %arg{}_data = getelementptr %MivaValue, ptr %args_ptr, i64 {}, i32 1\n", i, i));
+                        out.push_str(&format!("  store i64 {}, ptr %arg{}_data\n", arg_reg, i));
+                    }
+                    Typ::TFloat64 | Typ::TFloat32 => {
+                        out.push_str(&format!("  %arg{}_gep = getelementptr %MivaValue, ptr %args_ptr, i64 {}, i32 0\n", i, i));
+                        out.push_str(&format!("  store i64 1, ptr %arg{}_gep\n", i));
+                        out.push_str(&format!("  %arg{}_bits = bitcast double {} to i64\n", i, arg_reg));
+                        out.push_str(&format!("  %arg{}_data = getelementptr %MivaValue, ptr %args_ptr, i64 {}, i32 1\n", i, i));
+                        out.push_str(&format!("  store i64 %arg{}_bits, ptr %arg{}_data\n", i, i));
+                    }
+                    Typ::TBool => {
+                        out.push_str(&format!("  %arg{}_gep = getelementptr %MivaValue, ptr %args_ptr, i64 {}, i32 0\n", i, i));
+                        out.push_str(&format!("  store i64 2, ptr %arg{}_gep\n", i));
+                        out.push_str(&format!("  %arg{}_data = getelementptr %MivaValue, ptr %args_ptr, i64 {}, i32 1\n", i, i));
+                        out.push_str(&format!("  store i64 {}, ptr %arg{}_data\n", arg_reg, i));
+                    }
+                    _ => {
+                        // String/other: treat as opaque pointer
+                        out.push_str(&format!("  %arg{}_gep = getelementptr %MivaValue, ptr %args_ptr, i64 {}, i32 0\n", i, i));
+                        out.push_str(&format!("  store i64 3, ptr %arg{}_gep\n", i));
+                        out.push_str(&format!("  %arg{}_cstr_ptr = inttoptr i64 {} to ptr\n", i, arg_reg));
+                        out.push_str(&format!("  %arg{}_cstr = call ptr @miva_string_c_str(ptr %arg{}_cstr_ptr)\n", i, i));
+                        out.push_str(&format!("  %arg{}_data = getelementptr %MivaValue, ptr %args_ptr, i64 {}, i32 1\n", i, i));
+                        out.push_str(&format!("  store ptr %arg{}_cstr, ptr %arg{}_data\n", i, i));
+                    }
+                }
+            }
+        }
+    }
+    out.push_str(&format!("  %result = call %MivaValue @miva_host_{}(ptr %args_ptr, i32 {})\n", name, params.len()));
+    // Extract result based on return type
+    match returns {
+        Some(Typ::TString) => {
+            out.push_str("  %result_s = extractvalue %MivaValue %result, 1\n");
+            out.push_str("  %result_ptr = inttoptr i64 %result_s to ptr\n");
+            out.push_str("  %result_str = call ptr @miva_string_from_cstr(ptr %result_ptr)\n");
+            out.push_str("  %result_int = ptrtoint ptr %result_str to i64\n");
+            out.push_str("  ret i64 %result_int\n");
+        }
+        Some(Typ::TBool) => {
+            out.push_str("  %result_i = extractvalue %MivaValue %result, 1\n");
+            out.push_str("  ret i64 %result_i\n");
+        }
+        Some(Typ::TFloat64 | Typ::TFloat32) => {
+            out.push_str("  %result_bits = extractvalue %MivaValue %result, 1\n");
+            out.push_str("  %result_f = bitcast i64 %result_bits to double\n");
+            out.push_str("  ret double %result_f\n");
+        }
+        _ => {
+            out.push_str("  %result_i = extractvalue %MivaValue %result, 1\n");
+            out.push_str("  ret i64 %result_i\n");
+        }
+    }
+    out.push_str("}\n\n");
+    out
+}
+
+fn llvm_enum_def(name: &str, variants: &[crate::ast::EnumVariant]) -> String {
+    let max_fields = variants.iter().map(|v| v.payload.len()).max().unwrap_or(0);
+    let mut out = String::new();
+    for (idx, v) in variants.iter().enumerate() {
+        let nargs = v.payload.len();
+        let params: Vec<String> = (0..nargs).map(|i| format!("i64 %arg{}", i)).collect();
+        out.push_str(&format!("define i64 @{}_{}({}) {{\n", name, v.name, params.join(", ")));
+        out.push_str("entry:\n");
+        out.push_str(&format!("  %p = call ptr @miva_alloc(i64 {})\n", (max_fields + 1) * 8));
+        out.push_str(&format!("  %tg = getelementptr i64, ptr %p, i64 0\n  store i64 {}, ptr %tg\n", idx));
+        for i in 0..nargs {
+            out.push_str(&format!(
+                "  %f{} = getelementptr i64, ptr %p, i64 {}\n  store i64 %arg{}, ptr %f{}\n",
+                i, i + 1, i, i
+            ));
+        }
+        out.push_str("  %r = ptrtoint ptr %p to i64\n  ret i64 %r\n}\n\n");
+        out.push_str(&format!("define i64 @{}_{}_tag() {{\nentry:\n  ret i64 {}\n}}\n\n", name, v.name, idx));
+    }
+    out
 }
 
 fn gen_impl(_struct_name: &str, impls: &[ImplExpr]) -> String {
@@ -1211,11 +1327,18 @@ fn generate_with_scope(defs: &[Def], module: Option<&str>, struct_field_map: &Ha
     for def in defs {
         match def {
             Def::DFunc { name, type_params, params, returns, body, .. } if name == "main" => main_functions.push_str(&gen_main_func(body, struct_field_map, func_sigs)),
-            Def::DCFuncUnsafe { name, params, returns, code, .. } => defs_str.push_str(&gen_cfunc(name, params, returns, code)),
+            Def::DCFuncUnsafe { name, params, returns, code, .. } => {
+                let global_name = make_global_name(module, name.as_str());
+                defined.insert(global_name);
+                defs_str.push_str(&gen_cfunc(name, params, returns, code));
+            }
             Def::DFunc { name, type_params, params, returns, body, is_async, .. } => {
                 let global_name = make_global_name(module, name.as_str());
                 defined.insert(global_name);
                 defs_str.push_str(&gen_func_def(name, type_params, params, returns, body, module, struct_field_map, func_sigs, *is_async));
+            }
+            Def::DEnum { name, variants, .. } => {
+                struct_defs.push_str(&llvm_enum_def(name, variants));
             }
             Def::DImpl { struct_name, impls, .. } => defs_str.push_str(&gen_impl(struct_name, impls)),
             Def::DModule { name, .. } => {
@@ -1258,6 +1381,8 @@ fn generate_bridge(_defs: &[Def]) -> String {
     bridge.push_str("void* miva_string_from_float(double v) { return new std::string(mvp_to_string(v)); }\n");
     bridge.push_str("void* miva_string_from_bool(int8_t v) { return new std::string(mvp_to_string(v)); }\n");
     bridge.push_str("void* miva_string_from_str(const char* s) { return new std::string(s); }\n");
+    bridge.push_str("void* miva_string_c_str(void* s) { return (void*)strdup(((std::string*)s)->c_str()); }\n");
+    bridge.push_str("void* miva_string_from_cstr(char* s) { auto* r = new std::string(s); free(s); return r; }\n");
     bridge.push_str("void miva_box_new_int(void** out, int64_t v) { *out = new mvp_builtin_box<mvp_builtin_int>(v); }\n");
     bridge.push_str("void miva_box_new_float(void** out, double v) { *out = new mvp_builtin_box<mvp_builtin_float>(v); }\n");
     bridge.push_str("void miva_box_new_bool(void** out, int8_t v) { *out = new mvp_builtin_box<mvp_builtin_boolean>(v); }\n");
@@ -1345,12 +1470,28 @@ pub fn build_ir(defs: &[Def], func_sigs: &HashMap<String, crate::codegen::FuncSi
     let struct_field_map = build_struct_field_map(defs);
     let (struct_defs, defs_str, main_functions, defined) = generate_with_scope(defs, None, &struct_field_map, func_sigs);
 
+    // Collect user DCFuncUnsafe definitions for libhost.c generation
+    let mut host_defs: Vec<crate::codegen::mvm::HostDef> = Vec::new();
+    for def in defs {
+        if let Def::DCFuncUnsafe { name, params, returns, code, .. } = def {
+            if !host_defs.iter().any(|h: &crate::codegen::mvm::HostDef| h.name == *name) {
+                host_defs.push(crate::codegen::mvm::HostDef {
+                    name: name.clone(),
+                    arity: params.len() as u32,
+                    returns: returns.clone(),
+                    code: code.clone(),
+                });
+            }
+        }
+    }
+
     let mut program = String::new();
     program.push_str("; ModuleID = 'miva_output'\n");
     program.push_str(&format!("target triple = \"{}\"\n\n", TARGET_TRIPLE));
     STR_CONST_COUNTER.store(0, Ordering::Relaxed);
     program.push_str("%mvp_builtin_string = type opaque\n");
-    program.push_str("%mvp_builtin_box = type opaque\n\n");
+    program.push_str("%mvp_builtin_box = type opaque\n");
+    program.push_str("%MivaValue = type { i64, i64 }\n\n");
 
     for st in &struct_types { program.push_str(&st); program.push_str("\n"); }
 
@@ -1369,8 +1510,13 @@ pub fn build_ir(defs: &[Def], func_sigs: &HashMap<String, crate::codegen::FuncSi
     program.push_str(&defs_str);
     program.push_str(&main_functions);
 
+    // Declare miva_host_* functions (from libhost.c) for inline unsafe functions
+    for hd in &host_defs {
+        program.push_str(&format!("declare %MivaValue @miva_host_{}(ptr, i32)\n", hd.name));
+    }
+
     let test_ir = generate_test(defs);
     let bridge = generate_bridge(defs);
 
-    crate::codegen::GeneratedOutput { program: program.into_bytes(), header: bridge, test: test_ir, extension: "ll", host_defs: Vec::new() }
+    crate::codegen::GeneratedOutput { program: program.into_bytes(), header: bridge, test: test_ir, extension: "ll", host_defs }
 }
