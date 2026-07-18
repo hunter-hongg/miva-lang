@@ -107,16 +107,25 @@ pub struct StructEntry {
 }
 
 #[derive(Debug, Clone)]
+pub struct EnumEntry {
+    pub name: String,
+    pub variants: Vec<crate::ast::EnumVariant>,
+    pub type_params: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct SymbolTable {
     pub module_name: String,
     pub functions: Vec<FunctionEntry>,
     pub structs: Vec<StructEntry>,
+    pub enums: Vec<EnumEntry>,
     pub exported_functions: Vec<String>,
     pub files: Vec<String>,
     pub imports: Vec<String>,
 
     function_index: HashMap<String, usize>,
     struct_index: HashMap<String, usize>,
+    enum_index: HashMap<String, usize>,
 }
 
 impl SymbolTable {
@@ -125,11 +134,13 @@ impl SymbolTable {
             module_name: String::new(),
             functions: Vec::new(),
             structs: Vec::new(),
+            enums: Vec::new(),
             exported_functions: Vec::new(),
             files: Vec::new(),
             imports: Vec::new(),
             function_index: HashMap::new(),
             struct_index: HashMap::new(),
+            enum_index: HashMap::new(),
         }
     }
 
@@ -184,7 +195,14 @@ impl SymbolTable {
                 } => {
                     table.register_struct(name, type_params, fields, loc, &mut errors);
                 }
-                Def::DEnum { .. } => {}
+                Def::DEnum {
+                    name,
+                    variants,
+                    type_params,
+                    loc,
+                } => {
+                    table.register_enum(name, type_params, variants, loc, &mut errors);
+                }
                 Def::SExport { symbol, .. } => {
                     if table.function_index.contains_key(symbol)
                         && !table.exported_functions.contains(symbol)
@@ -276,6 +294,35 @@ impl SymbolTable {
             type_params: type_params.to_vec(),
             fields: fields.to_vec(),
         });
+    }
+
+    fn register_enum(
+        &mut self,
+        name: &str,
+        type_params: &[String],
+        variants: &[crate::ast::EnumVariant],
+        loc: &Loc,
+        errors: &mut Vec<Error>,
+    ) {
+        if self.enum_index.contains_key(name) {
+            errors.push(Error::new(
+                "E0004",
+                loc,
+                &format!("enum '{}' is already defined", name),
+            ));
+        } else {
+            let idx = self.enums.len();
+            self.enum_index.insert(name.to_string(), idx);
+        }
+        self.enums.push(EnumEntry {
+            name: name.to_string(),
+            type_params: type_params.to_vec(),
+            variants: variants.to_vec(),
+        });
+    }
+
+    pub fn lookup_enum(&self, name: &str) -> Option<&EnumEntry> {
+        self.enum_index.get(name).map(|&idx| &self.enums[idx])
     }
 
     pub fn lookup_function(&self, name: &str) -> Option<&FunctionEntry> {
@@ -739,6 +786,23 @@ mod tests {
         let st = SymbolTable::build(&[def]);
         assert_eq!(st.structs.len(), 1);
         assert!(st.structs[0].fields.is_empty());
+    }
+
+    #[test]
+    fn test_register_enum() {
+        let def = Def::DEnum {
+            loc: loc(),
+            name: "Color".into(),
+            variants: vec![
+                crate::ast::EnumVariant { name: "Red".into(), payload: vec![] },
+                crate::ast::EnumVariant { name: "Green".into(), payload: vec![crate::ast::Typ::TInt] },
+            ],
+            type_params: vec![],
+        };
+        let table = SymbolTable::build(&[def]);
+        let e = table.lookup_enum("Color").unwrap();
+        assert_eq!(e.variants.len(), 2);
+        assert_eq!(e.variants[1].name, "Green");
     }
 
     #[test]
