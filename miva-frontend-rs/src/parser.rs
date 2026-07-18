@@ -171,6 +171,11 @@ impl<'input> Parser<'input> {
             return self.parse_struct_body(name, type_params, start);
         }
 
+        // Check for enum
+        if self.peek_token()? == Some(&Token::Enum) {
+            return self.parse_enum_body(name, type_params, start);
+        }
+
         // Must be a function
         self.parse_func_body(name, type_params, start, Safety::Safe, false)
     }
@@ -202,6 +207,49 @@ impl<'input> Parser<'input> {
             loc: self.loc(start),
             name,
             fields,
+            type_params,
+        })
+    }
+
+    fn parse_enum_body(
+        &mut self,
+        name: String,
+        type_params: Vec<String>,
+        start: usize,
+    ) -> Result<Def, String> {
+        self.advance()?; // consume "enum"
+        self.expect(&Token::LBrace)?;
+        let mut variants = Vec::new();
+        while self.peek_token()? != Some(&Token::RBrace) {
+            let (vname, _) = self.expect_ident()?;
+            let payload = if self.peek_token()? == Some(&Token::LParen) {
+                self.advance()?; // consume "("
+                let mut types = Vec::new();
+                if self.peek_token()? != Some(&Token::RParen) {
+                    loop {
+                        types.push(self.parse_typ()?);
+                        if self.peek_token()? == Some(&Token::Comma) {
+                            self.advance()?;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Token::RParen)?;
+                types
+            } else {
+                vec![]
+            };
+            variants.push(EnumVariant { name: vname, payload });
+            if self.peek_token()? == Some(&Token::Comma) {
+                self.advance()?;
+            }
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Def::DEnum {
+            loc: self.loc(start),
+            name,
+            variants,
             type_params,
         })
     }
@@ -1621,6 +1669,36 @@ fn expr_loc(e: &Expr) -> Loc {
         | Expr::EDeref { loc, .. }
         | Expr::EMethodCall { loc, .. }
         | Expr::EMacroVar { loc, .. } => loc.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    fn parse_first(input: &str) -> Def {
+        let lexer = Lexer::new(input);
+        let mut parser = Parser::new(lexer, input, "test.mv");
+        parser.parse_program().unwrap().remove(0)
+    }
+
+    #[test]
+    fn test_parse_enum() {
+        let def = parse_first("Color = enum { Red, Green(int), Blue(int, string) }");
+        match def {
+            Def::DEnum { name, variants, .. } => {
+                assert_eq!(name, "Color");
+                assert_eq!(variants.len(), 3);
+                assert_eq!(variants[0].name, "Red");
+                assert!(variants[0].payload.is_empty());
+                assert_eq!(variants[1].name, "Green");
+                assert_eq!(variants[1].payload.len(), 1);
+                assert_eq!(variants[2].name, "Blue");
+                assert_eq!(variants[2].payload.len(), 2);
+            }
+            _ => panic!("expected DEnum"),
+        }
     }
 }
 
