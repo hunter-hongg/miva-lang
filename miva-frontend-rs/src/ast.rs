@@ -317,6 +317,13 @@ pub enum Expr {
         range: Box<Expr>,
         body: Box<Expr>,
     },
+    #[serde(rename = "enumPattern")]
+    EEnumPattern {
+        loc: Loc,
+        enum_name: String,
+        variant: String,
+        bindings: Vec<String>,
+    },
 }
 
 // ── Struct/When helpers ───────────────────────────────────────────────────

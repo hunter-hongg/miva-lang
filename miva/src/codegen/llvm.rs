@@ -909,21 +909,83 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
             // Translate `choose` into a nested if/else chain, reusing the
             // existing EIf codegen (phi merging, branch-terminator handling).
             // Each case becomes `if (var == when) then else <rest>`.
+            // An `EEnumPattern` destructure (`when (Enum.Variant(x, y))`) is
+            // desugared: the `when` becomes the variant discriminant (a tag-only
+            // value so the existing enum tag-equality logic applies), and the
+            // `then` branch is wrapped to bind each payload field (`var.0`,
+            // `var.1`, ...) to its pattern name via `let`.
             let loc = loc.clone();
+            let transformed: Vec<(Expr, Expr)> = cases
+                .iter()
+                .map(|case| match case.when.as_ref() {
+                    Expr::EEnumPattern {
+                        enum_name,
+                        variant,
+                        bindings,
+                        ..
+                    } => {
+                        let when = Expr::EFieldAccess {
+                            loc: loc.clone(),
+                            expr: Box::new(Expr::EVar {
+                                loc: loc.clone(),
+                                name: enum_name.clone(),
+                            }),
+                            field: variant.clone(),
+                        };
+                        let lets: Vec<Stmt> = bindings
+                            .iter()
+                            .enumerate()
+                            .map(|(i, b)| Stmt::SLet {
+                                loc: loc.clone(),
+                                mutable: false,
+                                name: b.clone(),
+                                expr: Box::new(Expr::EFieldAccess {
+                                    loc: loc.clone(),
+                                    expr: var.clone(),
+                                    field: i.to_string(),
+                                }),
+                            })
+                            .collect();
+                        let then = match case.then.as_ref() {
+                            Expr::EBlock {
+                                loc: bl,
+                                stmts,
+                                result,
+                                ..
+                            } => Expr::EBlock {
+                                loc: bl.clone(),
+                                stmts: {
+                                    let mut s = lets;
+                                    s.extend(stmts.iter().cloned());
+                                    s
+                                },
+                                result: result.clone(),
+                            },
+                            other => Expr::EBlock {
+                                loc: loc.clone(),
+                                stmts: lets,
+                                result: Some(Box::new(other.clone())),
+                            },
+                        };
+                        (when, then)
+                    }
+                    _ => (case.when.as_ref().clone(), case.then.as_ref().clone()),
+                })
+                .collect();
             let mut chain: Expr = match otherwise {
                 Some(e) => *e.clone(),
                 None => Expr::EInt { loc: loc.clone(), value: 0 },
             };
-            for case in cases.iter().rev() {
+            for (when, then) in transformed.iter().rev() {
                 chain = Expr::EIf {
                     loc: loc.clone(),
                     cond: Box::new(Expr::EBinOp {
                         loc: loc.clone(),
                         op: BinOp::Eq,
                         left: var.clone(),
-                        right: case.when.clone(),
+                        right: Box::new(when.clone()),
                     }),
-                    then: case.then.clone(),
+                    then: Box::new(then.clone()),
                     else_: Some(Box::new(chain)),
                 };
             }
@@ -943,6 +1005,9 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
             tmp
         }
         Expr::EMacro { .. } | Expr::EMacroVar { .. } => "0".to_string(),
+        Expr::EEnumPattern { .. } => {
+            unreachable!("EEnumPattern is handled inline in the EChoose arm")
+        }
     }
 }
 

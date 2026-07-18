@@ -265,6 +265,53 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
             for case in cases {
                 ctx.vars = vars_before.clone();
                 errs.extend(check_expr(ctx, symbol_table, &case.when));
+                if let Expr::EEnumPattern {
+                    enum_name,
+                    variant,
+                    bindings,
+                    loc,
+                } = case.when.as_ref()
+                {
+                    match symbol_table.lookup_enum(enum_name) {
+                        Some(e) => match e.variants.iter().find(|v| &v.name == variant) {
+                            Some(v) => {
+                                if v.payload.len() != bindings.len() {
+                                    errs.push(Error::new(
+                                        "E0016",
+                                        loc,
+                                        &format!(
+                                            "enum variant '{}' expects {} binding(s), got {}",
+                                            variant,
+                                            v.payload.len(),
+                                            bindings.len()
+                                        ),
+                                    ));
+                                }
+                                for b in bindings {
+                                    ctx.vars.insert(
+                                        b.clone(),
+                                        VarInfo {
+                                            typ: Typ::TInt,
+                                            state: VarState::Valid,
+                                            is_mutable: false,
+                                            is_ref_param: false,
+                                        },
+                                    );
+                                }
+                            }
+                            None => errs.push(Error::new(
+                                "E0019",
+                                loc,
+                                &format!("unknown variant '{}' in enum '{}'", variant, enum_name),
+                            )),
+                        },
+                        None => errs.push(Error::new(
+                            "E0018",
+                            loc,
+                            &format!("unknown enum '{}'", enum_name),
+                        )),
+                    }
+                }
                 errs.extend(check_expr(ctx, symbol_table, &case.then));
                 branch_vars.push(ctx.vars.clone());
             }
@@ -431,7 +478,8 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
         | Expr::EVoid { .. }
         | Expr::EMacro { .. }
         | Expr::EMacroVar { .. }
-        | Expr::EAddr { .. } => {}
+        | Expr::EAddr { .. }
+        | Expr::EEnumPattern { .. } => {}
         Expr::EMethodCall { .. } => unreachable!(),
     }
 

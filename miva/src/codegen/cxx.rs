@@ -356,6 +356,9 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
         Expr::EMacro { .. } => String::new(),
         Expr::EMacroVar { .. } => unreachable!(),
         Expr::EMethodCall { .. } => unreachable!(),
+        Expr::EEnumPattern { .. } => {
+            unreachable!("EEnumPattern is handled inline in the EChoose arm")
+        }
     }
 }
 
@@ -496,12 +499,50 @@ fn cxx_choose(
     let ind = indent_str(depth);
     let inner = depth + 1;
     let cases_str: String = cases.iter().fold(String::new(), |acc, c| {
-        let value_str = cxx_expr(&c.when, depth);
-        let body_str = cxx_expr(&c.then, inner);
-        format!(
-            "{}{}if ({} == {}) {{ return {}; }}\n",
-            acc, ind, var_str, value_str, body_str
-        )
+        if let Expr::EEnumPattern {
+            enum_name,
+            variant,
+            bindings,
+            ..
+        } = c.when.as_ref()
+        {
+            // Destructuring pattern: `when (Enum.Variant(x, y))`.
+            // Compare tags, then bind each payload field to its name.
+            let disc = format!("{}_{}()", enum_name, variant);
+            let bind_str: String = bindings
+                .iter()
+                .enumerate()
+                .map(|(i, b)| {
+                    format!(
+                        "{}{}const auto {} = {}.__payload.field{};\n",
+                        indent_str(inner),
+                        ind,
+                        b,
+                        var_str,
+                        i
+                    )
+                })
+                .collect();
+            let body_str = cxx_expr(&c.then, inner);
+            format!(
+                "{}{}if ({} == {}) {{\n{}{}return {};\n{}}}\n",
+                acc,
+                ind,
+                var_str,
+                disc,
+                bind_str,
+                indent_str(inner),
+                body_str,
+                ind
+            )
+        } else {
+            let value_str = cxx_expr(&c.when, depth);
+            let body_str = cxx_expr(&c.then, inner);
+            format!(
+                "{}{}if ({} == {}) {{ return {}; }}\n",
+                acc, ind, var_str, value_str, body_str
+            )
+        }
     });
     let otherwise_str = match otherwise {
         Some(e) => format!("{}else {{ return {}; }}", ind, cxx_expr(e, inner)),

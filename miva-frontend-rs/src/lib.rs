@@ -85,6 +85,13 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_negative_literal() {
+        let input = "main = () => {\n  printlns!(-1);\n  printlns!(-3.14);\n  printlns!(a - 1);\n}";
+        let defs = parse(input, "test.miva").unwrap();
+        assert_eq!(defs.len(), 1);
+    }
+
+    #[test]
     fn test_parse_func_with_body() {
         let input = "main = () => {\n  printlns!(1 + 2, 10 - 3);\n}";
         let defs = parse(input, "test.miva").unwrap();

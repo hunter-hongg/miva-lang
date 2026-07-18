@@ -346,7 +346,8 @@ fn loc_of(e: &Expr) -> Loc {
         | Expr::EDeref { loc, .. }
         | Expr::EWhile { loc, .. }
         | Expr::ELoop { loc, .. }
-        | Expr::EFor { loc, .. } => loc.clone(),
+        | Expr::EFor { loc, .. }
+        | Expr::EEnumPattern { loc, .. } => loc.clone(),
         Expr::EMacroVar { loc, .. } => loc.clone(),
         Expr::EMethodCall { loc, .. } => loc.clone(),
     }
@@ -663,8 +664,8 @@ fn infer_type(
                         func_sigs,
                         structs,
                         struct_type_params,
-                enums,
-                func_return,
+                        enums,
+                        func_return,
 
                         &case.when,
                     );
@@ -676,17 +677,41 @@ fn infer_type(
                             "choose expr and the variable must have the same type",
                         ));
                     }
+                    // Register enum-pattern destructuring bindings so the `then`
+                    // branch can refer to them with the variant's payload types.
+                    let mut saved_bindings: Vec<(String, Option<Typ>)> = Vec::new();
+                    if let Expr::EEnumPattern {
+                        enum_name,
+                        variant,
+                        bindings,
+                        ..
+                    } = case.when.as_ref()
+                    {
+                        if let Some(variants) = enums.get(enum_name.as_str()) {
+                            if let Some(v) = variants.iter().find(|v| &v.name == variant) {
+                                for (b, bt) in bindings.iter().zip(v.payload.iter()) {
+                                    saved_bindings.push((b.clone(), env.vars.insert(b.clone(), bt.clone())));
+                                }
+                            }
+                        }
+                    }
                     let (tt, errs_t) = infer_type(
                         env,
                         func_sigs,
                         structs,
                         struct_type_params,
-                enums,
-                func_return,
+                        enums,
+                        func_return,
 
                         &case.then,
                     );
                     errs.extend(errs_t);
+                    for (b, prev) in saved_bindings {
+                        match prev {
+                            Some(p) => { env.vars.insert(b, p); }
+                            None => { env.vars.remove(&b); }
+                        }
+                    }
                     if first_case {
                         first_type = Some(tt);
                         first_case = false;
@@ -763,6 +788,57 @@ fn infer_type(
                 }
                 (tmp_typ.get(0).unwrap_or(&Typ::TInvalid).clone(), errs)
             }
+        }
+        Expr::EEnumPattern {
+            enum_name,
+            variant,
+            bindings,
+            loc,
+        } => {
+            // Enum destructuring pattern used in `when (Enum.Variant(x, y))`.
+            // Validate the enum and variant, and that the number of bindings
+            // matches the variant's payload arity.
+            let mut errs = vec![];
+            let typ = match enums.get(enum_name.as_str()) {
+                Some(variants) => match variants.iter().find(|v| &v.name == variant) {
+                    Some(v) => {
+                        if v.payload.len() != bindings.len() {
+                            errs.push(Error::new(
+                                "E0016",
+                                loc,
+                                &format!(
+                                    "enum variant '{}' expects {} binding(s), got {}",
+                                    variant,
+                                    v.payload.len(),
+                                    bindings.len()
+                                ),
+                            ));
+                        }
+                        Typ::TStruct {
+                            name: enum_name.clone(),
+                            fields: vec![],
+                            type_args: vec![],
+                        }
+                    }
+                    None => {
+                        errs.push(Error::new(
+                            "E0019",
+                            loc,
+                            &format!("unknown variant '{}' in enum '{}'", variant, enum_name),
+                        ));
+                        Typ::TInvalid
+                    }
+                },
+                None => {
+                    errs.push(Error::new(
+                        "E0018",
+                        loc,
+                        &format!("unknown enum '{}'", enum_name),
+                    ));
+                    Typ::TInvalid
+                }
+            };
+            (typ, errs)
         }
         Expr::ECall {
             name,
@@ -3060,5 +3136,108 @@ mod tests {
         ];
         let errs = check_program(&defs);
         assert!(errs.is_empty(), "unexpected errors: {:?}", errs);
+    }
+
+    #[test]
+    fn test_enum_pattern_destructure_typecheck() {
+        use crate::ast::*;
+        let defs = vec![
+            Def::DEnum {
+                loc: Loc { line: 1, col: 1 },
+                name: "Shape".into(),
+                variants: vec![
+                    EnumVariant { name: "Circle".into(), payload: vec![Typ::TInt] },
+                    EnumVariant { name: "Rect".into(), payload: vec![Typ::TInt, Typ::TInt] },
+                ],
+                type_params: vec![],
+            },
+            Def::DFunc {
+                loc: Loc { line: 2, col: 1 },
+                name: "area".into(),
+                type_params: vec![],
+                params: vec![Param::POwn { name: "s".into(), typ: Typ::TStruct { name: "Shape".into(), fields: vec![], type_args: vec![] } }],
+                returns: Some(Typ::TInt),
+                body: Box::new(Expr::EChoose {
+                    loc: Loc { line: 3, col: 1 },
+                    var: Box::new(Expr::EVar { loc: Loc { line: 3, col: 1 }, name: "s".into() }),
+                    cases: vec![
+                        WhenCase {
+                            when: Box::new(Expr::EEnumPattern {
+                                loc: Loc { line: 4, col: 1 },
+                                enum_name: "Shape".into(),
+                                variant: "Circle".into(),
+                                bindings: vec!["r".into()],
+                            }),
+                            then: Box::new(Expr::EBinOp {
+                                loc: Loc { line: 4, col: 1 },
+                                op: BinOp::Mul,
+                                left: Box::new(Expr::EVar { loc: Loc { line: 4, col: 1 }, name: "r".into() }),
+                                right: Box::new(Expr::EVar { loc: Loc { line: 4, col: 1 }, name: "r".into() }),
+                            }),
+                        },
+                        WhenCase {
+                            when: Box::new(Expr::EEnumPattern {
+                                loc: Loc { line: 5, col: 1 },
+                                enum_name: "Shape".into(),
+                                variant: "Rect".into(),
+                                bindings: vec!["w".into(), "h".into()],
+                            }),
+                            then: Box::new(Expr::EBinOp {
+                                loc: Loc { line: 5, col: 1 },
+                                op: BinOp::Add,
+                                left: Box::new(Expr::EVar { loc: Loc { line: 5, col: 1 }, name: "w".into() }),
+                                right: Box::new(Expr::EVar { loc: Loc { line: 5, col: 1 }, name: "h".into() }),
+                            }),
+                        },
+                    ],
+                    otherwise: Some(Box::new(Expr::EInt { loc: Loc { line: 6, col: 1 }, value: 0 })),
+                }),
+                safety: Safety::Safe,
+                is_async: false,
+            },
+        ];
+        let errs = check_program(&defs);
+        assert!(errs.is_empty(), "unexpected errors: {:?}", errs);
+    }
+
+    #[test]
+    fn test_enum_pattern_binding_arity_mismatch() {
+        use crate::ast::*;
+        let defs = vec![
+            Def::DEnum {
+                loc: Loc { line: 1, col: 1 },
+                name: "Shape".into(),
+                variants: vec![
+                    EnumVariant { name: "Circle".into(), payload: vec![Typ::TInt] },
+                ],
+                type_params: vec![],
+            },
+            Def::DFunc {
+                loc: Loc { line: 2, col: 1 },
+                name: "area".into(),
+                type_params: vec![],
+                params: vec![Param::POwn { name: "s".into(), typ: Typ::TStruct { name: "Shape".into(), fields: vec![], type_args: vec![] } }],
+                returns: Some(Typ::TInt),
+                body: Box::new(Expr::EChoose {
+                    loc: Loc { line: 3, col: 1 },
+                    var: Box::new(Expr::EVar { loc: Loc { line: 3, col: 1 }, name: "s".into() }),
+                    cases: vec![WhenCase {
+                        when: Box::new(Expr::EEnumPattern {
+                            loc: Loc { line: 4, col: 1 },
+                            enum_name: "Shape".into(),
+                            variant: "Circle".into(),
+                            bindings: vec!["a".into(), "b".into()],
+                        }),
+                        then: Box::new(Expr::EInt { loc: Loc { line: 4, col: 1 }, value: 1 }),
+                    }],
+                    otherwise: Some(Box::new(Expr::EInt { loc: Loc { line: 5, col: 1 }, value: 0 })),
+                }),
+                safety: Safety::Safe,
+                is_async: false,
+            },
+        ];
+        let errs = check_program(&defs);
+        assert!(!errs.is_empty());
+        assert!(errs.iter().any(|e| e.code == "E0016"));
     }
 }

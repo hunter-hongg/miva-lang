@@ -504,6 +504,24 @@ impl<'input> Iterator for Lexer<'input> {
                 }
                 b'-' => {
                     self.advance();
+                    if self.peek().map_or(false, |b| b.is_ascii_digit())
+                        && self.pos == start + 1
+                    {
+                        match self.read_number() {
+                            Ok(_) => {
+                                let lit_start = start;
+                                let lit_end = self.pos;
+                                let text = &self.input[lit_start..lit_end];
+                                let lit = if text.contains('.') {
+                                    Token::FloatLit(text)
+                                } else {
+                                    Token::IntLit(text)
+                                };
+                                return Some(Ok((lit_start, lit, lit_end)));
+                            }
+                            Err(e) => return Some(Err(e)),
+                        }
+                    }
                     return Some(Ok((start, Token::Minus, self.pos)));
                 }
                 b'*' => {
@@ -675,6 +693,19 @@ mod tests {
         assert_eq!(first_token("42"), Some(Token::IntLit("42")));
         assert_eq!(first_token("0"), Some(Token::IntLit("0")));
         assert_eq!(first_token("12345"), Some(Token::IntLit("12345")));
+    }
+
+    #[test]
+    fn test_negative_literal() {
+        assert_eq!(first_token("-42"), Some(Token::IntLit("-42")));
+        assert_eq!(first_token("-3.14"), Some(Token::FloatLit("-3.14")));
+    }
+
+    #[test]
+    fn test_minus_operator() {
+        let tokens = collect("a - 1");
+        assert_eq!(tokens[1].1, Token::Minus);
+        assert_eq!(tokens[2].1, Token::IntLit("1"));
     }
 
     #[test]

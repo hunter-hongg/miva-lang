@@ -904,14 +904,46 @@ impl MvmCodegen {
                 let end_label = self.new_label();
                 let case_labels: Vec<u32> = (0..cases.len()).map(|_| self.new_label()).collect();
 
+                // Original matched value, re-loadable for payload binding.
+                let var_clone = var.clone();
+
                 self.compile_expr(var);
                 for (i, case) in cases.iter().enumerate() {
                     // Dup the var value for comparison
                     self.emit_op(MvmOp::Dup);
-                    self.compile_expr(&case.when);
+                    if let Expr::EEnumPattern {
+                        enum_name,
+                        variant,
+                        ..
+                    } = case.when.as_ref()
+                    {
+                        // Emit a tag-only enum value for the variant discriminant.
+                        let tag = self
+                            .struct_field_indices
+                            .get(enum_name)
+                            .and_then(|vl| vl.iter().find(|(v, _)| v == variant).map(|(_, t)| *t))
+                            .unwrap_or(0);
+                        self.emit_op(MvmOp::PushI64);
+                        self.emit_i64(tag as i64);
+                        self.emit_op(MvmOp::EnumNew);
+                        self.emit_u32(0);
+                    } else {
+                        self.compile_expr(&case.when);
+                    }
                     self.emit_op(MvmOp::CmpEq);
                     self.emit_jmp_if_false(case_labels[i]);
                     self.emit_op(MvmOp::Drop); // drop the dup'd var
+                    // Destructure payload fields into binding locals.
+                    if let Expr::EEnumPattern { bindings, .. } = case.when.as_ref() {
+                        for (bi, b) in bindings.iter().enumerate() {
+                            self.compile_expr(&var_clone);
+                            self.emit_op(MvmOp::EnumGet);
+                            self.emit_u32(bi as u32);
+                            let bl = self.declare_local(b);
+                            self.emit_op(MvmOp::StoreLocal);
+                            self.emit_u32(bl);
+                        }
+                    }
                     self.compile_expr(&case.then);
                     self.emit_jmp(end_label);
                     self.define_label(case_labels[i]);
@@ -942,6 +974,9 @@ impl MvmCodegen {
                     }
                 }
                 unreachable!("EMethodCall should be desugared by frontend or be an enum constructor");
+            }
+            Expr::EEnumPattern { .. } => {
+                unreachable!("EEnumPattern is handled inline in the EChoose arm")
             }
         }
     }

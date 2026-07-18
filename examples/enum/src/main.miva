@@ -7,8 +7,20 @@ Shape = enum {
 }
 
 area = (s: Shape): int => choose (s) {
-    when (Shape.Circle) { let r int = s.0; return r * r; }
-    when (Shape.Rect) { let w int = s.0; let h int = s.1; return w + h; }
+    when (Shape.Circle(r)) { return r * r; }
+    when (Shape.Rect(w, h)) { return w + h; }
+    otherwise { return 0; }
+}
+
+perimeter = (s: Shape): int => choose (s) {
+    when (Shape.Circle(r)) { return r * 6; }
+    when (Shape.Rect(w, h)) { return (w + h) * 2; }
+    otherwise { return 0; }
+}
+
+summary = (s: Shape): int => choose (s) {
+    when (Shape.Circle(r)) { return area(s) + perimeter(s) + r; }
+    when (Shape.Rect(w, h)) { return area(s) + perimeter(s) + w + h; }
     otherwise { return 0; }
 }
 
@@ -19,4 +31,9 @@ main = () => {
     printlns!("area(Circle(5)) = ", area(circle));
     printlns!("area(Rect(3,4)) = ", area(rect));
     printlns!("area(Empty) = ", area(empty));
+    printlns!("perimeter(Circle(5)) = ", perimeter(circle));
+    printlns!("perimeter(Rect(3,4)) = ", perimeter(rect));
+    printlns!("summary(Circle(5)) = ", summary(circle));
+    printlns!("summary(Rect(3,4)) = ", summary(rect));
+    printlns!("summary(Empty) = ", summary(empty));
 }

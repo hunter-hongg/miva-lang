@@ -961,12 +961,7 @@ impl<'input> Parser<'input> {
                     self.expect(&Token::RParen)?;
                     let call_path = extract_call_path_from_expr(&expr);
                     let processed = util::process_call_path(&call_path);
-                    expr = Expr::ECall {
-                        loc: expr_loc(&expr),
-                        name: processed,
-                        type_args,
-                        args,
-                    };
+                    expr = enum_pattern_or_call(expr_loc(&expr), processed, type_args, args);
                 }
                 // Function call: expr(args)
                 Some(&Token::LParen) => {
@@ -985,12 +980,7 @@ impl<'input> Parser<'input> {
                     self.expect(&Token::RParen)?;
                     let call_path = extract_call_path_from_expr(&expr);
                     let processed = util::process_call_path(&call_path);
-                    expr = Expr::ECall {
-                        loc: expr_loc(&expr),
-                        name: processed,
-                        type_args: vec![],
-                        args,
-                    };
+                    expr = enum_pattern_or_call(expr_loc(&expr), processed, vec![], args);
                 }
                 // Macro call: ident!(args)
                 Some(&Token::Not) if matches!(&expr, Expr::EVar { .. }) => {
@@ -1111,7 +1101,50 @@ impl<'input> Parser<'input> {
                 _ => break,
             }
         }
-        Ok(expr)
+        Ok(Self::method_call_or_pattern(expr))
+    }
+
+    /// Convert `Enum.Variant(x, y)` parsed as a method call (`EMethodCall` whose
+    /// receiver is an uppercase enum name and whose arguments are all bare
+    /// identifiers) into an enum destructuring pattern (`EEnumPattern`). Other
+    /// method calls are left unchanged.
+    fn method_call_or_pattern(expr: Expr) -> Expr {
+        if let Expr::EMethodCall {
+            loc,
+            expr: receiver,
+            method,
+            type_args,
+            args,
+        } = expr
+        {
+            if let Expr::EVar { name: enum_name, .. } = receiver.as_ref() {
+                if enum_name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    let bindings: Option<Vec<String>> = args
+                        .iter()
+                        .map(|a| match a {
+                            Expr::EVar { name, .. } => Some(name.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    if let Some(bindings) = bindings {
+                        return Expr::EEnumPattern {
+                            loc,
+                            enum_name: enum_name.clone(),
+                            variant: method,
+                            bindings,
+                        };
+                    }
+                }
+            }
+            return Expr::EMethodCall {
+                loc,
+                expr: receiver,
+                method,
+                type_args,
+                args,
+            };
+        }
+        expr
     }
 
     fn parse_if_stmt(&mut self) -> Result<Stmt, String> {
@@ -1652,6 +1685,40 @@ fn extract_call_path_from_expr(expr: &Expr) -> String {
     }
 }
 
+/// If `name` is a dotted `Enum.Variant` and every argument is a bare identifier,
+/// the call is treated as an enum destructuring pattern (used in `when` arms of a
+/// `choose`), so it is emitted as `EEnumPattern`. Otherwise it stays a normal call.
+fn enum_pattern_or_call(
+    loc: Loc,
+    name: String,
+    type_args: Vec<Typ>,
+    args: Vec<Expr>,
+) -> Expr {
+    if let Some((enum_name, variant)) = name.split_once('.') {
+        let bindings: Option<Vec<String>> = args
+            .iter()
+            .map(|a| match a {
+                Expr::EVar { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        if let Some(bindings) = bindings {
+            return Expr::EEnumPattern {
+                loc,
+                enum_name: enum_name.to_string(),
+                variant: variant.to_string(),
+                bindings,
+            };
+        }
+    }
+    Expr::ECall {
+        loc,
+        name,
+        type_args,
+        args,
+    }
+}
+
 fn expr_loc(e: &Expr) -> Loc {
     match e {
         Expr::EInt { loc, .. }
@@ -1679,7 +1746,8 @@ fn expr_loc(e: &Expr) -> Loc {
         | Expr::EAddr { loc, .. }
         | Expr::EDeref { loc, .. }
         | Expr::EMethodCall { loc, .. }
-        | Expr::EMacroVar { loc, .. } => loc.clone(),
+        | Expr::EMacroVar { loc, .. }
+        | Expr::EEnumPattern { loc, .. } => loc.clone(),
     }
 }
 
@@ -1709,6 +1777,48 @@ mod tests {
                 assert_eq!(variants[2].payload.len(), 2);
             }
             _ => panic!("expected DEnum"),
+        }
+    }
+
+    #[test]
+    fn test_parse_choose_enum_destructure_pattern() {
+        let def = parse_first(
+            "f = (s: Shape): int => choose (s) {\n  when (Shape.Circle(r)) { return r; }\n  when (Shape.Rect(w, h)) { return w + h; }\n  otherwise { return 0; }\n}",
+        );
+        match def {
+            Def::DFunc { body, .. } => match body.as_ref() {
+                Expr::EChoose { cases, .. } => {
+                    assert_eq!(cases.len(), 2);
+                    match cases[0].when.as_ref() {
+                        Expr::EEnumPattern {
+                            enum_name,
+                            variant,
+                            bindings,
+                            ..
+                        } => {
+                            assert_eq!(enum_name, "Shape");
+                            assert_eq!(variant, "Circle");
+                            assert_eq!(bindings, &vec!["r".to_string()]);
+                        }
+                        other => panic!("expected EEnumPattern, got {:?}", other),
+                    }
+                    match cases[1].when.as_ref() {
+                        Expr::EEnumPattern {
+                            enum_name,
+                            variant,
+                            bindings,
+                            ..
+                        } => {
+                            assert_eq!(enum_name, "Shape");
+                            assert_eq!(variant, "Rect");
+                            assert_eq!(bindings, &vec!["w".to_string(), "h".to_string()]);
+                        }
+                        other => panic!("expected EEnumPattern, got {:?}", other),
+                    }
+                }
+                other => panic!("expected EChoose, got {:?}", other),
+            },
+            _ => panic!("expected DFunc"),
         }
     }
 }

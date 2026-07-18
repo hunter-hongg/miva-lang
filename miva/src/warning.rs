@@ -240,7 +240,8 @@ fn check_expr(expr: &Expr, modname: &str, warnings: &mut Vec<Warning>) {
         | Expr::EVoid { .. }
         | Expr::EClone { .. }
         | Expr::EMove { .. }
-        | Expr::EVar { .. } => {}
+        | Expr::EVar { .. }
+        | Expr::EEnumPattern { .. } => {}
         Expr::EMethodCall { .. } => unreachable!(),
     }
 }
