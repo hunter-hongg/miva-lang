@@ -285,6 +285,13 @@ impl MvmCodegen {
                         .collect();
                     self.struct_field_indices.insert(name.clone(), indexed);
                 }
+                Def::DEnum { name, variants, .. } => {
+                    let indexed: Vec<(String, usize)> = variants.iter()
+                        .enumerate()
+                        .map(|(i, v)| (v.name.clone(), i))
+                        .collect();
+                    self.struct_field_indices.insert(name.clone(), indexed);
+                }
                 Def::DImpl { struct_name, impls, .. } => {
                     let ops = self.impl_map.entry(struct_name.clone()).or_default();
                     for impl_expr in impls {
@@ -566,19 +573,25 @@ impl MvmCodegen {
                 }
             }
             Expr::EFieldAccess { expr: obj, field, .. } => {
-                self.compile_expr(obj);
-                if let Some(field_list) = self.find_field_list(obj) {
-                    if let Some(idx) = field_list.iter().position(|(fname, _)| fname == field) {
-                        self.emit_op(MvmOp::StructGet);
-                        self.emit_u32(idx as u32);
+                if field.chars().all(|c| c.is_ascii_digit()) {
+                    self.compile_expr(obj);
+                    self.emit_op(MvmOp::EnumGet);
+                    self.emit_u32(field.parse::<u32>().unwrap());
+                } else {
+                    self.compile_expr(obj);
+                    if let Some(field_list) = self.find_field_list(obj) {
+                        if let Some(idx) = field_list.iter().position(|(fname, _)| fname == field) {
+                            self.emit_op(MvmOp::StructGet);
+                            self.emit_u32(idx as u32);
+                        } else {
+                            // Field not found; emit unit
+                            self.emit_op(MvmOp::Drop);
+                            self.emit_op(MvmOp::PushUnit);
+                        }
                     } else {
-                        // Field not found; emit unit
                         self.emit_op(MvmOp::Drop);
                         self.emit_op(MvmOp::PushUnit);
                     }
-                } else {
-                    self.emit_op(MvmOp::Drop);
-                    self.emit_op(MvmOp::PushUnit);
                 }
             }
             Expr::EBinOp { op, left, right, .. } => {
@@ -620,6 +633,23 @@ impl MvmCodegen {
             Expr::ECall { name, args, .. } => {
                 // Handle module-qualified names: try bare name suffix
                 let lookup_name = name.rsplit('.').next().unwrap_or(name);
+                // Enum constructor / discriminant: `Name.Variant(args)` where
+                // `Name` is a known enum. Compile inline to an EnumNew (or a
+                // tag-only discriminant `Enum(tag, [])` for `when (Name.Variant)`).
+                if let Some((enum_name, variant)) = name.split_once('.') {
+                    if let Some(variant_list) = self.struct_field_indices.get(enum_name) {
+                        if let Some(&(_, tag)) = variant_list.iter().find(|(vname, _)| *vname == variant) {
+                            for arg in args {
+                                self.compile_expr(arg);
+                            }
+                            self.emit_op(MvmOp::PushI64);
+                            self.emit_i64(tag as i64);
+                            self.emit_op(MvmOp::EnumNew);
+                            self.emit_u32(args.len() as u32);
+                            return;
+                        }
+                    }
+                }
                 // `await(f)` / `f.await()` unwraps a future (identity for non-futures)
                 if lookup_name == "await" {
                     if let Some(arg) = args.first() {

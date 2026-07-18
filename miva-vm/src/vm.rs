@@ -871,6 +871,34 @@ impl Mvm {
                         v => return Err(format!("StructGet expected struct, got {}", v.type_name())),
                     }
                 }
+                Opcode::EnumNew => {
+                    let field_count = Self::read_u32(code, self.pc) as usize;
+                    self.pc += 4;
+                    let mut fields = Vec::with_capacity(field_count);
+                    for _ in 0..field_count {
+                        fields.push(self.pop());
+                    }
+                    fields.reverse();
+                    let tag = match self.pop() {
+                        Value::Int(t) => t,
+                        v => return Err(format!("EnumNew expected int tag, got {}", v.type_name())),
+                    };
+                    self.push(Value::Enum(tag, Arc::new(fields)));
+                }
+                Opcode::EnumGet => {
+                    let field_idx = Self::read_u32(code, self.pc) as usize;
+                    self.pc += 4;
+                    let enum_val = self.pop();
+                    match enum_val {
+                        Value::Enum(_, fields) => {
+                            if field_idx >= fields.len() {
+                                return Err(format!("Enum field index {} out of bounds", field_idx));
+                            }
+                            self.push(fields[field_idx].clone());
+                        }
+                        v => return Err(format!("EnumGet expected enum, got {}", v.type_name())),
+                    }
+                }
                 Opcode::StructSet => {
                     let field_idx = Self::read_u32(code, self.pc) as usize;
                     self.pc += 4;

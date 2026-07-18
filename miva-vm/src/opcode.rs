@@ -108,6 +108,10 @@ pub enum Opcode {
     StructSet = 0x52,
     /// Duplicate top value (for struct field assignment like `s.f = expr`)
     StructDupAt = 0x53,
+    /// Build an enum value: tag was pushed first, then `field_count` payload values.
+    EnumNew = 0x54,
+    /// Read enum payload field by index.
+    EnumGet = 0x55,
 
     // --- Box operations (0x60-0x6F) ---
     /// Create a new box containing the popped value
@@ -247,6 +251,8 @@ impl Opcode {
             0x51 => Some(StructGet),
             0x52 => Some(StructSet),
             0x53 => Some(StructDupAt),
+            0x54 => Some(EnumNew),
+            0x55 => Some(EnumGet),
             0x60 => Some(BoxNew),
             0x61 => Some(BoxGet),
             0x62 => Some(BoxSet),
@@ -307,7 +313,7 @@ impl Opcode {
             Jmp | JmpIf | JmpIfNot => 4,
             Call => 4,
             CallBuiltin => 1,
-            StructNew | StructGet | StructSet | StructDupAt => 4,
+            StructNew | StructGet | StructSet | StructDupAt | EnumNew | EnumGet => 4,
             Addr => 4,
             CallHost => 5,
             _ => 0,
@@ -375,6 +381,8 @@ impl Opcode {
             StructGet => "struct_get",
             StructSet => "struct_set",
             StructDupAt => "struct_dup_at",
+            EnumNew => "enum_new",
+            EnumGet => "enum_get",
             BoxNew => "box_new",
             BoxGet => "box_get",
             BoxSet => "box_set",

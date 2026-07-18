@@ -29,6 +29,7 @@ pub enum Value {
     Array(Arc<Vec<Value>>),
     MutableArray(Arc<Mutex<Vec<Value>>>),
     Struct(Vec<Value>),
+    Enum(i64, Arc<Vec<Value>>), // (tag, payload fields)
     Boxed(Arc<Mutex<Value>>),
     Ptr(usize, Arc<Mutex<Vec<Value>>>), // (index, Mutex to frame locals)
     Null,
@@ -51,6 +52,7 @@ impl Value {
             Value::String(_) => "string",
             Value::Array(_) | Value::MutableArray(_) => "array",
             Value::Struct(_) => "struct",
+            Value::Enum(_, _) => "enum",
             Value::Boxed(_) => "box",
             Value::Ptr(_, _) => "ptr",
             Value::Null => "null",
@@ -76,6 +78,7 @@ impl Value {
             Value::Array(a) => !a.is_empty(),
             Value::MutableArray(a) => !a.lock().unwrap().is_empty(),
             Value::Struct(fields) => !fields.is_empty(),
+            Value::Enum(_, fields) => !fields.is_empty(),
             Value::Boxed(b) => !matches!(*b.lock().unwrap(), Value::Null | Value::Unit),
             Value::Ptr(_, _) => true,
             Value::PtrAny => true,
@@ -142,6 +145,10 @@ impl Value {
             Value::Future(_) => "<future>".to_string(),
             Value::Json(j) => j.to_string(),
             Value::Xml(n) => crate::xml::stringify(n),
+            Value::Enum(tag, fields) => {
+                let items: Vec<String> = fields.iter().map(|v| v.display()).collect();
+                format!("#{}({})", tag, items.join(", "))
+            }
         }
     }
 }
@@ -166,6 +173,7 @@ impl PartialEq for Value {
             (Value::PtrAny, Value::PtrAny) => true,
             (Value::Json(a), Value::Json(b)) => a == b,
             (Value::Xml(a), Value::Xml(b)) => Arc::ptr_eq(a, b),
+            (Value::Enum(a, _), Value::Enum(b, _)) => a == b,
             // Cross-type comparisons (Miva allows int-bool etc.)
             (Value::Int(a), Value::Bool(b)) => *a == if *b { 1 } else { 0 },
             (Value::Bool(b), Value::Int(a)) => *a == if *b { 1 } else { 0 },
@@ -191,5 +199,20 @@ impl PartialOrd for Value {
             (Value::Int(a), Value::Float64(b)) => (*a as f64).partial_cmp(b),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_enum_tag_eq() {
+        use std::sync::Arc;
+        let a = Value::Enum(1, Arc::new(vec![Value::Int(5)]));
+        let b = Value::Enum(1, Arc::new(vec![]));
+        assert_eq!(a, b);
+        let c = Value::Enum(2, Arc::new(vec![]));
+        assert_ne!(a, c);
     }
 }
