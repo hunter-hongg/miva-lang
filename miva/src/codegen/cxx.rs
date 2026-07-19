@@ -387,10 +387,16 @@ fn cxx_binop(op: &BinOp, left: &Expr, right: &Expr, depth: usize) -> String {
 
 fn cxx_call(name: &str, args: &[Expr], type_args: &[Typ], depth: usize) -> String {
     let args_strs: Vec<_> = args.iter().map(|a| cxx_expr(a, depth)).collect();
+    let type_arg_str = if type_args.is_empty() {
+        String::new()
+    } else {
+        let tas: Vec<_> = type_args.iter().map(cxx_type).collect();
+        format!("<{}>", tas.join(", "))
+    };
     if let Some(dot) = name.find('.') {
         let enum_name = &name[..dot];
         let variant = &name[dot + 1..];
-        return format!("{}_{}({})", enum_name, variant, args_strs.join(", "));
+        return format!("{}_{}{}({})", enum_name, variant, type_arg_str, args_strs.join(", "));
     } else if let Some(enum_name) = args.first().and_then(|a| match a {
         Expr::EVar { name: n, .. } => Some(n.as_str()),
         _ => None,
@@ -402,15 +408,9 @@ fn cxx_call(name: &str, args: &[Expr], type_args: &[Typ], depth: usize) -> Strin
         // are lowercase — so `area(circle)` never matches here.
         if enum_name.starts_with(|c: char| c.is_uppercase()) {
             let payload_strs = &args_strs[1..];
-            return format!("{}_{}({})", enum_name, name, payload_strs.join(", "));
+            return format!("{}_{}{}({})", enum_name, name, type_arg_str, payload_strs.join(", "));
         }
     }
-    let type_arg_str = if type_args.is_empty() {
-        String::new()
-    } else {
-        let tas: Vec<_> = type_args.iter().map(cxx_type).collect();
-        format!("<{}>", tas.join(", "))
-    };
     format!(
         "{}{}({})",
         map_builtin(name),
@@ -770,6 +770,18 @@ fn cxx_enum_def(
     ind: String,
     inner: usize,
 ) -> String {
+    let template = if type_params.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "template<{}>\n",
+            type_params
+                .iter()
+                .map(|tp| format!("typename {}", tp))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let max_fields = variants.iter().map(|v| v.payload.len()).max().unwrap_or(0);
     let mut field_types: Vec<String> = Vec::new();
     for i in 0..max_fields {
@@ -784,8 +796,8 @@ fn cxx_enum_def(
         payload_fields.push_str(&format!("{}{} field{};\n", indent_str(inner), ty, i));
     }
     let struct_str = format!(
-        "{}struct {} {{\n{}mvp_builtin_int __tag;\n{}struct {{\n{}{}}} __payload;\n{}bool operator==(const {}& o) const {{ return __tag == o.__tag; }}\n{}bool operator!=(const {}& o) const {{ return __tag != o.__tag; }}\n{}}};\n\n",
-        ind, name, indent_str(inner), indent_str(inner), payload_fields, indent_str(inner), indent_str(inner), name, indent_str(inner), name, ind
+        "{}{}struct {} {{\n{}mvp_builtin_int __tag;\n{}struct {{\n{}{}}} __payload;\n{}bool operator==(const {}& o) const {{ return __tag == o.__tag; }}\n{}bool operator!=(const {}& o) const {{ return __tag != o.__tag; }}\n{}}};\n\n",
+        template, ind, name, indent_str(inner), indent_str(inner), payload_fields, indent_str(inner), indent_str(inner), name, indent_str(inner), name, ind
     );
     let mut ctors = String::new();
     for (idx, v) in variants.iter().enumerate() {

@@ -289,14 +289,27 @@ fn build_struct_map(
     (structs, struct_type_params)
 }
 
-fn build_enum_map(defs: &[Def]) -> HashMap<String, Vec<crate::ast::EnumVariant>> {
+fn build_enum_maps(
+    defs: &[Def],
+) -> (
+    HashMap<String, Vec<crate::ast::EnumVariant>>,
+    HashMap<String, Vec<String>>,
+) {
     let mut enums = HashMap::new();
+    let mut enum_type_params = HashMap::new();
     for def in defs {
-        if let Def::DEnum { name, variants, .. } = def {
+        if let Def::DEnum {
+            name,
+            variants,
+            type_params,
+            ..
+        } = def
+        {
             enums.insert(name.clone(), variants.clone());
+            enum_type_params.insert(name.clone(), type_params.clone());
         }
     }
-    enums
+    (enums, enum_type_params)
 }
 
 fn require_type(
@@ -305,10 +318,20 @@ fn require_type(
     structs: &HashMap<String, Vec<FieldDef>>,
     struct_type_params: &HashMap<String, Vec<String>>,
     enums: &HashMap<String, Vec<crate::ast::EnumVariant>>,
+    enum_type_params: &HashMap<String, Vec<String>>,
     func_return: &Option<Typ>,
     e: &Expr,
 ) -> (Typ, Vec<Error>) {
-    let (typ, errs) = infer_type(env, func_sigs, structs, struct_type_params, enums, func_return, e);
+    let (typ, errs) = infer_type(
+        env,
+        func_sigs,
+        structs,
+        struct_type_params,
+        enums,
+        enum_type_params,
+        func_return,
+        e,
+    );
     if matches!(typ, Typ::TNull | Typ::TInvalid) {
         let mut all_errs = errs;
         all_errs.push(Error::new(
@@ -359,6 +382,7 @@ fn infer_type(
     structs: &HashMap<String, Vec<FieldDef>>,
     struct_type_params: &HashMap<String, Vec<String>>,
     enums: &HashMap<String, Vec<crate::ast::EnumVariant>>,
+    enum_type_params: &HashMap<String, Vec<String>>,
     func_return: &Option<Typ>,
     e: &Expr,
 ) -> (Typ, Vec<Error>) {
@@ -388,6 +412,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 expr,
@@ -413,6 +438,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 expr,
@@ -441,6 +467,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 left,
@@ -451,6 +478,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 right,
@@ -574,6 +602,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 cond,
@@ -592,6 +621,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 then,
@@ -606,6 +636,7 @@ fn infer_type(
                         structs,
                         struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                         else_expr,
@@ -635,6 +666,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 var,
@@ -649,6 +681,7 @@ fn infer_type(
                     structs,
                     struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                     else_expr,
@@ -665,12 +698,20 @@ fn infer_type(
                         structs,
                         struct_type_params,
                         enums,
+                        enum_type_params,
                         func_return,
 
                         &case.when,
                     );
                     errs.extend(errs_w);
-                    if !types_equal(&wt, &vt) {
+                    // Allow enum type comparison even when type_args differ
+                    let is_enum_match = match (&wt, &vt) {
+                        (Typ::TStruct { name: n1, .. }, Typ::TStruct { name: n2, .. }) => {
+                            n1 == n2 && enums.contains_key(n1)
+                        }
+                        _ => false,
+                    };
+                    if !is_enum_match && !types_equal(&wt, &vt) {
                         errs.push(Error::new(
                             "E0014",
                             loc,
@@ -689,8 +730,22 @@ fn infer_type(
                     {
                         if let Some(variants) = enums.get(enum_name.as_str()) {
                             if let Some(v) = variants.iter().find(|v| &v.name == variant) {
+                                let enum_tp = enum_type_params.get(enum_name.as_str()).cloned().unwrap_or_default();
+                                let vt_type_args = match &vt {
+                                    Typ::TStruct { type_args, .. } => type_args.clone(),
+                                    _ => vec![],
+                                };
+                                let mut subst = HashMap::new();
+                                for (tp, ta) in enum_tp.iter().zip(vt_type_args.iter()) {
+                                    subst.insert(tp.clone(), ta.clone());
+                                }
                                 for (b, bt) in bindings.iter().zip(v.payload.iter()) {
-                                    saved_bindings.push((b.clone(), env.vars.insert(b.clone(), bt.clone())));
+                                    let resolved = if !subst.is_empty() {
+                                        resolve_type(&normalize_typ(bt, &enum_tp), &subst)
+                                    } else {
+                                        bt.clone()
+                                    };
+                                    saved_bindings.push((b.clone(), env.vars.insert(b.clone(), resolved)));
                                 }
                             }
                         }
@@ -701,6 +756,7 @@ fn infer_type(
                         structs,
                         struct_type_params,
                         enums,
+                        enum_type_params,
                         func_return,
 
                         &case.then,
@@ -743,6 +799,7 @@ fn infer_type(
                         structs,
                         struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                         &case.when,
@@ -761,6 +818,7 @@ fn infer_type(
                         structs,
                         struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                         &case.then,
@@ -846,6 +904,63 @@ fn infer_type(
             args,
             loc,
         } => {
+            // Build substitution from explicit or inferred type args for generic enums.
+            // `loc` and `enum_name` are used only for error reporting.
+            fn resolve_enum_type_args(
+                enum_name: &str,
+                enum_type_params: &[String],
+                call_type_args: &[Typ],
+                payload: &[Typ],
+                args: &[Expr],
+                loc: &crate::ast::Loc,
+                env: &mut TypeEnv,
+                func_sigs: &HashMap<String, (Vec<String>, Vec<Param>, Option<Typ>)>,
+                structs: &HashMap<String, Vec<FieldDef>>,
+                struct_type_params: &HashMap<String, Vec<String>>,
+                enums: &HashMap<String, Vec<crate::ast::EnumVariant>>,
+                enum_type_params_map: &HashMap<String, Vec<String>>,
+                func_return: &Option<Typ>,
+            ) -> (Vec<Typ>, HashMap<String, Typ>, Vec<Error>) {
+                let mut errs = vec![];
+                if enum_type_params.is_empty() {
+                    return (vec![], HashMap::new(), errs);
+                }
+                let subst: HashMap<String, Typ>;
+                let resolved: Vec<Typ>;
+                if !call_type_args.is_empty() {
+                    if call_type_args.len() != enum_type_params.len() {
+                        errs.push(Error::new("E0016", loc, &format!(
+                            "enum '{}' takes {} type argument(s), got {}",
+                            enum_name, enum_type_params.len(), call_type_args.len())));
+                        resolved = enum_type_params.iter().map(|_| Typ::TInvalid).collect();
+                        subst = HashMap::new();
+                    } else {
+                        subst = enum_type_params.iter().cloned()
+                            .zip(call_type_args.iter().cloned())
+                            .collect();
+                        resolved = call_type_args.to_vec();
+                    }
+                } else {
+                    let mut inferred = HashMap::new();
+                    for (pt, a) in payload.iter().zip(args.iter()) {
+                        let pt_norm = normalize_typ(pt, enum_type_params);
+                        let (at, _) = require_type(env, func_sigs, structs, struct_type_params,
+                            enums, enum_type_params_map, func_return, a);
+                        infer_type_from_arg(&pt_norm, &at, &mut inferred);
+                    }
+                    for tp in enum_type_params {
+                        if !inferred.contains_key(tp) {
+                            inferred.insert(tp.clone(), Typ::TInvalid);
+                        }
+                    }
+                    resolved = enum_type_params.iter()
+                        .map(|tp| inferred.get(tp).cloned().unwrap_or(Typ::TInvalid))
+                        .collect();
+                    subst = inferred;
+                }
+                (resolved, subst, errs)
+            }
+
             // Enum constructor in dotted-name form: `Name.Variant(args)`.
             if let Some(dot) = name.find('.') {
                 let enum_name = &name[..dot];
@@ -853,25 +968,37 @@ fn infer_type(
                 if let Some(variants) = enums.get(enum_name) {
                     if let Some(v) = variants.iter().find(|v| v.name == variant_name) {
                         let mut errs = Vec::new();
+                        let enum_tp = enum_type_params.get(enum_name).cloned().unwrap_or_default();
                         if v.payload.len() != args.len() {
                             errs.push(Error::new("E0016", loc, &format!(
                                 "enum variant '{}' expects {} argument(s), got {}",
                                 variant_name, v.payload.len(), args.len())));
                         }
+                        let (resolved_type_args, subst, subst_errs) = resolve_enum_type_args(
+                            enum_name, &enum_tp, type_args, &v.payload, args,
+                            loc, env, func_sigs, structs, struct_type_params, enums,
+                            enum_type_params, func_return,
+                        );
+                        errs.extend(subst_errs);
                         for (i, (pt, a)) in v.payload.iter().zip(args.iter()).enumerate() {
+                            let pt_resolved = if !subst.is_empty() {
+                                resolve_type(&normalize_typ(pt, &enum_tp), &subst)
+                            } else {
+                                pt.clone()
+                            };
                             let (at, ae) = require_type(
                                 env, func_sigs, structs, struct_type_params, enums,
-                                func_return, a,
+                                enum_type_params, func_return, a,
                             );
                             errs.extend(ae);
-                            if !types_equal(pt, &at) {
+                            if !types_equal(&pt_resolved, &at) {
                                 errs.push(Error::new("E0014", loc, &format!(
                                     "enum variant '{}' argument {} type mismatch: expected {:?}, got {:?}",
-                                    variant_name, i, pt, at)));
+                                    variant_name, i, pt_resolved, at)));
                             }
                         }
                         return (
-                            Typ::TStruct { name: enum_name.to_string(), fields: vec![], type_args: vec![] },
+                            Typ::TStruct { name: enum_name.to_string(), fields: vec![], type_args: resolved_type_args },
                             errs,
                         );
                     }
@@ -887,25 +1014,37 @@ fn infer_type(
                     if let Some(v) = variants.iter().find(|v| v.name == *name) {
                         let payload_args = &args[1..];
                         let mut errs = Vec::new();
+                        let enum_tp = enum_type_params.get(&enum_name).cloned().unwrap_or_default();
                         if v.payload.len() != payload_args.len() {
                             errs.push(Error::new("E0016", loc, &format!(
                                 "enum variant '{}' expects {} argument(s), got {}",
                                 name, v.payload.len(), payload_args.len())));
                         }
+                        let (resolved_type_args, subst, subst_errs) = resolve_enum_type_args(
+                            &enum_name, &enum_tp, type_args, &v.payload, payload_args,
+                            loc, env, func_sigs, structs, struct_type_params, enums,
+                            enum_type_params, func_return,
+                        );
+                        errs.extend(subst_errs);
                         for (i, (pt, a)) in v.payload.iter().zip(payload_args.iter()).enumerate() {
+                            let pt_resolved = if !subst.is_empty() {
+                                resolve_type(&normalize_typ(pt, &enum_tp), &subst)
+                            } else {
+                                pt.clone()
+                            };
                             let (at, ae) = require_type(
                                 env, func_sigs, structs, struct_type_params, enums,
-                                func_return, a,
+                                enum_type_params, func_return, a,
                             );
                             errs.extend(ae);
-                            if !types_equal(pt, &at) {
+                            if !types_equal(&pt_resolved, &at) {
                                 errs.push(Error::new("E0014", loc, &format!(
                                     "enum variant '{}' argument {} type mismatch: expected {:?}, got {:?}",
-                                    name, i, pt, at)));
+                                    name, i, pt_resolved, at)));
                             }
                         }
                         return (
-                            Typ::TStruct { name: enum_name.to_string(), fields: vec![], type_args: vec![] },
+                            Typ::TStruct { name: enum_name.to_string(), fields: vec![], type_args: resolved_type_args },
                             errs,
                         );
                     }
@@ -920,6 +1059,7 @@ fn infer_type(
                     structs,
                     struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                     arg,
@@ -1140,6 +1280,7 @@ fn infer_type(
                     structs,
                     struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                     &vf.value,
@@ -1211,6 +1352,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 expr,
@@ -1293,6 +1435,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 &values[0],
@@ -1301,7 +1444,7 @@ fn infer_type(
             let mut all_same = true;
             for v in &values[1..] {
                 let (vt, ve) =
-                    require_type(env, func_sigs, structs, struct_type_params, enums, func_return, v);
+                    require_type(env, func_sigs, structs, struct_type_params, enums, enum_type_params, func_return, v);
                 errs.extend(ve);
                 if !types_equal(&first_t, &vt) {
                     all_same = false;
@@ -1328,6 +1471,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 expr,
@@ -1375,6 +1519,7 @@ fn infer_type(
                             structs,
                             struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                             expr,
@@ -1394,6 +1539,7 @@ fn infer_type(
                             structs,
                             struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                             expr,
@@ -1418,6 +1564,7 @@ fn infer_type(
                             structs,
                             struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                             expr,
@@ -1445,6 +1592,7 @@ fn infer_type(
                             structs,
                             struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                             target,
@@ -1456,6 +1604,7 @@ fn infer_type(
                             structs,
                             struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                             expr,
@@ -1506,6 +1655,7 @@ fn infer_type(
                             structs,
                             struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                             expr,
@@ -1528,6 +1678,7 @@ fn infer_type(
                             structs,
                             struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                             expr,
@@ -1539,7 +1690,7 @@ fn infer_type(
             }
             if let Some(r) = result {
                 let (t, se) =
-                    infer_type(env, func_sigs, structs, struct_type_params, enums, func_return, r);
+                    infer_type(env, func_sigs, structs, struct_type_params, enums, enum_type_params, func_return, r);
                 errs.extend(se);
                 (t, errs)
             } else {
@@ -1554,6 +1705,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 cond,
@@ -1572,6 +1724,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 body,
@@ -1587,6 +1740,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 body,
@@ -1607,6 +1761,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 range,
@@ -1630,6 +1785,7 @@ fn infer_type(
                 structs,
                 struct_type_params,
                 enums,
+                enum_type_params,
                 func_return,
 
                 body,
@@ -1665,7 +1821,7 @@ pub fn check_program_with(
         }
     }
     let (structs, struct_type_params) = build_struct_map(defs);
-    let enums = build_enum_map(defs);
+    let (enums, enum_type_params) = build_enum_maps(defs);
     let has_imports = defs.iter().any(|d| {
         matches!(d, Def::SImport { .. })
             || matches!(d, Def::SImportAs { .. })
@@ -1719,6 +1875,7 @@ pub fn check_program_with(
                     &structs,
                     &struct_type_params,
                     &enums,
+                    &enum_type_params,
                     &expected_inner,
                     body,
                 );
@@ -1781,6 +1938,7 @@ pub fn check_program_with(
                     &structs,
                     &struct_type_params,
                     &enums,
+                    &enum_type_params,
                     &normalized_returns,
                     body,
                 );
@@ -1808,6 +1966,7 @@ pub fn check_program_with(
                     &structs,
                     &struct_type_params,
                     &enums,
+                    &enum_type_params,
                     &None,
                     body,
                 );
