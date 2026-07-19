@@ -1,0 +1,100 @@
+module main;
+
+// ── A generic result value ───────────────────────────────────────────────────
+//
+// `Result[T, E]` represents a value that is either `Ok(T)` on success or
+// `Err(E)` on failure. This local definition mirrors the `std/result` module
+// API so the demo is self-contained and runnable.
+//
+// To use the shared module instead, add
+//
+//     import "std/result";
+//
+// and replace the `Result.*` references below with `std.result.*`.
+
+Result[T, E] = enum {
+    Ok(T),
+    Err(E)
+}
+
+ok[T, E] = (v: T): Result[T, E] => Result.Ok[T, E](v)
+err[T, E] = (e: E): Result[T, E] => Result.Err[T, E](e)
+
+is_ok[T, E] = (ref r: Result[T, E]): bool => choose (r) {
+    when (Result.Ok) { return true; }
+    otherwise { return false; }
+}
+
+is_err[T, E] = (ref r: Result[T, E]): bool => choose (r) {
+    when (Result.Err) { return true; }
+    otherwise { return false; }
+}
+
+expect[T, E] = (ref r: Result[T, E], msg: string): T => choose (r) {
+    when (Result.Ok(v)) { return v; }
+    otherwise { panic(msg); }
+}
+
+unwrap[T, E] = (ref r: Result[T, E]): T => choose (r) {
+    when (Result.Ok(v)) { return v; }
+    otherwise { panic("result.unwrap: called on Err"); }
+}
+
+unwrap_or[T, E] = (ref r: Result[T, E], fallback: T): T => choose (r) {
+    when (Result.Ok(v)) { return v; }
+    otherwise { return fallback; }
+}
+
+map_err[T, E, F] = (ref r: Result[T, E], e: F): Result[T, F] => choose (r) {
+    when (Result.Ok(v)) { return Result.Ok[T, F](v); }
+    otherwise { return Result.Err[T, F](e); }
+}
+
+and[T, E, U] = (ref r: Result[T, E], other: Result[U, E]): Result[U, E] => choose (r) {
+    when (Result.Ok(v)) { return other; }
+    when (Result.Err(e)) { return Result.Err[U, E](e); }
+    otherwise { panic("result.and: unreachable"); }
+}
+
+or[T, E, F] = (ref r: Result[T, E], other: Result[T, F]): Result[T, F] => choose (r) {
+    when (Result.Ok(v)) { return Result.Ok[T, F](v); }
+    when (Result.Err(e)) { return other; }
+    otherwise { panic("result.or: unreachable"); }
+}
+
+unsafe main = () => {
+    let ok_i  Result[int, string] = Result.Ok[int, string](42);
+    let err_i Result[int, string] = Result.Err[int, string]("not found");
+
+    printlns!("-- is_ok / is_err --");
+    printlns!("ok_i is_ok  = ", is_ok[int, string](ok_i));
+    printlns!("ok_i is_err = ", is_err[int, string](ok_i));
+    printlns!("err_i is_ok  = ", is_ok[int, string](err_i));
+    printlns!("err_i is_err = ", is_err[int, string](err_i));
+
+    printlns!("-- unwrap / unwrap_or --");
+    printlns!("unwrap(ok_i)      = ", unwrap[int, string](ok_i));
+    printlns!("unwrap_or(err_i, 0) = ", unwrap_or[int, string](err_i, 0));
+
+    printlns!("-- expect --");
+    printlns!("expect(ok_i) = ", expect[int, string](ok_i, "should be ok"));
+
+    printlns!("-- map_err --");
+    let mapped Result[int, bool] = map_err[int, string, bool](err_i, false);
+    printlns!("map_err(err_i, false) is_err = ", is_err[int, bool](mapped));
+
+    printlns!("-- and --");
+    let ok2  Result[string, string] = ok[string, string]("next");
+    let and_res Result[string, string] = and[int, string, string](ok_i, ok2);
+    printlns!("and(ok_i, ok2) is_ok = ", is_ok[string, string](and_res));
+    let and_fail Result[string, string] = and[int, string, string](err_i, ok2);
+    printlns!("and(err_i, ok2) is_err = ", is_err[string, string](and_fail));
+
+    printlns!("-- or --");
+    let fallback Result[int, bool] = ok[int, bool](7);
+    let or_res Result[int, bool] = or[int, string, bool](err_i, fallback);
+    printlns!("or(err_i, fallback) is_ok = ", is_ok[int, bool](or_res));
+    printlns!("unwrap(or(err_i, fallback)) = ", unwrap[int, bool](or_res));
+
+    printlns!("result demo ok");
+}
