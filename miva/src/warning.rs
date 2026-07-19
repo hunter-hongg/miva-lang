@@ -185,6 +185,9 @@ fn check_expr(expr: &Expr, modname: &str, warnings: &mut Vec<Warning>) {
             check_expr(var, modname, warnings);
             for case in cases {
                 check_expr(&case.when, modname, warnings);
+                if let Some(g) = &case.guard {
+                    check_expr(g, modname, warnings);
+                }
                 check_expr(&case.then, modname, warnings);
             }
             if let Some(e) = otherwise {
@@ -1142,6 +1145,7 @@ mod tests {
                             loc: loc(),
                             value: 1,
                         }),
+                        guard: None,
                         then: Box::new(Expr::ECall {
                             loc: loc(),
                             name: "prints".to_string(),

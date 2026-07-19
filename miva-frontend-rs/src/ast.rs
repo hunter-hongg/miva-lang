@@ -337,6 +337,7 @@ pub struct ValueField {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WhenCase {
     pub when: Box<Expr>,
+    pub guard: Option<Box<Expr>>,
     pub then: Box<Expr>,
 }
 

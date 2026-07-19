@@ -915,77 +915,120 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
             // `then` branch is wrapped to bind each payload field (`var.0`,
             // `var.1`, ...) to its pattern name via `let`.
             let loc = loc.clone();
-            let transformed: Vec<(Expr, Expr)> = cases
+            struct Case {
+                when: Expr,
+                guard: Option<Expr>,
+                bindings: Vec<Stmt>,
+                body: Expr,
+            }
+            let transformed: Vec<Case> = cases
                 .iter()
-                .map(|case| match case.when.as_ref() {
-                    Expr::EEnumPattern {
-                        enum_name,
-                        variant,
-                        bindings,
-                        ..
-                    } => {
-                        let when = Expr::EFieldAccess {
-                            loc: loc.clone(),
-                            expr: Box::new(Expr::EVar {
+                .map(|case| {
+                    let guard = case.guard.as_ref().map(|g| g.as_ref().clone());
+                    match case.when.as_ref() {
+                        Expr::EEnumPattern {
+                            enum_name,
+                            variant,
+                            bindings,
+                            ..
+                        } => {
+                            let when = Expr::EFieldAccess {
                                 loc: loc.clone(),
-                                name: enum_name.clone(),
-                            }),
-                            field: variant.clone(),
-                        };
-                        let lets: Vec<Stmt> = bindings
-                            .iter()
-                            .enumerate()
-                            .map(|(i, b)| Stmt::SLet {
-                                loc: loc.clone(),
-                                mutable: false,
-                                name: b.clone(),
-                                expr: Box::new(Expr::EFieldAccess {
+                                expr: Box::new(Expr::EVar {
                                     loc: loc.clone(),
-                                    expr: var.clone(),
-                                    field: i.to_string(),
+                                    name: enum_name.clone(),
                                 }),
-                            })
-                            .collect();
-                        let then = match case.then.as_ref() {
-                            Expr::EBlock {
-                                loc: bl,
-                                stmts,
-                                result,
-                                ..
-                            } => Expr::EBlock {
-                                loc: bl.clone(),
-                                stmts: {
-                                    let mut s = lets;
-                                    s.extend(stmts.iter().cloned());
-                                    s
+                                field: variant.clone(),
+                            };
+                            let lets: Vec<Stmt> = bindings
+                                .iter()
+                                .enumerate()
+                                .map(|(i, b)| Stmt::SLet {
+                                    loc: loc.clone(),
+                                    mutable: false,
+                                    name: b.clone(),
+                                    expr: Box::new(Expr::EFieldAccess {
+                                        loc: loc.clone(),
+                                        expr: var.clone(),
+                                        field: i.to_string(),
+                                    }),
+                                })
+                                .collect();
+                            let body = match case.then.as_ref() {
+                                Expr::EBlock {
+                                    loc: bl,
+                                    stmts,
+                                    result,
+                                    ..
+                                } => Expr::EBlock {
+                                    loc: bl.clone(),
+                                    stmts: stmts.iter().cloned().collect(),
+                                    result: result.clone(),
                                 },
-                                result: result.clone(),
-                            },
-                            other => Expr::EBlock {
-                                loc: loc.clone(),
-                                stmts: lets,
-                                result: Some(Box::new(other.clone())),
-                            },
-                        };
-                        (when, then)
+                                other => Expr::EBlock {
+                                    loc: loc.clone(),
+                                    stmts: vec![],
+                                    result: Some(Box::new(other.clone())),
+                                },
+                            };
+                            Case { when, guard, bindings: lets, body }
+                        }
+                        _ => Case {
+                            when: case.when.as_ref().clone(),
+                            guard,
+                            bindings: vec![],
+                            body: case.then.as_ref().clone(),
+                        },
                     }
-                    _ => (case.when.as_ref().clone(), case.then.as_ref().clone()),
                 })
                 .collect();
             let mut chain: Expr = match otherwise {
                 Some(e) => *e.clone(),
                 None => Expr::EInt { loc: loc.clone(), value: 0 },
             };
-            for (when, then) in transformed.iter().rev() {
+            for c in transformed.iter().rev() {
+                // Bindings are emitted *before* the guard so the guard
+                // condition can reference the destructured payload names
+                // (it must see `n` before evaluating `n > 0`).
+                let mut inner_block: Vec<Stmt> = c.bindings.clone();
+                let guard_wrapped = match &c.guard {
+                    Some(g) => {
+                        inner_block.push(Stmt::SExpr {
+                            loc: loc.clone(),
+                            expr: Box::new(Expr::EIf {
+                                loc: loc.clone(),
+                                cond: Box::new(g.clone()),
+                                then: Box::new(c.body.clone()),
+                                else_: Some(Box::new(chain.clone())),
+                            }),
+                        });
+                        Expr::EBlock {
+                            loc: loc.clone(),
+                            stmts: inner_block,
+                            result: None,
+                        }
+                    }
+                    None => {
+                        inner_block.push(Stmt::SExpr {
+                            loc: loc.clone(),
+                            expr: Box::new(c.body.clone()),
+                        });
+                        Expr::EBlock {
+                            loc: loc.clone(),
+                            stmts: inner_block,
+                            result: None,
+                        }
+                    }
+                };
                 chain = Expr::EIf {
                     loc: loc.clone(),
                     cond: Box::new(Expr::EBinOp {
                         loc: loc.clone(),
                         op: BinOp::Eq,
                         left: var.clone(),
-                        right: Box::new(when.clone()),
+                        right: Box::new(c.when.clone()),
                     }),
-                    then: Box::new(then.clone()),
+                    then: Box::new(guard_wrapped),
                     else_: Some(Box::new(chain)),
                 };
             }

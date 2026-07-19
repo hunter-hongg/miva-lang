@@ -1,0 +1,42 @@
+module main;
+
+// ── choose + if: 枚举解构 + 条件守卫 ──────────────────
+
+Maybe = enum {
+    Some(int),
+    None
+}
+
+describe = (opt: Maybe): int => choose (opt) {
+    when (Maybe.Some(n)) if (n > 0)  { return n; }
+    when (Maybe.Some(n)) if (n == 0) { return 0; }
+    when (Maybe.Some(n))            { return n * -1; }
+    otherwise { return -1; }
+}
+
+Shape = enum {
+    Circle(int),
+    Rect(int, int),
+    Empty
+}
+
+area = (s: Shape): int => choose (s) {
+    when (Shape.Circle(r)) if (r > 0) { return r * r; }
+    when (Shape.Circle(r))           { return 0; }
+    when (Shape.Rect(w, h)) if (w > 0 && h > 0) { return w * h; }
+    when (Shape.Rect(w, h))                     { return 0; }
+    otherwise { return 0; }
+}
+
+main = () => {
+    printlns!("describe(Some(42))  = ", describe(Maybe.Some(42)));
+    printlns!("describe(Some(0))   = ", describe(Maybe.Some(0)));
+    printlns!("describe(Some(-7))  = ", describe(Maybe.Some(-7)));
+    printlns!("describe(None)      = ", describe(Maybe.None));
+
+    printlns!("area(Circle(5))     = ", area(Shape.Circle(5)));
+    printlns!("area(Circle(-3))    = ", area(Shape.Circle(-3)));
+    printlns!("area(Rect(3, 4))    = ", area(Shape.Rect(3, 4)));
+    printlns!("area(Rect(-1, 4))   = ", area(Shape.Rect(-1, 4)));
+    printlns!("area(Empty)         = ", area(Shape.Empty));
+}

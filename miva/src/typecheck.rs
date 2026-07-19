@@ -3126,6 +3126,7 @@ mod tests {
                             expr: Box::new(Expr::EVar { loc: Loc { line: 4, col: 1 }, name: "Shape".into() }),
                             field: "Circle".into(),
                         }),
+                        guard: None,
                         then: Box::new(Expr::EInt { loc: Loc { line: 4, col: 1 }, value: 1 }),
                     }],
                     otherwise: Some(Box::new(Expr::EInt { loc: Loc { line: 5, col: 1 }, value: 0 })),
@@ -3168,6 +3169,7 @@ mod tests {
                                 variant: "Circle".into(),
                                 bindings: vec!["r".into()],
                             }),
+                            guard: None,
                             then: Box::new(Expr::EBinOp {
                                 loc: Loc { line: 4, col: 1 },
                                 op: BinOp::Mul,
@@ -3182,6 +3184,7 @@ mod tests {
                                 variant: "Rect".into(),
                                 bindings: vec!["w".into(), "h".into()],
                             }),
+                            guard: None,
                             then: Box::new(Expr::EBinOp {
                                 loc: Loc { line: 5, col: 1 },
                                 op: BinOp::Add,
@@ -3228,6 +3231,7 @@ mod tests {
                             variant: "Circle".into(),
                             bindings: vec!["a".into(), "b".into()],
                         }),
+                        guard: None,
                         then: Box::new(Expr::EInt { loc: Loc { line: 4, col: 1 }, value: 1 }),
                     }],
                     otherwise: Some(Box::new(Expr::EInt { loc: Loc { line: 5, col: 1 }, value: 0 })),

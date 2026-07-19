@@ -1636,12 +1636,22 @@ impl<'input> Parser<'input> {
         self.expect(&Token::LParen)?;
         let value = self.parse_expr()?;
         self.expect(&Token::RParen)?;
+        let guard = if self.peek_token()? == Some(&Token::If) {
+            self.advance()?; // "if"
+            self.expect(&Token::LParen)?;
+            let cond = self.parse_expr()?;
+            self.expect(&Token::RParen)?;
+            Some(Box::new(cond))
+        } else {
+            None
+        };
         self.expect(&Token::LBrace)?;
         let stmts = self.parse_stmt_list()?;
         let res = self.parse_opt_expr()?;
         self.expect(&Token::RBrace)?;
         Ok(WhenCase {
             when: Box::new(value),
+            guard,
             then: Box::new(Expr::EBlock {
                 loc: self.loc(s),
                 stmts,
@@ -1814,6 +1824,27 @@ mod tests {
                             assert_eq!(bindings, &vec!["w".to_string(), "h".to_string()]);
                         }
                         other => panic!("expected EEnumPattern, got {:?}", other),
+                    }
+                }
+                other => panic!("expected EChoose, got {:?}", other),
+            },
+            _ => panic!("expected DFunc"),
+        }
+    }
+
+    #[test]
+    fn test_parse_choose_with_guard() {
+        let def = parse_first(
+            "f = (x: int): int => choose (x) {\n  when (1) if (x > 0) { return x; }\n  otherwise { return 0; }\n}",
+        );
+        match def {
+            Def::DFunc { body, .. } => match body.as_ref() {
+                Expr::EChoose { cases, .. } => {
+                    assert_eq!(cases.len(), 1);
+                    assert!(cases[0].guard.is_some());
+                    match cases[0].guard.as_ref().unwrap().as_ref() {
+                        Expr::EBinOp { op, .. } => assert_eq!(*op, BinOp::Gt),
+                        other => panic!("expected EBinOp, got {:?}", other),
                     }
                 }
                 other => panic!("expected EChoose, got {:?}", other),

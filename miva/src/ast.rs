@@ -50,6 +50,8 @@ pub struct MacroParam {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhenCase {
     pub when: Box<Expr>,
+    #[serde(default)]
+    pub guard: Option<Box<Expr>>,
     pub then: Box<Expr>,
 }
 

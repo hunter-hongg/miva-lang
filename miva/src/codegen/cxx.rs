@@ -499,6 +499,10 @@ fn cxx_choose(
     let ind = indent_str(depth);
     let inner = depth + 1;
     let cases_str: String = cases.iter().fold(String::new(), |acc, c| {
+        let guard_str = match &c.guard {
+            Some(g) => format!(" && ({})", cxx_expr(g, depth)),
+            None => String::new(),
+        };
         if let Expr::EEnumPattern {
             enum_name,
             variant,
@@ -524,23 +528,45 @@ fn cxx_choose(
                 })
                 .collect();
             let body_str = cxx_expr(&c.then, inner);
-            format!(
-                "{}{}if ({} == {}) {{\n{}{}return {};\n{}}}\n",
-                acc,
-                ind,
-                var_str,
-                disc,
-                bind_str,
-                indent_str(inner),
-                body_str,
-                ind
-            )
+            match &c.guard {
+                Some(g) => {
+                    let guard_expr = cxx_expr(g, inner);
+                    format!(
+                        "{}{}if ({} == {}) {{\n{}{}if ({}) {{\n{}{}return {};\n{}}}\n{}}}\n",
+                        acc,
+                        ind,
+                        var_str,
+                        disc,
+                        bind_str,
+                        indent_str(inner),
+                        guard_expr,
+                        indent_str(inner),
+                        ind,
+                        body_str,
+                        ind,
+                        ind
+                    )
+                }
+                None => {
+                    format!(
+                        "{}{}if ({} == {}) {{\n{}{}return {};\n{}}}\n",
+                        acc,
+                        ind,
+                        var_str,
+                        disc,
+                        bind_str,
+                        indent_str(inner),
+                        body_str,
+                        ind
+                    )
+                }
+            }
         } else {
             let value_str = cxx_expr(&c.when, depth);
             let body_str = cxx_expr(&c.then, inner);
             format!(
-                "{}{}if ({} == {}) {{ return {}; }}\n",
-                acc, ind, var_str, value_str, body_str
+                "{}{}if (({} == {}){}) {{ return {}; }}\n",
+                acc, ind, var_str, value_str, guard_str, body_str
             )
         }
     });
@@ -2115,6 +2141,34 @@ mod tests {
         };
         let result = cxx_expr(&e, 0);
         assert!(result.contains("else"));
+    }
+
+    #[test]
+    fn test_cxx_choose_with_guard() {
+        let e = Expr::EChoose {
+            loc: loc(),
+            var: Box::new(Expr::EVar {
+                loc: loc(),
+                name: "x".to_string(),
+            }),
+            cases: vec![WhenCase {
+                when: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                guard: Some(Box::new(Expr::EBinOp {
+                    loc: loc(),
+                    op: BinOp::Gt,
+                    left: Box::new(Expr::EVar {
+                        loc: loc(),
+                        name: "x".to_string(),
+                    }),
+                    right: Box::new(Expr::EInt { loc: loc(), value: 0 }),
+                })),
+                then: Box::new(Expr::EInt { loc: loc(), value: 10 }),
+            }],
+            otherwise: Some(Box::new(Expr::EInt { loc: loc(), value: 0 })),
+        };
+        let result = cxx_expr(&e, 0);
+        assert!(result.contains("&&"), "expected guard && in: {}", result);
+        assert!(result.contains("x >"), "expected guard comparison in: {}", result);
     }
 
     // ===== cxx_while =====

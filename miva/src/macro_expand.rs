@@ -261,6 +261,11 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Re
                 .map(|c| {
                     Ok(WhenCase {
                         when: Box::new(expand_expr(&c.when, addf, macro_table)?),
+                        guard: c
+                            .guard
+                            .as_ref()
+                            .map(|g| expand_expr(g, addf, macro_table).map(Box::new))
+                            .transpose()?,
                         then: Box::new(expand_expr(&c.then, addf, macro_table)?),
                     })
                 })
@@ -501,6 +506,10 @@ fn substitute_macro_vars(expr: &Expr, args: &[Expr], param_names: &[&str]) -> Ex
                 .iter()
                 .map(|c| WhenCase {
                     when: Box::new(substitute_macro_vars(&c.when, args, param_names)),
+                    guard: c
+                        .guard
+                        .as_ref()
+                        .map(|g| Box::new(substitute_macro_vars(g, args, param_names))),
                     then: Box::new(substitute_macro_vars(&c.then, args, param_names)),
                 })
                 .collect(),

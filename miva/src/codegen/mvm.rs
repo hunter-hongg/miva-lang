@@ -932,19 +932,39 @@ impl MvmCodegen {
                     }
                     self.emit_op(MvmOp::CmpEq);
                     self.emit_jmp_if_false(case_labels[i]);
-                    self.emit_op(MvmOp::Drop); // drop the dup'd var
-                    // Destructure payload fields into binding locals.
-                    if let Expr::EEnumPattern { bindings, .. } = case.when.as_ref() {
-                        for (bi, b) in bindings.iter().enumerate() {
-                            self.compile_expr(&var_clone);
-                            self.emit_op(MvmOp::EnumGet);
-                            self.emit_u32(bi as u32);
-                            let bl = self.declare_local(b);
-                            self.emit_op(MvmOp::StoreLocal);
-                            self.emit_u32(bl);
+                    if case.guard.is_some() {
+                        // Keep var on stack for guard check; destructure first
+                        // so the guard can reference the bound locals.
+                        if let Expr::EEnumPattern { bindings, .. } = case.when.as_ref() {
+                            for (bi, b) in bindings.iter().enumerate() {
+                                self.compile_expr(&var_clone);
+                                self.emit_op(MvmOp::EnumGet);
+                                self.emit_u32(bi as u32);
+                                let bl = self.declare_local(b);
+                                self.emit_op(MvmOp::StoreLocal);
+                                self.emit_u32(bl);
+                            }
                         }
+                        let guard = case.guard.as_ref().unwrap();
+                        self.compile_expr(guard);
+                        self.emit_jmp_if_false(case_labels[i]);
+                        self.emit_op(MvmOp::Drop); // drop the var
+                        self.compile_expr(&case.then);
+                    } else {
+                        self.emit_op(MvmOp::Drop); // drop the dup'd var
+                        // Destructure payload fields into binding locals.
+                        if let Expr::EEnumPattern { bindings, .. } = case.when.as_ref() {
+                            for (bi, b) in bindings.iter().enumerate() {
+                                self.compile_expr(&var_clone);
+                                self.emit_op(MvmOp::EnumGet);
+                                self.emit_u32(bi as u32);
+                                let bl = self.declare_local(b);
+                                self.emit_op(MvmOp::StoreLocal);
+                                self.emit_u32(bl);
+                            }
+                        }
+                        self.compile_expr(&case.then);
                     }
-                    self.compile_expr(&case.then);
                     self.emit_jmp(end_label);
                     self.define_label(case_labels[i]);
                 }

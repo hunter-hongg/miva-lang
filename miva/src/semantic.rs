@@ -313,6 +313,9 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
                     }
                 }
                 errs.extend(check_expr(ctx, symbol_table, &case.then));
+                if let Some(g) = &case.guard {
+                    errs.extend(check_expr(ctx, symbol_table, g));
+                }
                 branch_vars.push(ctx.vars.clone());
             }
 
@@ -897,6 +900,7 @@ mod tests {
                             loc: loc(),
                             value: 1,
                         }),
+                        guard: None,
                         then: Box::new(Expr::EVoid { loc: loc() }),
                     }],
                     otherwise: None,
