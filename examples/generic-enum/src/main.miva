@@ -1,24 +1,75 @@
 module main;
 
+// Generic enums: type parameters follow the enum name in [ ].
+// A constructor's payload can reference the type parameter T.
+
 Box[T] = enum {
     Value(T),
     Empty
 }
 
+Pair[A, B] = enum {
+    Both(A, B),
+    First(A),
+    None
+}
+
+// Passing a generic enum as a function argument. The type parameter T is
+// part of the type, so Box[int] and Box[string] are distinct types.
+doubleBox = (b: Box[int]): int => choose (b) {
+    when (Box.Value(v)) { return v * 2; }
+    otherwise { return 0; }
+}
+
+sumPair = (p: Pair[int, int]): int => choose (p) {
+    when (Pair.Both(x, y)) { return x + y; }
+    when (Pair.First(x)) { return x; }
+    otherwise { return 0; }
+}
+
 main = () => {
-    let b Box[int] = Box.Value(42);
-    choose (b) {
-        when (Box.Value(v)) { printlns!("got ", v); }
-        otherwise { printlns!("empty"); }
+    // Explicit type arguments on the type.
+    let n Box[int] = Box.Value(42);
+    choose (n) {
+        when (Box.Value(v)) { printlns!("n        = ", v); }
+        otherwise { printlns!("n        = empty"); }
     };
-    let s Box[string] = Box.Value("hi");
+
+    // Explicit type arguments on the constructor (two equivalent forms).
+    let s Box[string] = Box[string].Value("hello");
     choose (s) {
-        when (Box.Value(v)) { printlns!("got ", v); }
-        otherwise { printlns!("empty"); }
+        when (Box.Value(v)) { printlns!("s        = ", v); }
+        otherwise { printlns!("s        = empty"); }
     };
+
+    // Type inferred from the argument 7 (i64 -> i64).
     let inferred Box[int] = Box.Value(7);
     choose (inferred) {
-        when (Box.Value(v)) { printlns!("inferred ", v); }
-        otherwise { printlns!("empty"); }
-    }
+        when (Box.Value(v)) { printlns!("inferred = ", v); }
+        otherwise { printlns!("inferred = empty"); }
+    };
+
+    // Generic enum passed to a function.
+    printlns!("doubleBox = ", doubleBox(Box.Value(21)));
+
+    // Multiple type parameters.
+    let p Pair[int, string] = Pair.Both(1, "one");
+    choose (p) {
+        when (Pair.Both(x, y)) { printlns!("pair     = ", x, " ", y); }
+        otherwise { printlns!("pair     = none"); }
+    };
+    let q Pair[int, string] = Pair[int, string].First(99);
+    choose (q) {
+        when (Pair.First(x)) { printlns!("q.first  = ", x); }
+        otherwise { printlns!("q.first  = none"); }
+    };
+
+    // A different instantiation of the same generic enum.
+    let r Pair[string, int] = Pair.Both("key", 7);
+    choose (r) {
+        when (Pair.Both(a, b)) { printlns!("r        = ", a, " ", b); }
+        otherwise { printlns!("r        = none"); }
+    };
+
+    printlns!("sumPair  = ", sumPair(Pair.Both(3, 4)));
 }
