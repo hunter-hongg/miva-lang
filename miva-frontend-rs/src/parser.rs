@@ -1118,6 +1118,9 @@ impl<'input> Parser<'input> {
     /// receiver is an uppercase enum name and whose arguments are all bare
     /// identifiers) into an enum destructuring pattern (`EEnumPattern`). Other
     /// method calls are left unchanged.
+    ///
+    /// If explicit type arguments are present, the construct is an enum
+    /// constructor call, not a pattern, so it is kept as `EMethodCall`.
     fn method_call_or_pattern(expr: Expr) -> Expr {
         if let Expr::EMethodCall {
             loc,
@@ -1127,22 +1130,24 @@ impl<'input> Parser<'input> {
             args,
         } = expr
         {
-            if let Expr::EVar { name: enum_name, .. } = receiver.as_ref() {
-                if enum_name.chars().next().map_or(false, |c| c.is_uppercase()) {
-                    let bindings: Option<Vec<String>> = args
-                        .iter()
-                        .map(|a| match a {
-                            Expr::EVar { name, .. } => Some(name.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    if let Some(bindings) = bindings {
-                        return Expr::EEnumPattern {
-                            loc,
-                            enum_name: enum_name.clone(),
-                            variant: method,
-                            bindings,
-                        };
+            if type_args.is_empty() {
+                if let Expr::EVar { name: enum_name, .. } = receiver.as_ref() {
+                    if enum_name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                        let bindings: Option<Vec<String>> = args
+                            .iter()
+                            .map(|a| match a {
+                                Expr::EVar { name, .. } => Some(name.clone()),
+                                _ => None,
+                            })
+                            .collect();
+                        if let Some(bindings) = bindings {
+                            return Expr::EEnumPattern {
+                                loc,
+                                enum_name: enum_name.clone(),
+                                variant: method,
+                                bindings,
+                            };
+                        }
                     }
                 }
             }
@@ -1707,30 +1712,35 @@ fn extract_call_path_from_expr(expr: &Expr) -> String {
     }
 }
 
-/// If `name` is a dotted `Enum.Variant` and every argument is a bare identifier,
-/// the call is treated as an enum destructuring pattern (used in `when` arms of a
-/// `choose`), so it is emitted as `EEnumPattern`. Otherwise it stays a normal call.
+/// If `name` is a dotted `Enum.Variant`, has no explicit type arguments, and
+/// every argument is a bare identifier, the call is treated as an enum
+/// destructuring pattern (used in `when` arms of a `choose`), so it is emitted
+/// as `EEnumPattern`. Otherwise it stays a normal call.
 fn enum_pattern_or_call(
     loc: Loc,
     name: String,
     type_args: Vec<Typ>,
     args: Vec<Expr>,
 ) -> Expr {
-    if let Some((enum_name, variant)) = name.split_once('.') {
-        let bindings: Option<Vec<String>> = args
-            .iter()
-            .map(|a| match a {
-                Expr::EVar { name, .. } => Some(name.clone()),
-                _ => None,
-            })
-            .collect();
-        if let Some(bindings) = bindings {
-            return Expr::EEnumPattern {
-                loc,
-                enum_name: enum_name.to_string(),
-                variant: variant.to_string(),
-                bindings,
-            };
+    // Enum patterns in `when` arms never carry explicit type arguments; if they
+    // are present, treat the construct as a normal enum-constructor call.
+    if type_args.is_empty() {
+        if let Some((enum_name, variant)) = name.split_once('.') {
+            let bindings: Option<Vec<String>> = args
+                .iter()
+                .map(|a| match a {
+                    Expr::EVar { name, .. } => Some(name.clone()),
+                    _ => None,
+                })
+                .collect();
+            if let Some(bindings) = bindings {
+                return Expr::EEnumPattern {
+                    loc,
+                    enum_name: enum_name.to_string(),
+                    variant: variant.to_string(),
+                    bindings,
+                };
+            }
         }
     }
     Expr::ECall {

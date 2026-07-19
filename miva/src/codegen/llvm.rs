@@ -651,6 +651,86 @@ fn body_ends_in_terminator(body: &str) -> bool {
     false
 }
 
+/// Detect the most recently emitted `ifend` (merge) label in `body` if the
+/// last block (between the most recent label and the end of `body`) contains
+/// a phi instruction. Returns the label for the phi predecessor to use when
+/// a nested EIf's merge must be the source of a phi at the outer EIf.
+/// `entry_label` is the label of the block we just emitted (`label_else`);
+/// if no inner merge was found, we fall back to that.
+fn detect_last_merge_label(body: &str, entry_label: String) -> (String, Option<String>) {
+    // Walk the body. Track the label of the most recently entered block and
+    // whether that block contained a phi. The current "last block" is the
+    // one we're inside right now (between its label and the end of body).
+    let mut last_block_label: Option<String> = None;
+    let mut last_block_has_phi = false;
+    for line in body.lines() {
+        let t = line.trim();
+        // A new label (e.g. `ifend_28:`) starts a new block. The previous
+        // block (if any) is now closed — we don't need it for this query,
+        // but its contents are correctly attributed to it.
+        if t.ends_with(':') && !t.starts_with(';') && !t.starts_with('%') {
+            last_block_label = Some(t.trim_end_matches(':').to_string());
+            last_block_has_phi = false;
+        } else if t.starts_with("phi ") || t.starts_with("%phi ") || t.contains(" phi ") {
+            // Phi instructions may be emitted as `  %phi_37 = phi i64 ...`
+            // (LLVM textual form) or `phi i64 ...` (debug form). The
+            // register name is a percent-prefixed local; strip it for
+            // detection.
+            last_block_has_phi = true;
+        }
+        // We deliberately ignore `ret`/`br` here: those are terminators of
+        // earlier blocks, not of the current (open) trailing block. The
+        // current trailing block can still have its own phi + reloads.
+    }
+    if last_block_has_phi {
+        if let Some(lbl) = last_block_label {
+            if lbl != entry_label {
+                return (entry_label, Some(lbl));
+            }
+        }
+    }
+    (entry_label, None)
+}
+
+/// Append a `br label %target` at the end of the merge block identified by
+/// `merge_label`. The merge block contains a phi followed by zero or more
+/// reload instructions but no terminator; we splice the new br in just
+/// before the next label/empty line, or at the end of body if no marker
+/// follows. This is the LLVM-correct position: a br is a block terminator
+/// and must be the final instruction of its block.
+fn append_br_after_merge(body: &mut String, merge_label: &str, target: &str) {
+    let lines: Vec<String> = body.lines().map(|s| s.to_string()).collect();
+    let mut out = String::new();
+    let mut in_merge = false;
+    let mut inserted = false;
+    for line in lines {
+        let t = line.trim();
+        if t == format!("{}:", merge_label) {
+            in_merge = true;
+            out.push_str(&line);
+            out.push('\n');
+            continue;
+        }
+        if in_merge && !inserted {
+            // A new label, an empty line, or another terminator means the
+            // merge block is over — insert the br right before it.
+            if t.is_empty() || (t.ends_with(':') && !t.starts_with('%')) {
+                out.push_str(&format!("  br label %{}\n", target));
+                inserted = true;
+                in_merge = false;
+            }
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    if in_merge && !inserted {
+        // Merge block was the very last thing in body, with no following
+        // marker. Append the br to terminate the block.
+        out.push_str(&format!("  br label %{}\n", target));
+    }
+    *body = out;
+}
+
 fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
     match expr {
         Expr::EInt { value, .. } => format!("{}", value),
@@ -801,8 +881,22 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
             body.push_str(&format!("{}:\n", label_else));
             ctx.indent += 1; let else_val = if let Some(else_expr) = else_ { gen_expr(else_expr, ctx, body) } else { "0".to_string() }; ctx.indent -= 1;
             let else_terminated = body_ends_in_terminator(body);
+            // If the else branch itself ended in its own merge block (a phi at
+            // a fresh ifend label), the actual control flow to `label_end` is
+            // from that merge. Detect this by inspecting the body's most
+            // recent block — we need to forward through the inner merge
+            // rather than appending an unconditional `br` here.
+            let else_pred_label = label_else.clone();
+            let (else_pred_label, else_ends_in_merge) = detect_last_merge_label(body, label_else.clone());
             if !else_terminated {
-                body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_end));
+                if let Some(merge) = else_ends_in_merge.as_ref() {
+                    // Forward `br label %label_end` through the inner merge
+                    // block. The merge label becomes the actual predecessor
+                    // of the outer phi.
+                    append_br_after_merge(body, merge, &label_end);
+                } else {
+                    body.push_str(&format!("{}br label %{}\n", ctx.indent_str(), label_end));
+                }
             }
             // Both branches terminate: the merge block is unreachable, drop it.
             if then_terminated && else_terminated {
@@ -813,7 +907,11 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
             // Only non-terminated branches actually reach the merge block.
             let mut phi_entries = String::new();
             if !then_terminated { phi_entries.push_str(&format!("[ {}, %{} ], ", then_val, label_then)); }
-            if !else_terminated { phi_entries.push_str(&format!("[ {}, %{} ], ", else_val, label_else)); }
+            if let Some(merge) = else_ends_in_merge.as_ref() {
+                phi_entries.push_str(&format!("[ {}, %{} ], ", else_val, merge));
+            } else if !else_terminated {
+                phi_entries.push_str(&format!("[ {}, %{} ], ", else_val, label_else));
+            }
             if !phi_entries.is_empty() {
                 // Drop the trailing ", ".
                 phi_entries.truncate(phi_entries.trim_end_matches(char::is_whitespace).len());

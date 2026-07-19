@@ -1,5 +1,43 @@
 use crate::ast::*;
 use crate::symbol_table::SymbolTable;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+thread_local! {
+    static ENUM_DEFS: RefCell<HashMap<String, Vec<crate::ast::EnumVariant>>> =
+        RefCell::new(HashMap::new());
+}
+
+fn record_enum_defs(defs: &[Def]) {
+    ENUM_DEFS.with(|m| {
+        let mut map = m.borrow_mut();
+        map.clear();
+        for d in defs {
+            if let Def::DEnum { name, variants, .. } = d {
+                map.insert(name.clone(), variants.clone());
+            }
+        }
+    });
+}
+
+fn first_payload_variant(enum_name: &str) -> Option<String> {
+    ENUM_DEFS.with(|m| {
+        m.borrow().get(enum_name).and_then(|variants| {
+            variants
+                .iter()
+                .find(|v| !v.payload.is_empty())
+                .map(|v| v.name.clone())
+        })
+    })
+}
+
+fn enum_payload_field_ref(var_str: &str, enum_name: &str, variant: &str, field: usize) -> String {
+    if first_payload_variant(enum_name).as_deref() == Some(variant) {
+        format!("{}.__payload.field{}", var_str, field)
+    } else {
+        format!("{}.__payload.{}.field{}", var_str, variant, field)
+    }
+}
 
 /// Escape a string value for use in a C++ string literal.
 pub fn cxx_escape_string(s: &str) -> String {
@@ -576,7 +614,7 @@ fn cxx_choose(
         //     (no binding — e.g. bare `Option.Some`)
         // In both cases we compare `var.__tag` to the tag constructor for the
         // variant. Bindings are populated only for the `EEnumPattern` form.
-        let (tag_disc, binding_names) = match c.when.as_ref() {
+        let (tag_disc, binding_names, bind_enum, bind_variant) = match c.when.as_ref() {
             Expr::EEnumPattern {
                 enum_name,
                 variant,
@@ -585,6 +623,8 @@ fn cxx_choose(
             } => (
                 format!("{}.__tag == {}_{}_tag()", var_str, enum_name, variant),
                 bindings.clone(),
+                enum_name.clone(),
+                variant.clone(),
             ),
             Expr::EFieldAccess {
                 expr: inner_expr,
@@ -596,17 +636,19 @@ fn cxx_choose(
                         (
                             format!("{}.__tag == {}_{}_tag()", var_str, enum_name, variant),
                             Vec::new(),
+                            enum_name.clone(),
+                            variant.clone(),
                         )
                     } else {
                         // Non-enum field access — treat as a value comparison
                         // (the legacy code path will handle it via `value_str`).
-                        (String::new(), Vec::new())
+                        (String::new(), Vec::new(), String::new(), String::new())
                     }
                 } else {
-                    (String::new(), Vec::new())
+                    (String::new(), Vec::new(), String::new(), String::new())
                 }
             }
-            _ => (String::new(), Vec::new()),
+            _ => (String::new(), Vec::new(), String::new(), String::new()),
         };
         if !tag_disc.is_empty() {
             // Tag-based dispatch with optional destructuring.
@@ -615,12 +657,11 @@ fn cxx_choose(
                 .enumerate()
                 .map(|(i, b)| {
                     format!(
-                        "{}{}const auto {} = {}.__payload.field{};\n",
+                        "{}{}const auto {} = {};\n",
                         indent_str(inner),
                         ind,
                         b,
-                        var_str,
-                        i
+                        enum_payload_field_ref(&var_str, &bind_enum, &bind_variant, i)
                     )
                 })
                 .collect();
@@ -896,22 +937,46 @@ fn cxx_enum_def(
                 .join(", ")
         )
     };
-    let max_fields = variants.iter().map(|v| v.payload.len()).max().unwrap_or(0);
-    let mut field_types: Vec<String> = Vec::new();
-    for i in 0..max_fields {
-        let ty = variants
+    let first_payload_idx = variants.iter().position(|v| !v.payload.is_empty());
+    let mut payload_members = String::new();
+    for (v_idx, v) in variants.iter().enumerate() {
+        if v.payload.is_empty() {
+            continue;
+        }
+        let fields: Vec<String> = v
+            .payload
             .iter()
-            .find_map(|v| v.payload.get(i).map(cxx_type))
-            .unwrap_or_else(|| "mvp_builtin_int".to_string());
-        field_types.push(ty);
+            .enumerate()
+            .map(|(i, t)| format!("{} field{};", cxx_type(t), i))
+            .collect();
+        if Some(v_idx) == first_payload_idx {
+            payload_members.push_str(&format!(
+                "{}{}\n",
+                indent_str(inner + 1),
+                fields.join(" ")
+            ));
+        } else {
+            payload_members.push_str(&format!(
+                "{}struct {{ {} }} {};\n",
+                indent_str(inner + 1),
+                fields.join(" "),
+                v.name
+            ));
+        }
     }
-    let mut payload_fields = String::new();
-    for (i, ty) in field_types.iter().enumerate() {
-        payload_fields.push_str(&format!("{}{} field{};\n", indent_str(inner), ty, i));
-    }
+    let payload_block = if payload_members.is_empty() {
+        format!("{}struct {{}} __payload;\n", indent_str(inner))
+    } else {
+        format!(
+            "{}struct {{\n{}{}}} __payload;\n",
+            indent_str(inner),
+            payload_members,
+            indent_str(inner)
+        )
+    };
     let struct_str = format!(
-        "{}{}struct {} {{\n{}mvp_builtin_int __tag;\n{}struct {{\n{}{}}} __payload;\n{}bool operator==(const {}& o) const {{ return __tag == o.__tag; }}\n{}bool operator!=(const {}& o) const {{ return __tag != o.__tag; }}\n{}}};\n\n",
-        template, ind, name, indent_str(inner), indent_str(inner), payload_fields, indent_str(inner), indent_str(inner), name, indent_str(inner), name, ind
+        "{}{}struct {} {{\n{}mvp_builtin_int __tag;\n{}{}bool operator==(const {}& o) const {{ return __tag == o.__tag; }}\n{}bool operator!=(const {}& o) const {{ return __tag != o.__tag; }}\n{}}};\n\n",
+        template, ind, name, indent_str(inner), payload_block, indent_str(inner), name, indent_str(inner), name, ind
     );
     let ret_ty = if type_params.is_empty() {
         name.to_string()
@@ -927,7 +992,14 @@ fn cxx_enum_def(
             .map(|(i, t)| format!("{} __a{}", cxx_type(t), i))
             .collect();
         let inits: Vec<String> = (0..v.payload.len())
-            .map(|i| format!("v.__payload.field{} = __a{};", i, i))
+            .map(|i| {
+                let field = if Some(idx) == first_payload_idx {
+                    format!("field{}", i)
+                } else {
+                    format!("{}.field{}", v.name, i)
+                };
+                format!("v.__payload.{} = __a{};", field, i)
+            })
             .collect();
         let ctor = format!(
             "{}{}inline {} {}_{}({}) {{\n{} {} v;\n{} v.__tag = {};\n{} {};\n{} return v;\n{}}}\n\n",
@@ -1510,6 +1582,7 @@ fn is_main_func(def: &Def) -> bool {
 }
 
 pub fn build_ir(defs: &[Def]) -> [String; 3] {
+    record_enum_defs(defs);
     let header_content = generate_header(defs);
     let ScopeParts {
         includes,
