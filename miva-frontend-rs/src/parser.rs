@@ -1791,6 +1791,30 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_generic_enum_constructor_type_args() {
+        let def = parse_first("Box[T] = enum { Empty, Value(T) }");
+        match def {
+            Def::DEnum { name, type_params, variants, .. } => {
+                assert_eq!(name, "Box");
+                assert_eq!(type_params, vec!["T".to_string()]);
+                assert_eq!(variants.len(), 2);
+            }
+            _ => panic!("expected DEnum"),
+        }
+        // Explicit type args: Box[int](5) produces ECall { name: "Box", type_args: [TInt], args: [EInt] }
+        let lexer = Lexer::new("Box[int](5)");
+        let mut parser = Parser::new(lexer, "Box[int](5)", "test.mv");
+        let expr = parser.parse_expr().unwrap();
+        match expr {
+            Expr::ECall { name, type_args, .. } => {
+                assert_eq!(name, "Box");
+                assert_eq!(type_args.len(), 1);
+            }
+            other => panic!("expected ECall, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_parse_choose_enum_destructure_pattern() {
         let def = parse_first(
             "f = (s: Shape): int => choose (s) {\n  when (Shape.Circle(r)) { return r; }\n  when (Shape.Rect(w, h)) { return w + h; }\n  otherwise { return 0; }\n}",
