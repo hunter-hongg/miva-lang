@@ -932,6 +932,7 @@ impl<'input> Parser<'input> {
 
     /// Parse call/macro/field suffixes starting from an already-known expression.
     fn parse_call_suffix(&mut self, mut expr: Expr) -> Result<Expr, String> {
+        let saved = std::mem::take(&mut self.pending_type_args);
         loop {
             match self.peek_token()? {
                 // Generic type arguments + call: name[Type1, Type2](args)
@@ -1022,6 +1023,7 @@ impl<'input> Parser<'input> {
                         Some(&Token::LBracket)
                             if !matches!(&expr, Expr::EFieldAccess { .. }) =>
                         {
+                            self.pending_type_args.clear();
                             self.advance()?;
                             let mut type_args = Vec::new();
                             loop {
@@ -1107,6 +1109,7 @@ impl<'input> Parser<'input> {
                 _ => break,
             }
         }
+        self.pending_type_args = saved;
         Ok(Self::method_call_or_pattern(expr))
     }
 
