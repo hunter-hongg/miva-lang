@@ -304,6 +304,17 @@ struct LlvmCtx {
     field_idx: HashMap<String, usize>,
     func_sigs: HashMap<String, crate::codegen::FuncSig>,
     string_regs: HashSet<String>,
+    /// Enum definitions: enum name -> (type params, variant -> payload types).
+    /// Used to resolve which payload positions of an enum value hold strings,
+    /// including generic instantiations (e.g. `Box[string]`).
+    enum_defs: HashMap<String, (Vec<String>, HashMap<String, Vec<Typ>>)>,
+    /// Per variable name, the payload indices of an enum value it holds that
+    /// carry string values. Lets destructured `choose` bindings (e.g. the `v`
+    /// in `when (Box.Value(v))`) be recognized as strings for codegen.
+    string_payloads: HashMap<String, Vec<usize>>,
+    /// Transient: the payload indices of the most recently codegen'd enum
+    /// constructor call result, to be attached to the binding that stores it.
+    pending_string_payloads: Vec<usize>,
 }
 
 impl LlvmCtx {
@@ -320,6 +331,9 @@ impl LlvmCtx {
             field_idx: HashMap::new(),
             func_sigs: HashMap::new(),
             string_regs: HashSet::new(),
+            enum_defs: HashMap::new(),
+            string_payloads: HashMap::new(),
+            pending_string_payloads: Vec::new(),
         }
     }
 
@@ -341,10 +355,17 @@ impl LlvmCtx {
             field_idx: HashMap::new(),
             func_sigs: HashMap::new(),
             string_regs: HashSet::new(),
+            enum_defs: HashMap::new(),
+            string_payloads: HashMap::new(),
+            pending_string_payloads: Vec::new(),
         }
     }
 
-    fn with_module_and_fields(module: Option<&str>, struct_field_map: HashMap<String, HashMap<String, usize>>) -> Self {
+    fn with_module_and_fields(
+        module: Option<&str>,
+        struct_field_map: HashMap<String, HashMap<String, usize>>,
+        enum_defs: HashMap<String, (Vec<String>, HashMap<String, Vec<Typ>>)>,
+    ) -> Self {
         let mut field_idx = HashMap::new();
         for (_sname, fields) in &struct_field_map {
             for (fname, fidx) in fields {
@@ -363,6 +384,9 @@ impl LlvmCtx {
             field_idx,
             func_sigs: HashMap::new(),
             string_regs: HashSet::new(),
+            enum_defs,
+            string_payloads: HashMap::new(),
+            pending_string_payloads: Vec::new(),
         }
     }
 
@@ -477,6 +501,81 @@ fn is_string_var(expr: &Expr, ctx: &LlvmCtx) -> bool {
         }
         _ => false,
     }
+}
+
+/// Substitute generic type parameters in `t` using `subst` (param name -> type).
+/// Generic params appear in enum payloads either as `TGenericParam` or as a
+/// `TStruct` with no fields whose name is the parameter (the frontend's
+/// representation for a bare type parameter).
+fn resolve_enum_typ(t: &Typ, subst: &HashMap<String, Typ>) -> Typ {
+    match t {
+        Typ::TGenericParam { name } => subst.get(name).cloned().unwrap_or_else(|| t.clone()),
+        Typ::TStruct { name, fields, type_args } if fields.is_empty() && type_args.is_empty() => {
+            subst.get(name).cloned().unwrap_or_else(|| t.clone())
+        }
+        Typ::TArray { of } => Typ::TArray { of: Box::new(resolve_enum_typ(of, subst)) },
+        _ => t.clone(),
+    }
+}
+
+/// Whether a (resolved) type is, or holds, a string value.
+fn typ_is_string(t: &Typ) -> bool {
+    matches!(t, Typ::TString)
+        || matches!(t, Typ::TArray { of } if matches!(**of, Typ::TString))
+}
+
+/// Given a type that names an enum (e.g. `Box[string]`), return the payload
+/// indices of that enum that carry strings for this concrete instantiation.
+/// Returns `None` when the type does not name a known enum.
+fn enum_string_payloads_from_typ(
+    typ: &Typ,
+    enum_defs: &HashMap<String, (Vec<String>, HashMap<String, Vec<Typ>>)>,
+) -> Option<Vec<usize>> {
+    let (enum_name, type_args) = match typ {
+        Typ::TStruct { name, type_args, .. } => (name.clone(), type_args.clone()),
+        _ => return None,
+    };
+    let (params, variants) = enum_defs.get(&enum_name)?;
+    let mut subst = HashMap::new();
+    for (p, a) in params.iter().zip(type_args.iter()) {
+        subst.insert(p.clone(), a.clone());
+    }
+    let mut all = Vec::new();
+    for payload in variants.values() {
+        for (i, t) in payload.iter().enumerate() {
+            if typ_is_string(&resolve_enum_typ(t, &subst)) {
+                all.push(i);
+            }
+        }
+    }
+    Some(all)
+}
+
+/// Compute the payload indices of an enum constructor call that carry strings,
+/// given the enum definition and the concrete type arguments (if the enum is
+/// generic). Returns an empty vec when the constructor is unknown.
+fn enum_ctor_string_payloads(
+    enum_name: &str,
+    variant: &str,
+    type_args: &[Typ],
+    enum_defs: &HashMap<String, (Vec<String>, HashMap<String, Vec<Typ>>)>,
+) -> Vec<usize> {
+    let Some((params, variants)) = enum_defs.get(enum_name) else {
+        return Vec::new();
+    };
+    let Some(payload) = variants.get(variant) else {
+        return Vec::new();
+    };
+    let mut subst = HashMap::new();
+    for (p, a) in params.iter().zip(type_args.iter()) {
+        subst.insert(p.clone(), a.clone());
+    }
+    payload
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| typ_is_string(&resolve_enum_typ(t, &subst)))
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// Numeric category of a value, used to pick the correct `string_from_*`
@@ -1334,6 +1433,67 @@ fn returns_from_sig(sig: &crate::codegen::FuncSig, type_args: &[Typ]) -> bool {
     }
 }
 
+/// Decide whether binding `name` to `expr` yields a string value, so the
+/// backend stringifies it with `string_from_str` rather than `string_from_int`.
+/// Extends the existing checks with field-access into an enum value whose
+/// payload at that index is known to carry a string.
+fn binding_is_string(expr: &Expr, ctx: &LlvmCtx) -> bool {
+    if is_string_expr(expr) || call_returns_string(expr, ctx) {
+        return true;
+    }
+    // `v = scrutinee.field{i}` where `scrutinee` holds an enum value with a
+    // string at payload index `i` (e.g. the `v` in `when (Box.Value(v))`).
+    if let Expr::EFieldAccess { expr: base, field, .. } = expr {
+        if field.chars().all(|c| c.is_ascii_digit()) {
+            if let Expr::EVar { name, .. } = base.as_ref() {
+                if let Some(idxs) = ctx.string_payloads.get(name) {
+                    if idxs.contains(&field.parse::<usize>().unwrap_or(usize::MAX)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Record, for a variable that is being bound to an enum constructor value,
+/// which of its payload indices carry strings (for later destructuring).
+fn record_string_payloads(name: &str, expr: &Expr, ctx: &mut LlvmCtx) {
+    let idxs = match expr {
+        Expr::ECall { name: cname, type_args, .. } => {
+            if let Some(dot) = cname.find('.') {
+                let (en, variant) = (&cname[..dot], &cname[dot + 1..]);
+                enum_ctor_string_payloads(en, variant, type_args, &ctx.enum_defs)
+            } else if let Some(en) = enum_ctor_enum_name(expr) {
+                if en.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    enum_ctor_string_payloads(&en, cname, type_args, &ctx.enum_defs)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
+    };
+    if !idxs.is_empty() {
+        ctx.string_payloads.insert(name.to_string(), idxs);
+    }
+}
+
+/// Get the enum type name from the first argument of a desugared
+/// `Variant(Enum, ...)` enum-constructor call.
+fn enum_ctor_enum_name(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::ECall { args, .. } => match args.first() {
+            Some(Expr::EVar { name, .. }) => Some(name.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn gen_stmt(stmt: &Stmt, ctx: &mut LlvmCtx, body: &mut String) {
     match stmt {
         Stmt::SLet { name, mutable: _, expr, .. } => {
@@ -1342,19 +1502,26 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut LlvmCtx, body: &mut String) {
             body.push_str(&format!("  %{} = alloca i64, align 8\n", addr));
             body.push_str(&format!("  store i64 {}, ptr %{}, align 8\n", val, addr));
             body.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", reload, addr));
-            if is_string_expr(expr) || call_returns_string(expr, ctx) {
+            if binding_is_string(expr, ctx) {
                 ctx.string_regs.insert(reload);
             }
+            record_string_payloads(name, expr, ctx);
         }
-        Stmt::SLetTyped { name, expr, .. } => {
+        Stmt::SLetTyped { name, typ, expr, .. } => {
             let val = gen_expr(expr, ctx, body);
             let (addr, reload) = ctx.declare_var(name);
             body.push_str(&format!("  %{} = alloca i64, align 8\n", addr));
             body.push_str(&format!("  store i64 {}, ptr %{}, align 8\n", val, addr));
             body.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", reload, addr));
-            if is_string_expr(expr) || call_returns_string(expr, ctx) {
+            if binding_is_string(expr, ctx) {
                 ctx.string_regs.insert(reload);
             }
+            if let Some(idxs) = enum_string_payloads_from_typ(typ, &ctx.enum_defs) {
+                if !idxs.is_empty() {
+                    ctx.string_payloads.insert(name.clone(), idxs);
+                }
+            }
+            record_string_payloads(name, expr, ctx);
         }
         Stmt::SAssign { name, expr, .. } => {
             let val = gen_expr(expr, ctx, body);
@@ -1364,9 +1531,10 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut LlvmCtx, body: &mut String) {
             ctx.tmp_counter += 1;
             body.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", reload_name, addr));
             ctx.var_reloads.insert(name.clone(), reload_name.clone());
-            if is_string_expr(expr) || call_returns_string(expr, ctx) {
+            if binding_is_string(expr, ctx) {
                 ctx.string_regs.insert(reload_name);
             }
+            record_string_payloads(name, expr, ctx);
         }
         Stmt::SReturn { expr, .. } => {
             let val = gen_expr(expr, ctx, body);
@@ -1395,10 +1563,12 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut LlvmCtx, body: &mut String) {
 fn gen_func_def(
     name: &str, _type_params: &[String], params: &[Param], _returns: &Option<Typ>,
     body: &Expr, module: Option<&str>, struct_field_map: &HashMap<String, HashMap<String, usize>>,
-    func_sigs: &HashMap<String, crate::codegen::FuncSig>, is_async: bool,
+    func_sigs: &HashMap<String, crate::codegen::FuncSig>,
+    enum_defs: &HashMap<String, (Vec<String>, HashMap<String, Vec<Typ>>)>,
+    is_async: bool,
 ) -> String {
     let global_name = make_global_name(module, name);
-    let mut ctx = LlvmCtx::with_module_and_fields(module, struct_field_map.clone()).with_func_sigs(func_sigs);
+    let mut ctx = LlvmCtx::with_module_and_fields(module, struct_field_map.clone(), enum_defs.clone()).with_func_sigs(func_sigs);
     ctx.indent = 1;
     let mut body_prefix = String::new();
     let param_strs: Vec<String>;
@@ -1424,11 +1594,18 @@ fn gen_func_def(
             format!("i64 %{}", pname)
         }).collect();
         for p in params {
-            let pname = match p { Param::PRef { name, .. } | Param::POwn { name, .. } => name.as_str() };
+            let (pname, ptyp) = match p {
+                Param::PRef { name, typ, .. } | Param::POwn { name, typ, .. } => (name.as_str(), typ),
+            };
             let (addr, reload) = ctx.declare_var(pname);
             body_prefix.push_str(&format!("  %{} = alloca i64, align 8\n", addr));
             body_prefix.push_str(&format!("  store i64 %{}, ptr %{}, align 8\n", pname, addr));
             body_prefix.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", reload, addr));
+            if let Some(idxs) = enum_string_payloads_from_typ(ptyp, &ctx.enum_defs) {
+                if !idxs.is_empty() {
+                    ctx.string_payloads.insert(pname.to_string(), idxs);
+                }
+            }
         }
     }
     let mut body_str = String::new();
@@ -1463,8 +1640,8 @@ fn gen_func_def(
     out
 }
 
-fn gen_main_func(body_expr: &Expr, struct_field_map: &HashMap<String, HashMap<String, usize>>, func_sigs: &HashMap<String, crate::codegen::FuncSig>) -> String {
-    let mut ctx = LlvmCtx::with_module_and_fields(None, struct_field_map.clone()).with_func_sigs(func_sigs);
+fn gen_main_func(body_expr: &Expr, struct_field_map: &HashMap<String, HashMap<String, usize>>, func_sigs: &HashMap<String, crate::codegen::FuncSig>, enum_defs: &HashMap<String, (Vec<String>, HashMap<String, Vec<Typ>>)>) -> String {
+    let mut ctx = LlvmCtx::with_module_and_fields(None, struct_field_map.clone(), enum_defs.clone()).with_func_sigs(func_sigs);
     ctx.indent = 1;
     let (argc_addr, _argc_reload) = ctx.declare_var("argc");
     let mut body = String::new();
@@ -1614,9 +1791,20 @@ fn generate_with_scope(defs: &[Def], module: Option<&str>, struct_field_map: &Ha
     let mut main_functions = String::new();
     let mut defined = HashSet::new();
 
+    let mut enum_defs: HashMap<String, (Vec<String>, HashMap<String, Vec<Typ>>)> = HashMap::new();
+    for def in defs {
+        if let Def::DEnum { name, type_params, variants, .. } = def {
+            let mut variant_map = HashMap::new();
+            for v in variants {
+                variant_map.insert(v.name.clone(), v.payload.clone());
+            }
+            enum_defs.insert(name.clone(), (type_params.clone(), variant_map));
+        }
+    }
+
     for def in defs {
         match def {
-            Def::DFunc { name, type_params, params, returns, body, .. } if name == "main" => main_functions.push_str(&gen_main_func(body, struct_field_map, func_sigs)),
+            Def::DFunc { name, type_params, params, returns, body, .. } if name == "main" => main_functions.push_str(&gen_main_func(body, struct_field_map, func_sigs, &enum_defs)),
             Def::DCFuncUnsafe { name, params, returns, code, .. } => {
                 let global_name = make_global_name(module, name.as_str());
                 defined.insert(global_name);
@@ -1625,7 +1813,7 @@ fn generate_with_scope(defs: &[Def], module: Option<&str>, struct_field_map: &Ha
             Def::DFunc { name, type_params, params, returns, body, is_async, .. } => {
                 let global_name = make_global_name(module, name.as_str());
                 defined.insert(global_name);
-                defs_str.push_str(&gen_func_def(name, type_params, params, returns, body, module, struct_field_map, func_sigs, *is_async));
+                defs_str.push_str(&gen_func_def(name, type_params, params, returns, body, module, struct_field_map, func_sigs, &enum_defs, *is_async));
             }
             Def::DEnum { name, variants, .. } => {
                 struct_defs.push_str(&llvm_enum_def(name, variants));
