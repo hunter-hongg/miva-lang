@@ -8,6 +8,7 @@ pub struct Parser<'input> {
     input: &'input str,
     file_name: &'input str,
     peeked: Option<Option<(usize, Token<'input>, usize)>>,
+    pending_type_args: Vec<Typ>,
 }
 
 impl<'input> Parser<'input> {
@@ -17,6 +18,7 @@ impl<'input> Parser<'input> {
             input,
             file_name,
             peeked: None,
+            pending_type_args: vec![],
         }
     }
 
@@ -945,23 +947,26 @@ impl<'input> Parser<'input> {
                         }
                     }
                     self.expect(&Token::RBracket)?;
-                    // Must be followed by (args)
-                    self.expect(&Token::LParen)?;
-                    let mut args = Vec::new();
-                    if self.peek_token()? != Some(&Token::RParen) {
-                        loop {
-                            args.push(self.parse_expr()?);
-                            if self.peek_token()? == Some(&Token::Comma) {
-                                self.advance()?;
-                            } else {
-                                break;
+                    if self.peek_token()? == Some(&Token::LParen) {
+                        self.expect(&Token::LParen)?;
+                        let mut args = Vec::new();
+                        if self.peek_token()? != Some(&Token::RParen) {
+                            loop {
+                                args.push(self.parse_expr()?);
+                                if self.peek_token()? == Some(&Token::Comma) {
+                                    self.advance()?;
+                                } else {
+                                    break;
+                                }
                             }
                         }
+                        self.expect(&Token::RParen)?;
+                        let call_path = extract_call_path_from_expr(&expr);
+                        let processed = util::process_call_path(&call_path);
+                        expr = enum_pattern_or_call(expr_loc(&expr), processed, type_args, args);
+                    } else {
+                        self.pending_type_args = type_args;
                     }
-                    self.expect(&Token::RParen)?;
-                    let call_path = extract_call_path_from_expr(&expr);
-                    let processed = util::process_call_path(&call_path);
-                    expr = enum_pattern_or_call(expr_loc(&expr), processed, type_args, args);
                 }
                 // Function call: expr(args)
                 Some(&Token::LParen) => {
@@ -1072,12 +1077,13 @@ impl<'input> Parser<'input> {
                                 loc,
                                 expr: Box::new(expr),
                                 method,
-                                type_args: vec![],
+                                type_args: self.pending_type_args.drain(..).collect(),
                                 args,
                             };
                         }
                         // Regular field access: expr.field (also handles module paths like a.b(c))
                         _ => {
+                            self.pending_type_args.clear();
                             let loc = expr_loc(&expr);
                             expr = Expr::EFieldAccess {
                                 loc,
@@ -1815,6 +1821,33 @@ mod tests {
     }
 
     #[test]
+    fn test_generic_enum_constructor_type_args_parsing() {
+        let lexer = Lexer::new("Box.Value[int](5)");
+        let mut parser = Parser::new(lexer, "Box.Value[int](5)", "test.mv");
+        let expr = parser.parse_expr().unwrap();
+        match expr {
+            Expr::EMethodCall { method, type_args, args, .. } => {
+                assert_eq!(method, "Value");
+                assert_eq!(type_args.len(), 1);
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("expected EMethodCall, got {:?}", other),
+        }
+
+        let lexer2 = Lexer::new("Box[int].Value(5)");
+        let mut parser2 = Parser::new(lexer2, "Box[int].Value(5)", "test.mv");
+        let expr2 = parser2.parse_expr().unwrap();
+        match expr2 {
+            Expr::EMethodCall { method, type_args, args, .. } => {
+                assert_eq!(method, "Value");
+                assert_eq!(type_args.len(), 1);
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("expected EMethodCall, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_parse_choose_enum_destructure_pattern() {
         let def = parse_first(
             "f = (s: Shape): int => choose (s) {\n  when (Shape.Circle(r)) { return r; }\n  when (Shape.Rect(w, h)) { return w + h; }\n  otherwise { return 0; }\n}",
@@ -1886,6 +1919,7 @@ impl<'input> Clone for Parser<'input> {
             input: self.input,
             file_name: self.file_name,
             peeked: None, // discard peeked state on clone
+            pending_type_args: vec![],
         }
     }
 }
