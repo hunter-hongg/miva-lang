@@ -1,40 +1,123 @@
 module main;
 
-OptionInt = enum {
-    Some(int),
+// ── A generic optional value ───────────────────────────────────────────────────
+//
+// `Option[T]` represents an optional value: every `Option[T]` is either
+// `Some(T)` (containing a value) or `None` (empty). It is the standard way to
+// express that a value _may_ be absent, analogous to Rust's `Option<T>`.
+//
+// This local definition mirrors the `std/option` module API so the demo is
+// self-contained and runnable. To use the shared module instead, add
+//
+//     import "std/option";
+//
+// to the top and replace the `Option.*` references below with `std.option.*`
+// (see docs/std-option-progress.md for the current cross-module status).
+//
+// NOTE: due to a current compiler limitation, a generic `Option.None` cannot
+// be written as a standalone value of a specific `Option[T]` — the type
+// parameter is not propagated. Presence/absence is therefore tested with
+// `is_some` / `is_none` and `choose/when (Option.None)`, not by constructing
+// a `None` literal directly.
+
+Option[T] = enum {
+    Some(T),
     None
 }
 
-Color = enum {
-    Red,
-    Green,
-    Blue
+// ── Querying ───────────────────────────────────────────────────────────────────
+
+is_some[T] = (ref o: Option[T]): bool => choose (o) {
+    when (Option.Some) { return true; }
+    otherwise { return false; }
 }
 
-describe = (col: Color): string => choose (col) {
-    when (Color.Red) { return "red"; }
-    when (Color.Green) { return "green"; }
-    when (Color.Blue) { return "blue"; }
-    otherwise { return "unknown"; }
+is_none[T] = (ref o: Option[T]): bool => choose (o) {
+    when (Option.None) { return true; }
+    otherwise { return false; }
 }
 
-first = (xs: OptionInt): int => choose (xs) {
-    when (OptionInt.Some) { return xs.0; }
-    when (OptionInt.None) { return 0 - 1; }
-    otherwise { return 0 - 1; }
+// ── Unwrapping ─────────────────────────────────────────────────────────────────
+
+// Unwraps the option, yielding the inner value. Panics with `msg` if `None`.
+expect[T] = (ref o: Option[T], msg: string): T => choose (o) {
+    when (Option.Some(v)) { return v; }
+    otherwise { panic(msg); }
 }
 
-make = (n: int): OptionInt => choose (n > 0) {
-    when (true) { return OptionInt.Some(n); }
-    otherwise { return OptionInt.None; }
+// Unwraps the option, yielding the inner value. Panics if `None`.
+unwrap[T] = (ref o: Option[T]): T => choose (o) {
+    when (Option.Some(v)) { return v; }
+    otherwise { panic("unwrap: called on None"); }
 }
 
-main = () => {
-    printlns!("describe(Red)    = ", describe(Color.Red));
-    printlns!("describe(Green)  = ", describe(Color.Green));
-    printlns!("describe(Blue)   = ", describe(Color.Blue));
-    printlns!("first(Some(42))  = ", first(OptionInt.Some(42)));
-    printlns!("first(None)      = ", first(OptionInt.None));
-    printlns!("first(make(7))   = ", first(make(7)));
-    printlns!("first(make(0))   = ", first(make(0)));
+// Returns the contained value or a provided default.
+unwrap_or[T] = (ref o: Option[T], default: T): T => choose (o) {
+    when (Option.Some(v)) { return v; }
+    otherwise { return default; }
+}
+
+// ── Comparison ─────────────────────────────────────────────────────────────────
+
+contains[T] = (ref o: Option[T], x: T): bool => choose (o) {
+    when (Option.Some(v)) { return v == x; }
+    otherwise { return false; }
+}
+
+// ── Application logic ──────────────────────────────────────────────────────────
+
+// Integer division: returns the quotient, truncating toward zero (like Rust).
+// Panics on division by zero.
+safe_div = (a: int, b: int): int => choose (b == 0) {
+    when (true)  { panic("division by zero"); }
+    otherwise    { return a / b; }
+}
+
+unsafe main = () => {
+    // construct Some with int
+    let a Option[int] = Option.Some(42);
+    let b Option[int] = Option.Some(99);
+
+    // is_some / is_none
+    printlns!("-- is_some / is_none --");
+    printlns!("a is_some = ", is_some[int](a));
+    printlns!("a is_none = ", is_none[int](a));
+    printlns!("b is_some = ", is_some[int](b));
+
+    // pattern matching with choose
+    printlns!("-- pattern matching --");
+    choose (a) {
+        when (Option.Some(v)) { printlns!("a = ", v); }
+        otherwise { printlns!("a is none"); }
+    };
+    choose (b) {
+        when (Option.Some(v)) { printlns!("b = ", v); }
+        otherwise { printlns!("b is none"); }
+    };
+
+    // unwrap / unwrap_or / expect
+    printlns!("-- unwrap / unwrap_or / expect --");
+    printlns!("unwrap(a) = ", unwrap[int](a));
+    printlns!("unwrap_or(b, 0) = ", unwrap_or[int](b, 0));
+    printlns!("expect(a, msg) = ", expect[int](a, "a must be Some"));
+
+    // contains
+    printlns!("-- contains --");
+    printlns!("a contains 42 = ", contains[int](a, 42));
+    printlns!("a contains 99 = ", contains[int](a, 99));
+    printlns!("b contains 99 = ", contains[int](b, 99));
+
+    // Division operator (int / int, truncates toward zero like Rust)
+    printlns!("-- division --");
+    printlns!("20 / 4 = ", 20 / 4);
+    printlns!("10 / 3 = ", 10 / 3);
+    printlns!("7 / 2 = ", 7 / 2);
+    printlns!("0 / 5 = ", 0 / 5);
+
+    // safe_div wrapper (panics on zero)
+    printlns!("-- safe_div --");
+    printlns!("100 / 5 = ", safe_div(100, 5));
+    printlns!("9 / 2 = ", safe_div(9, 2));
+
+    printlns!("option demo ok");
 }

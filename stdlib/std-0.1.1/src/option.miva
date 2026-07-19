@@ -1,0 +1,86 @@
+module std.option;
+
+// ── A generic optional value ───────────────────────────────────────────────────
+//
+// `Option[T]` represents an optional value: every `Option[T]` is either
+// `Some(T)` (containing a value) or `None` (empty). It is the standard way to
+// express that a value _may_ be absent, analogous to Rust's `Option<T>`.
+//
+// # Construction
+//
+//     let some_val Option[int] = Option.Some(42);
+//     let no_val  Option[int] = Option.None;
+//
+// # Matching
+//
+//     choose (opt) {
+//         when (Option.Some(v)) { process(v); }
+//         when (Option.None)   { handle_missing(); }
+//     }
+
+Option[T] = enum {
+    Some(T),
+    None
+}
+
+// ── Querying ───────────────────────────────────────────────────────────────────
+
+// Returns `true` if the option is a `Some` value.
+is_some[T] = (ref o: Option[T]): bool => choose (o) {
+    when (Option.Some) { return true; }
+    otherwise { return false; }
+}
+
+// Returns `true` if the option is `None`.
+is_none[T] = (ref o: Option[T]): bool => choose (o) {
+    when (Option.None) { return true; }
+    otherwise { return false; }
+}
+
+// ── Unwrapping ─────────────────────────────────────────────────────────────────
+
+// Unwraps the option, yielding the inner value. Panics with `msg` if `None`.
+expect[T] = (ref o: Option[T], msg: string): T => choose (o) {
+    when (Option.Some(v)) { return v; }
+    otherwise { panic(msg); }
+}
+
+// Unwraps the option, yielding the inner value. Panics if `None`.
+unwrap[T] = (ref o: Option[T]): T => choose (o) {
+    when (Option.Some(v)) { return v; }
+    otherwise { panic("option.unwrap: called on None"); }
+}
+
+// Returns the contained value or a provided default.
+unwrap_or[T] = (ref o: Option[T], default: T): T => choose (o) {
+    when (Option.Some(v)) { return v; }
+    otherwise { return default; }
+}
+
+// ── Comparison ─────────────────────────────────────────────────────────────────
+
+// Returns `true` if the option is a `Some` value containing the given value.
+contains[T] = (ref o: Option[T], x: T): bool => choose (o) {
+    when (Option.Some(v)) { return v == x; }
+    otherwise { return false; }
+}
+
+// ── Conversion ─────────────────────────────────────────────────────────────────
+
+// Converts from `Option[Option[T]]` to `Option[T]`.
+// Flattens one level of nesting.
+flatten[T] = (ref o: Option[Option[T]]): Option[T] => choose (o) {
+    when (Option.Some(inner)) { return inner; }
+    otherwise { return Option.None; }
+}
+
+// ── Exports ────────────────────────────────────────────────────────────────────
+
+export Option;
+export is_some;
+export is_none;
+export expect;
+export unwrap;
+export unwrap_or;
+export contains;
+export flatten;

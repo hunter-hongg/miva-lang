@@ -299,6 +299,7 @@ impl MvmCodegen {
                             ImplOp::ImAdd => "add",
                             ImplOp::ImSub => "sub",
                             ImplOp::ImMul => "mul",
+                            ImplOp::ImDiv => "div",
                             ImplOp::ImEq => "eq",
                             ImplOp::ImNeq => "neq",
                         };
@@ -1119,6 +1120,7 @@ impl MvmCodegen {
             }
             BinOp::Sub => self.emit_op(MvmOp::I64Sub),
             BinOp::Mul => self.emit_op(MvmOp::I64Mul),
+            BinOp::Div => self.emit_op(MvmOp::I64Div),
             BinOp::Eq => self.emit_op(MvmOp::CmpEq),
             BinOp::Neq => self.emit_op(MvmOp::CmpNeq),
             BinOp::Lt => self.emit_op(MvmOp::CmpLt),
@@ -1170,6 +1172,7 @@ impl MvmCodegen {
             BinOp::Add => "add",
             BinOp::Sub => "sub",
             BinOp::Mul => "mul",
+            BinOp::Div => "div",
             BinOp::Eq => "eq",
             BinOp::Neq => "neq",
             BinOp::Lt => "lt",

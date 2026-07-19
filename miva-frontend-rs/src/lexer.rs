@@ -30,6 +30,7 @@ pub enum Token<'input> {
     Plus,         // +
     Minus,        // -
     Star,         // *
+    Slash,        // /
     EqEq,         // ==
     Neq,          // !=
     Lt,           // <
@@ -81,6 +82,7 @@ pub enum Token<'input> {
     OpAdd,
     OpSub,
     OpMul,
+    OpDiv,
     OpEq,
     OpNeq,
     Module,
@@ -528,6 +530,10 @@ impl<'input> Iterator for Lexer<'input> {
                     self.advance();
                     return Some(Ok((start, Token::Star, self.pos)));
                 }
+                b'/' => {
+                    self.advance();
+                    return Some(Ok((start, Token::Slash, self.pos)));
+                }
                 b'(' => {
                     self.advance();
                     return Some(Ok((start, Token::LParen, self.pos)));
@@ -633,6 +639,7 @@ impl<'input> Iterator for Lexer<'input> {
                         "op_add" => Token::OpAdd,
                         "op_sub" => Token::OpSub,
                         "op_mul" => Token::OpMul,
+                        "op_div" => Token::OpDiv,
                         "op_eq" => Token::OpEq,
                         "op_neq" => Token::OpNeq,
                         "module" => Token::Module,

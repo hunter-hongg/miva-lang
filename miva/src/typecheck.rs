@@ -123,6 +123,10 @@ struct TypeEnv {
     vars: HashMap<String, Typ>,
 }
 
+fn basename(path: &str) -> &str {
+    path.rsplit("::").next().unwrap_or(path)
+}
+
 fn types_equal(a: &Typ, b: &Typ) -> bool {
     // Generic-param equivalence: a bare `TStruct{name:"T"}` (no fields, no
     // type args) that names a generic type parameter is the same type as the
@@ -155,7 +159,12 @@ fn types_equal(a: &Typ, b: &Typ) -> bool {
                 ..
             },
         ) => {
-            n1 == n2
+            // Compare by the type's base name so that a cross-module reference
+            // (e.g. `std::option::Option`) and the same type produced inside
+            // its own module (e.g. `Option`) are treated as equal. Module
+            // qualification is purely a namespacing prefix; the underlying
+            // type identity is the final path segment.
+            basename(n1) == basename(n2)
                 && ta1.len() == ta2.len()
                 && ta1
                     .iter()
@@ -513,7 +522,7 @@ fn infer_type(
                         (Typ::TInvalid, errs)
                     }
                 }
-                BinOp::Sub | BinOp::Mul => {
+                BinOp::Sub | BinOp::Mul | BinOp::Div => {
                     if !is_numeric(&lt) || !is_numeric(&rt) {
                         errs.push(Error::new(
                             "E0014",

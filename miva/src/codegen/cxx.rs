@@ -59,8 +59,8 @@ pub fn cxx_type(typ: &Typ) -> String {
 
 fn cxx_param(param: &Param) -> String {
     match param {
-        Param::PRef { name, typ } => format!("{}& {}", cxx_type(typ), name),
-        Param::POwn { name, typ } => format!("{} {}", cxx_type(typ), name),
+        Param::PRef { name, typ } => format!("{}& {}", cxx_type(typ), mangle_cpp_kw(name)),
+        Param::POwn { name, typ } => format!("{} {}", cxx_type(typ), mangle_cpp_kw(name)),
     }
 }
 
@@ -74,6 +74,24 @@ fn cxx_func_decl(name: &str, params: &[Param], ret: &Option<Typ>) -> String {
 /// C++ compiles. `new`, `delete`, `class`, `template`, `typename`, etc. get an
 /// `mvp_` prefix. Applied to every function/definition name we emit and every
 /// call name we reference, so caller and callee stay in sync.
+fn is_panic(e: &Expr) -> bool {
+    match e {
+        Expr::ECall { name, .. } if name == "panic" => true,
+        // A block whose only meaningful effect is a `panic(...)` call counts as
+        // a panic branch — this is how `when (cond) { panic("..."); }` is
+        // parsed: the `{ ... }` is an `EBlock` wrapping the call.
+        Expr::EBlock { stmts, result, .. } => {
+            result.is_none()
+                && stmts.iter().any(|s| match s {
+                    Stmt::SExpr { expr, .. } => is_panic(expr),
+                    Stmt::SReturn { expr, .. } => is_panic(expr),
+                    _ => false,
+                })
+        }
+        _ => false,
+    }
+}
+
 fn mangle_cpp_kw(name: &str) -> String {
     // Only mangle the bare (last) identifier — qualified names like
     // `mvp_std::mem::offset` have namespace separators we must preserve.
@@ -223,11 +241,11 @@ fn analyze_block(body: &Expr, depth: usize, ret_type: &str) -> Option<BlockFlow>
         Expr::EBlock { stmts, result, .. } => {
             let inner = depth + 1;
             if ret_type == "mvp_builtin_unit" {
-                let stmt_strs: Vec<_> = stmts.iter().map(|s| cxx_stmt(inner, s)).collect();
+                let stmt_strs: Vec<_> = stmts.iter().map(|s| cxx_stmt(inner, s, None)).collect();
 
                 let ret = match result {
                     Some(expr) => {
-                        format!("{}return {};\n", indent_str(inner), cxx_expr(expr, inner))
+                        format!("{}return {};\n", indent_str(inner), cxx_expr(expr, inner, None))
                     }
                     None => format!("{}return mvp_builtin_void;\n", indent_str(inner)),
                 };
@@ -239,11 +257,11 @@ fn analyze_block(body: &Expr, depth: usize, ret_type: &str) -> Option<BlockFlow>
                 let (stmts_out, last_expr) = take_last_expr(stmts, inner);
                 let ret = match result {
                     Some(expr) => {
-                        format!("{}return {};\n", indent_str(inner), cxx_expr(expr, inner))
+                        format!("{}return {};\n", indent_str(inner), cxx_expr(expr, inner, Some(ret_type)))
                     }
                     None => match last_expr {
                         Some(expr) => {
-                            format!("{}return {};\n", indent_str(inner), cxx_expr(&expr, inner))
+                            format!("{}return {};\n", indent_str(inner), cxx_expr(&expr, inner, Some(ret_type)))
                         }
                         None => String::new(),
                     },
@@ -266,14 +284,14 @@ fn take_last_expr(stmts: &[Stmt], depth: usize) -> (Vec<String>, Option<Expr>) {
         .unwrap_or(false);
     if last_is_expr {
         if let Some(Stmt::SExpr { expr, .. }) = rev.pop() {
-            let out: Vec<_> = rev.iter().map(|s| cxx_stmt(depth, s)).collect();
+            let out: Vec<_> = rev.iter().map(|s| cxx_stmt(depth, s, None)).collect();
             return (out, Some(*expr));
         }
     }
-    (stmts.iter().map(|s| cxx_stmt(depth, s)).collect(), None)
+    (stmts.iter().map(|s| cxx_stmt(depth, s, None)).collect(), None)
 }
 
-fn cxx_expr(expr: &Expr, depth: usize) -> String {
+fn cxx_expr(expr: &Expr, depth: usize, expected_type: Option<&str>) -> String {
     match expr {
         Expr::EInt { value, .. } => format!("static_cast<mvp_builtin_int>({})", value),
         Expr::EBool { value, .. } => format!(
@@ -285,19 +303,19 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
         Expr::EString { value, .. } => {
             format!("mvp_builtin_string(\"{}\")", cxx_escape_string(value))
         }
-        Expr::EVar { name, .. } => name.clone(),
-        Expr::EMove { name, .. } => format!("std::move({})", name),
-        Expr::EClone { name, .. } => format!("decltype({})({})", name, name),
+        Expr::EVar { name, .. } => mangle_cpp_kw(name),
+        Expr::EMove { name, .. } => format!("std::move({})", mangle_cpp_kw(name)),
+        Expr::EClone { name, .. } => format!("decltype({})({})", mangle_cpp_kw(name), mangle_cpp_kw(name)),
 
         Expr::EStructLit {
             name,
             fields,
             type_args,
             ..
-        } => cxx_struct_lit(name, type_args, fields, depth),
+        } => cxx_struct_lit(name, type_args, fields, depth, expected_type),
         Expr::EFieldAccess { expr, field, .. } => {
             if field.chars().all(|c| c.is_ascii_digit()) {
-                format!("{}.__payload.field{}", cxx_expr(expr, depth), field)
+                format!("{}.__payload.field{}", cxx_expr(expr, depth, expected_type), field)
             } else if let Expr::EVar { name: enum_name, .. } = expr.as_ref() {
                 if enum_name.chars().next().map_or(false, |c| c.is_uppercase()) {
                     // Enum discriminant: `Shape.Circle` in a `when (Shape.Circle)`
@@ -306,29 +324,29 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
                     // uppercase in Miva, so `p.x` (lowercase var) stays `p.x`.
                     format!("{}_{}()", enum_name, field)
                 } else {
-                    format!("{}.{}", cxx_expr(expr, depth), field)
+                    format!("{}.{}", cxx_expr(expr, depth, expected_type), field)
                 }
             } else {
-                format!("{}.{}", cxx_expr(expr, depth), field)
+                format!("{}.{}", cxx_expr(expr, depth, expected_type), field)
             }
         }
         Expr::EBinOp {
             op, left, right, ..
-        } => cxx_binop(op, left, right, depth),
+        } => cxx_binop(op, left, right, depth, expected_type),
         Expr::EIf {
             cond, then, else_, ..
-        } => cxx_if(cond, then, else_, depth),
-        Expr::EWhile { cond, body, .. } => cxx_while(cond, body, depth),
-        Expr::ELoop { body, .. } => cxx_loop(body, depth),
+        } => cxx_if(cond, then, else_, depth, expected_type),
+        Expr::EWhile { cond, body, .. } => cxx_while(cond, body, depth, expected_type),
+        Expr::ELoop { body, .. } => cxx_loop(body, depth, expected_type),
         Expr::EFor {
             var, range, body, ..
-        } => cxx_for(var, range, body, depth),
+        } => cxx_for(var, range, body, depth, expected_type),
         Expr::ECall {
             name,
             type_args,
             args,
             ..
-        } => cxx_call(name, args, type_args, depth),
+        } => cxx_call(name, args, type_args, depth, expected_type),
         Expr::ECast { expr, to, .. } => {
             // Integer <-> pointer reinterpret needs reinterpret_cast (static_cast
             // between int and void* is not legal C++). All other casts go
@@ -337,22 +355,22 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
                 || matches!(expr.as_ref(), Expr::EVar { .. });
             let is_ptr_cast = matches!(to, Typ::TPtrAny) || from_int && matches!(to, Typ::TPtrAny);
             if is_ptr_cast {
-                format!("reinterpret_cast<{}>({})", cxx_type(to), cxx_expr(expr, depth))
+                format!("reinterpret_cast<{}>({})", cxx_type(to), cxx_expr(expr, depth, expected_type))
             } else {
-                format!("static_cast<{}>({})", cxx_type(to), cxx_expr(expr, depth))
+                format!("static_cast<{}>({})", cxx_type(to), cxx_expr(expr, depth, expected_type))
             }
         }
-        Expr::EBlock { stmts, result, .. } => cxx_block(stmts, result, depth),
+        Expr::EBlock { stmts, result, .. } => cxx_block(stmts, result, depth, expected_type),
         Expr::EChoose {
             var,
             cases,
             otherwise,
             ..
-        } => cxx_choose(var, cases, otherwise, depth),
-        Expr::EArrayLit { values, .. } => cxx_array_lit(values, depth),
+        } => cxx_choose(var, cases, otherwise, depth, expected_type),
+        Expr::EArrayLit { values, .. } => cxx_array_lit(values, depth, expected_type),
         Expr::EVoid { .. } => "mvp_builtin_void".into(),
-        Expr::EAddr { expr, .. } => format!("&({})", cxx_expr(expr, depth)),
-        Expr::EDeref { expr, .. } => format!("*({})", cxx_expr(expr, depth)),
+        Expr::EAddr { expr, .. } => format!("&({})", cxx_expr(expr, depth, expected_type)),
+        Expr::EDeref { expr, .. } => format!("*({})", cxx_expr(expr, depth, expected_type)),
         Expr::EMacro { .. } => String::new(),
         Expr::EMacroVar { .. } => unreachable!(),
         Expr::EMethodCall { .. } => unreachable!(),
@@ -362,11 +380,12 @@ fn cxx_expr(expr: &Expr, depth: usize) -> String {
     }
 }
 
-fn cxx_binop(op: &BinOp, left: &Expr, right: &Expr, depth: usize) -> String {
+fn cxx_binop(op: &BinOp, left: &Expr, right: &Expr, depth: usize, expected_type: Option<&str>) -> String {
     let op_str = match op {
         BinOp::Add => " + ",
         BinOp::Sub => " - ",
         BinOp::Mul => " * ",
+        BinOp::Div => " / ",
         BinOp::Eq => " == ",
         BinOp::Neq => " != ",
         BinOp::Lt => " < ",
@@ -379,14 +398,14 @@ fn cxx_binop(op: &BinOp, left: &Expr, right: &Expr, depth: usize) -> String {
     };
     format!(
         "({}{}{})",
-        cxx_expr(left, depth),
+        cxx_expr(left, depth, expected_type),
         op_str,
-        cxx_expr(right, depth)
+        cxx_expr(right, depth, expected_type)
     )
 }
 
-fn cxx_call(name: &str, args: &[Expr], type_args: &[Typ], depth: usize) -> String {
-    let args_strs: Vec<_> = args.iter().map(|a| cxx_expr(a, depth)).collect();
+fn cxx_call(name: &str, args: &[Expr], type_args: &[Typ], depth: usize, expected_type: Option<&str>) -> String {
+    let args_strs: Vec<_> = args.iter().map(|a| cxx_expr(a, depth, expected_type)).collect();
     let type_arg_str = if type_args.is_empty() {
         String::new()
     } else {
@@ -419,11 +438,11 @@ fn cxx_call(name: &str, args: &[Expr], type_args: &[Typ], depth: usize) -> Strin
     )
 }
 
-fn cxx_if(cond: &Expr, then: &Expr, else_: &Option<Box<Expr>>, depth: usize) -> String {
-    let cond_str = cxx_expr(cond, depth);
-    let then_str = cxx_expr(then, depth + 1);
+fn cxx_if(cond: &Expr, then: &Expr, else_: &Option<Box<Expr>>, depth: usize, expected_type: Option<&str>) -> String {
+    let cond_str = cxx_expr(cond, depth, expected_type);
+    let then_str = cxx_expr(then, depth + 1, expected_type);
     let else_str = match else_ {
-        Some(e) => format!(" else {{ {}; }}", cxx_expr(e, depth + 1)),
+        Some(e) => format!(" else {{ {}; }}", cxx_expr(e, depth + 1, expected_type)),
         None => String::new(),
     };
     // Lambda returns void explicitly: when the if-condition is false and
@@ -440,27 +459,27 @@ fn cxx_if(cond: &Expr, then: &Expr, else_: &Option<Box<Expr>>, depth: usize) -> 
     )
 }
 
-fn cxx_while(cond: &Expr, body: &Expr, depth: usize) -> String {
-    let cond_str = cxx_expr(cond, depth);
-    let body_str = cxx_expr(body, depth + 1);
+fn cxx_while(cond: &Expr, body: &Expr, depth: usize, expected_type: Option<&str>) -> String {
+    let cond_str = cxx_expr(cond, depth, expected_type);
+    let body_str = cxx_expr(body, depth + 1, expected_type);
     format!("([&]() {{ while ({}) {{ {} ;}}}})()", cond_str, body_str)
 }
 
-fn cxx_loop(body: &Expr, depth: usize) -> String {
-    let body_str = cxx_expr(body, depth + 1);
+fn cxx_loop(body: &Expr, depth: usize, expected_type: Option<&str>) -> String {
+    let body_str = cxx_expr(body, depth + 1, expected_type);
     format!("([&]() {{ for (;;) {{ {} ;}}}})()", body_str)
 }
 
-fn cxx_for(var: &str, range: &Expr, body: &Expr, depth: usize) -> String {
-    let range_str = cxx_expr(range, depth);
-    let body_str = cxx_expr(body, depth + 1);
+fn cxx_for(var: &str, range: &Expr, body: &Expr, depth: usize, expected_type: Option<&str>) -> String {
+    let range_str = cxx_expr(range, depth, expected_type);
+    let body_str = cxx_expr(body, depth + 1, expected_type);
     format!(
         "([&]() {{ for (const auto& {} : {}) {{ {} ;}}}})()",
         var, range_str, body_str
     )
 }
 
-fn cxx_struct_lit(name: &str, type_args: &[Typ], fields: &[ValueField], depth: usize) -> String {
+fn cxx_struct_lit(name: &str, type_args: &[Typ], fields: &[ValueField], depth: usize, expected_type: Option<&str>) -> String {
     let type_name = if type_args.is_empty() {
         name.to_string()
     } else {
@@ -477,7 +496,7 @@ fn cxx_struct_lit(name: &str, type_args: &[Typ], fields: &[ValueField], depth: u
         let temp = "__temp";
         let inits: Vec<_> = fields
             .iter()
-            .map(|f| format!("{}.{} = {}", temp, f.name, cxx_expr(&f.value, depth + 1)))
+            .map(|f| format!("{}.{} = {}", temp, f.name, cxx_expr(&f.value, depth + 1, expected_type)))
             .collect();
         format!(
             "([&]() {{ {} {}={{}}; {}; return {}; }}())",
@@ -494,26 +513,104 @@ fn cxx_choose(
     cases: &[WhenCase],
     otherwise: &Option<Box<Expr>>,
     depth: usize,
+    expected_type: Option<&str>,
 ) -> String {
-    let var_str = cxx_expr(var, depth);
+    let var_str = cxx_expr(var, depth, expected_type);
     let ind = indent_str(depth);
     let inner = depth + 1;
+    // When a `panic(...)` branch is present, mixing it with a value-returning
+    // branch makes g++'s outer lambda infer `void` (the panic branch has no
+    // `return`; the value branch has one). To prevent the lambda from being
+    // typed `void` (which then collides with the surrounding `return` site),
+    // we explicitly type the outer lambda to `expected_type` (the caller's
+    // expected return type) and emit `mvp_panic(...)` as a bare `noreturn`
+    // statement followed by a phantom `return <expected_type>();` so the
+    // branch satisfies the typed lambda's return slot without actually
+    // returning. This keeps each branch's emitted C++ self-consistent.
+    let has_panic = cases.iter().any(|c| is_panic(&c.then))
+        || otherwise.as_ref().map_or(false, |e| is_panic(e));
+    // Type the outer lambda to `expected_type` whenever it's known so that
+    // branches with different C++ types (e.g. `bool` from `==` vs
+    // `mvp_builtin_boolean` from a literal) don't make g++ infer a conflict
+    // and reject the lambda. When the call site doesn't know the type, fall
+    // back to auto-deduction.
+    let ret_suffix = match expected_type {
+        Some(t) => format!(" -> {} ", t),
+        None => String::new(),
+    };
+    let phantom_return = |t: &str| -> String { format!("return {}();", t) };
+    // Cast a value-bearing branch's expression to the outer lambda's return
+    // type so each branch emits `return <t>(<expr>);` — needed when the
+    // branch's natural C++ type differs from the lambda's (e.g. a `==`
+    // comparison producing `bool` while the lambda expects `mvp_builtin_boolean`).
+    let cast = |t: &str, e: &str| -> String { format!("static_cast<{}>({})", t, e) };
+    let branch_body = |e: &Expr| -> String {
+        if is_panic(e) {
+            if let Some(t) = expected_type {
+                format!(
+                    "{}{}; {}",
+                    indent_str(inner),
+                    cxx_expr(e, inner, expected_type),
+                    phantom_return(t)
+                )
+            } else {
+                format!("{}{};", indent_str(inner), cxx_expr(e, inner, expected_type))
+            }
+        } else {
+            let inner_expr = cxx_expr(e, inner, expected_type);
+            match expected_type {
+                Some(t) => format!("{}return {};", indent_str(inner), cast(t, &inner_expr)),
+                None => format!("{}return {};", indent_str(inner), inner_expr),
+            }
+        }
+    };
     let cases_str: String = cases.iter().fold(String::new(), |acc, c| {
         let guard_str = match &c.guard {
-            Some(g) => format!(" && ({})", cxx_expr(g, depth)),
+            Some(g) => format!(" && ({})", cxx_expr(g, depth, expected_type)),
             None => String::new(),
         };
-        if let Expr::EEnumPattern {
-            enum_name,
-            variant,
-            bindings,
-            ..
-        } = c.when.as_ref()
-        {
-            // Destructuring pattern: `when (Enum.Variant(x, y))`.
-            // Compare tags, then bind each payload field to its name.
-            let disc = format!("{}.__tag == {}_{}_tag()", var_str, enum_name, variant);
-            let bind_str: String = bindings
+        // Two pattern shapes map to a tag comparison:
+        //   - `EEnumPattern { enum_name, variant, bindings, .. }`  (destructuring
+        //     with optional bindings — e.g. `Option.Some(v)`)
+        //   - `EFieldAccess { expr: EVar(enum_name), field: variant, .. }`
+        //     (no binding — e.g. bare `Option.Some`)
+        // In both cases we compare `var.__tag` to the tag constructor for the
+        // variant. Bindings are populated only for the `EEnumPattern` form.
+        let (tag_disc, binding_names) = match c.when.as_ref() {
+            Expr::EEnumPattern {
+                enum_name,
+                variant,
+                bindings,
+                ..
+            } => (
+                format!("{}.__tag == {}_{}_tag()", var_str, enum_name, variant),
+                bindings.clone(),
+            ),
+            Expr::EFieldAccess {
+                expr: inner_expr,
+                field: variant,
+                ..
+            } => {
+                if let Expr::EVar { name: enum_name, .. } = inner_expr.as_ref() {
+                    if enum_name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                        (
+                            format!("{}.__tag == {}_{}_tag()", var_str, enum_name, variant),
+                            Vec::new(),
+                        )
+                    } else {
+                        // Non-enum field access — treat as a value comparison
+                        // (the legacy code path will handle it via `value_str`).
+                        (String::new(), Vec::new())
+                    }
+                } else {
+                    (String::new(), Vec::new())
+                }
+            }
+            _ => (String::new(), Vec::new()),
+        };
+        if !tag_disc.is_empty() {
+            // Tag-based dispatch with optional destructuring.
+            let bind_str: String = binding_names
                 .iter()
                 .enumerate()
                 .map(|(i, b)| {
@@ -527,55 +624,74 @@ fn cxx_choose(
                     )
                 })
                 .collect();
-            let body_str = cxx_expr(&c.then, inner);
+            let body = branch_body(&c.then);
             match &c.guard {
                 Some(g) => {
-                    let guard_expr = cxx_expr(g, inner);
+                    let guard_expr = cxx_expr(g, inner, expected_type);
                     format!(
-                        "{}{}if ({}) {{\n{}{}if ({}) {{\n{}{}return {};\n{}}}\n{}}}\n",
+                        "{}{}if ({}) {{\n{}{}if ({}) {{\n{}{}\n{}}}\n{}}}\n",
                         acc,
                         ind,
-                        disc,
+                        tag_disc,
                         bind_str,
                         indent_str(inner),
                         guard_expr,
                         indent_str(inner),
-                        ind,
-                        body_str,
+                        body,
                         ind,
                         ind
                     )
                 }
                 None => {
                     format!(
-                        "{}{}if ({}) {{\n{}{}return {};\n{}}}\n",
+                        "{}{}if ({}) {{\n{}{}\n{}}}\n",
                         acc,
                         ind,
-                        disc,
+                        tag_disc,
                         bind_str,
-                        indent_str(inner),
-                        body_str,
+                        body,
                         ind
                     )
                 }
             }
         } else {
-            let value_str = cxx_expr(&c.when, depth);
-            let body_str = cxx_expr(&c.then, inner);
+            let value_str = cxx_expr(&c.when, depth, expected_type);
+            let body = branch_body(&c.then);
             format!(
-                "{}{}if (({} == {}){}) {{ return {}; }}\n",
-                acc, ind, var_str, value_str, guard_str, body_str
+                "{}{}if (({} == {}){}) {{ {} }}\n",
+                acc, ind, var_str, value_str, guard_str, body
             )
         }
     });
     let otherwise_str = match otherwise {
-        Some(e) => format!("{}else {{ return {}; }}", ind, cxx_expr(e, inner)),
+        Some(e) if is_panic(e) => {
+            if let Some(t) = expected_type {
+                format!(
+                    "{}else {{ {}; {} }}",
+                    ind,
+                    cxx_expr(e, inner, expected_type),
+                    phantom_return(t)
+                )
+            } else {
+                format!("{}else {{ {}; }}", ind, cxx_expr(e, inner, expected_type))
+            }
+        }
+        Some(e) => {
+            let inner_expr = cxx_expr(e, inner, expected_type);
+            match expected_type {
+                Some(t) => format!("{}else {{ return {}; }}", ind, cast(t, &inner_expr)),
+                None => format!("{}else {{ return {}; }}", ind, inner_expr),
+            }
+        }
         None => String::new(),
     };
-    format!("([&]() {{\n{}{}\n{}\n}}())", cases_str, otherwise_str, ind)
+    format!(
+        "([&](){} {{\n{}{}\n{}\n}}())",
+        ret_suffix, cases_str, otherwise_str, ind
+    )
 }
 
-fn cxx_block(stmts: &[Stmt], result: &Option<Box<Expr>>, depth: usize) -> String {
+fn cxx_block(stmts: &[Stmt], result: &Option<Box<Expr>>, depth: usize, expected_type: Option<&str>) -> String {
     let ind = indent_str(depth);
     let inner = depth + 1;
     let stmt_strs: String = stmts.iter().fold(String::new(), |acc, stmt| match stmt {
@@ -585,7 +701,7 @@ fn cxx_block(stmts: &[Stmt], result: &Option<Box<Expr>>, depth: usize) -> String
             expr,
             ..
         } => {
-            let expr_str = cxx_expr(expr, inner);
+            let expr_str = cxx_expr(expr, inner, expected_type);
             let mut_str = if *mutable { "auto " } else { "const auto " };
             format!(
                 "{}{}{}{} = {};\n",
@@ -599,7 +715,7 @@ fn cxx_block(stmts: &[Stmt], result: &Option<Box<Expr>>, depth: usize) -> String
         Stmt::SLetTyped {
             name, typ, expr, ..
         } => {
-            let expr_str = cxx_expr(expr, inner);
+            let expr_str = cxx_expr(expr, inner, expected_type);
             format!(
                 "{}{}{} {} = {};\n",
                 acc,
@@ -609,21 +725,21 @@ fn cxx_block(stmts: &[Stmt], result: &Option<Box<Expr>>, depth: usize) -> String
                 expr_str
             )
         }
-        _ => format!("{}{}", acc, cxx_stmt(inner, stmt)),
+        _ => format!("{}{}", acc, cxx_stmt(inner, stmt, expected_type)),
     });
     let result_str = match result {
-        Some(expr) => format!("{}return {};\n", indent_str(inner), cxx_expr(expr, inner)),
+        Some(expr) => format!("{}return {};\n", indent_str(inner), cxx_expr(expr, inner, expected_type)),
         None => String::new(),
     };
     format!("([&]() {{\n{}{}{}}})()", stmt_strs, result_str, ind)
 }
 
-fn cxx_array_lit(values: &[Expr], depth: usize) -> String {
-    let elems: Vec<_> = values.iter().map(|e| cxx_expr(e, depth)).collect();
+fn cxx_array_lit(values: &[Expr], depth: usize, expected_type: Option<&str>) -> String {
+    let elems: Vec<_> = values.iter().map(|e| cxx_expr(e, depth, expected_type)).collect();
     format!("std::vector{{{}}}", elems.join(", "))
 }
 
-fn cxx_stmt(depth: usize, stmt: &Stmt) -> String {
+fn cxx_stmt(depth: usize, stmt: &Stmt, expected_type: Option<&str>) -> String {
     let ind = indent_str(depth);
     match stmt {
         Stmt::SLet {
@@ -633,7 +749,7 @@ fn cxx_stmt(depth: usize, stmt: &Stmt) -> String {
             ..
         } => {
             let mut_str = if *mutable { "auto " } else { "const auto " };
-            format!("{}{}{} = {};\n", ind, mut_str, name, cxx_expr(expr, depth))
+            format!("{}{}{} = {};\n", ind, mut_str, name, cxx_expr(expr, depth, expected_type))
         }
         Stmt::SLetTyped {
             name, typ, expr, ..
@@ -643,17 +759,17 @@ fn cxx_stmt(depth: usize, stmt: &Stmt) -> String {
                 ind,
                 cxx_type(typ),
                 name,
-                cxx_expr(expr, depth)
+                cxx_expr(expr, depth, expected_type)
             )
         }
         Stmt::SReturn { expr, .. } => {
-            format!("{}return {};\n", ind, cxx_expr(expr, depth))
+            format!("{}return {};\n", ind, cxx_expr(expr, depth, expected_type))
         }
         Stmt::SExpr { expr, .. } => {
-            format!("{}{};\n", ind, cxx_expr(expr, depth))
+            format!("{}{};\n", ind, cxx_expr(expr, depth, expected_type))
         }
         Stmt::SAssign { name, expr, .. } => {
-            format!("{}{} = {};\n", ind, name, cxx_expr(expr, depth))
+            format!("{}{} = {};\n", ind, name, cxx_expr(expr, depth, expected_type))
         }
         Stmt::SFieldAssign { target, field, expr, .. } => {
             // `target.field = expr` → `(target).field = (expr);` in C++.
@@ -662,9 +778,9 @@ fn cxx_stmt(depth: usize, stmt: &Stmt) -> String {
             format!(
                 "{}({}).{} = ({});\n",
                 ind,
-                cxx_expr(target, depth),
+                cxx_expr(target, depth, expected_type),
                 field,
-                cxx_expr(expr, depth)
+                cxx_expr(expr, depth, expected_type)
             )
         }
         Stmt::SCIntro { .. } | Stmt::SEmpty { .. } => String::new(),
@@ -864,7 +980,7 @@ fn cxx_main_func(ind: String, inner: usize, body: &Expr) -> String {
         Expr::EBlock { stmts, .. } => {
             let stmt_strs: String = stmts
                 .iter()
-                .map(|s| cxx_stmt(inner, s))
+                .map(|s| cxx_stmt(inner, s, None))
                 .collect::<Vec<_>>()
                 .join("");
             let mut out = String::new();
@@ -882,7 +998,7 @@ fn cxx_main_func(ind: String, inner: usize, body: &Expr) -> String {
             "{} {} {{ {}; return mvp_builtin_void; }}\n\n",
             ind,
             signature,
-            cxx_expr(body, 0)
+            cxx_expr(body, 0, None)
         ),
     }
 }
@@ -939,19 +1055,24 @@ fn cxx_normal_func(
             )
         }
         _ => {
+            let expected = if ret_type == "mvp_builtin_unit" {
+                None
+            } else {
+                Some(ret_type.as_str())
+            };
             if ret_type == "mvp_builtin_unit" {
                 format!(
                     "{} {} {{ {}; return mvp_builtin_void; }}\n\n",
                     ind,
                     signature,
-                    cxx_expr(body, 0)
+                    cxx_expr(body, 0, expected)
                 )
             } else {
                 format!(
                     "{} {} {{ return {}; }}\n\n",
                     ind,
                     signature,
-                    cxx_expr(body, 0)
+                    cxx_expr(body, 0, expected)
                 )
             }
         }
@@ -971,10 +1092,15 @@ fn cxx_func_inner(ret_type: &str, body: &Expr, _depth: usize) -> String {
             format!("{}{}", flow.stmts.join(""), flow.ret_line)
         }
         _ => {
-            if ret_type == "mvp_builtin_unit" {
-                format!("{}; return mvp_builtin_void;\n", cxx_expr(body, 0))
+            let expected = if ret_type == "mvp_builtin_unit" {
+                None
             } else {
-                format!("return {};\n", cxx_expr(body, 0))
+                Some(ret_type)
+            };
+            if ret_type == "mvp_builtin_unit" {
+                format!("{}; return mvp_builtin_void;\n", cxx_expr(body, 0, expected))
+            } else {
+                format!("return {};\n", cxx_expr(body, 0, expected))
             }
         }
     }
@@ -1020,7 +1146,7 @@ fn cxx_async_func(
         let names: Vec<_> = params
             .iter()
             .map(|p| match p {
-                Param::PRef { name, .. } | Param::POwn { name, .. } => name.clone(),
+                Param::PRef { name, .. } | Param::POwn { name, .. } => mangle_cpp_kw(name),
             })
             .collect();
         format!("[{}]", names.join(", "))
@@ -1046,13 +1172,14 @@ fn cxx_impl(struct_name: &str, impls: &[ImplExpr], ind: String) -> String {
         let op = &impl_expr.op;
         let fn_name = &impl_expr.func;
         let ret_typ = match op {
-            ImplOp::ImAdd | ImplOp::ImSub | ImplOp::ImMul => struct_name.to_string(),
+            ImplOp::ImAdd | ImplOp::ImSub | ImplOp::ImMul | ImplOp::ImDiv => struct_name.to_string(),
             ImplOp::ImEq | ImplOp::ImNeq => "mvp_builtin_boolean".to_string(),
         };
         let operator = match op {
             ImplOp::ImAdd => "+",
             ImplOp::ImSub => "-",
             ImplOp::ImMul => "*",
+            ImplOp::ImDiv => "/",
             ImplOp::ImEq => "==",
             ImplOp::ImNeq => "!=",
         };
@@ -1160,7 +1287,7 @@ using namespace std;
                         indent_str(0)
                     )
                 }
-                _ => format!("{} {{ return {}; }}\n\n", signature, cxx_expr(expr, 0)),
+                _ => format!("{} {{ return {}; }}\n\n", signature, cxx_expr(expr, 0, Some("mvp_builtin_int"))),
             };
             body.push_str(&body_str);
         }
@@ -1431,7 +1558,7 @@ mod tests {
             loc: loc(),
             value: value.to_string(),
         };
-        let result = cxx_expr(&e, 0);
+        let result = cxx_expr(&e, 0, None);
         let prefix = "mvp_builtin_string(\"";
         let suffix = "\")";
         assert!(
@@ -1879,7 +2006,7 @@ mod tests {
             loc: loc(),
             value: 42,
         };
-        assert_eq!(cxx_expr(&e, 0), "static_cast<mvp_builtin_int>(42)");
+        assert_eq!(cxx_expr(&e, 0, None), "static_cast<mvp_builtin_int>(42)");
     }
 
     #[test]
@@ -1888,7 +2015,7 @@ mod tests {
             loc: loc(),
             value: -5,
         };
-        assert_eq!(cxx_expr(&e, 0), "static_cast<mvp_builtin_int>(-5)");
+        assert_eq!(cxx_expr(&e, 0, None), "static_cast<mvp_builtin_int>(-5)");
     }
 
     #[test]
@@ -1897,7 +2024,7 @@ mod tests {
             loc: loc(),
             value: true,
         };
-        assert_eq!(cxx_expr(&e, 0), "mvp_builtin_boolean(true)");
+        assert_eq!(cxx_expr(&e, 0, None), "mvp_builtin_boolean(true)");
     }
 
     #[test]
@@ -1906,7 +2033,7 @@ mod tests {
             loc: loc(),
             value: false,
         };
-        assert_eq!(cxx_expr(&e, 0), "mvp_builtin_boolean(false)");
+        assert_eq!(cxx_expr(&e, 0, None), "mvp_builtin_boolean(false)");
     }
 
     #[test]
@@ -1915,7 +2042,7 @@ mod tests {
             loc: loc(),
             value: 3.14,
         };
-        assert_eq!(cxx_expr(&e, 0), "mvp_builtin_float(3.14)");
+        assert_eq!(cxx_expr(&e, 0, None), "mvp_builtin_float(3.14)");
     }
 
     #[test]
@@ -1924,7 +2051,7 @@ mod tests {
             loc: loc(),
             value: 0.0,
         };
-        assert_eq!(cxx_expr(&e, 0), "mvp_builtin_float(0)");
+        assert_eq!(cxx_expr(&e, 0, None), "mvp_builtin_float(0)");
     }
 
     #[test]
@@ -1933,7 +2060,7 @@ mod tests {
             loc: loc(),
             value: "a".into(),
         };
-        assert_eq!(cxx_expr(&e, 0), "mvp_builtin_byte('a')");
+        assert_eq!(cxx_expr(&e, 0, None), "mvp_builtin_byte('a')");
     }
 
     #[test]
@@ -1942,7 +2069,7 @@ mod tests {
             loc: loc(),
             value: "hello".into(),
         };
-        assert_eq!(cxx_expr(&e, 0), "mvp_builtin_string(\"hello\")");
+        assert_eq!(cxx_expr(&e, 0, None), "mvp_builtin_string(\"hello\")");
     }
 
     #[test]
@@ -1951,7 +2078,7 @@ mod tests {
             loc: loc(),
             name: "x".into(),
         };
-        assert_eq!(cxx_expr(&e, 0), "x");
+        assert_eq!(cxx_expr(&e, 0, None), "x");
     }
 
     #[test]
@@ -1960,7 +2087,7 @@ mod tests {
             loc: loc(),
             name: "x".into(),
         };
-        assert_eq!(cxx_expr(&e, 0), "std::move(x)");
+        assert_eq!(cxx_expr(&e, 0, None), "std::move(x)");
     }
 
     #[test]
@@ -1969,13 +2096,13 @@ mod tests {
             loc: loc(),
             name: "x".into(),
         };
-        assert_eq!(cxx_expr(&e, 0), "decltype(x)(x)");
+        assert_eq!(cxx_expr(&e, 0, None), "decltype(x)(x)");
     }
 
     #[test]
     fn test_cxx_expr_void() {
         let e = Expr::EVoid { loc: loc() };
-        assert_eq!(cxx_expr(&e, 0), "mvp_builtin_void");
+        assert_eq!(cxx_expr(&e, 0, None), "mvp_builtin_void");
     }
 
     #[test]
@@ -1987,7 +2114,7 @@ mod tests {
                 name: "x".into(),
             }),
         };
-        assert_eq!(cxx_expr(&e, 0), "&(x)");
+        assert_eq!(cxx_expr(&e, 0, None), "&(x)");
     }
 
     #[test]
@@ -1999,7 +2126,7 @@ mod tests {
                 name: "p".into(),
             }),
         };
-        assert_eq!(cxx_expr(&e, 0), "*(p)");
+        assert_eq!(cxx_expr(&e, 0, None), "*(p)");
     }
 
     #[test]
@@ -2009,7 +2136,7 @@ mod tests {
             name: "something".into(),
             args: vec![],
         };
-        assert_eq!(cxx_expr(&e, 0), "");
+        assert_eq!(cxx_expr(&e, 0, None), "");
     }
 
     #[test]
@@ -2022,7 +2149,7 @@ mod tests {
             }),
             field: "x".into(),
         };
-        assert_eq!(cxx_expr(&e, 0), "p.x");
+        assert_eq!(cxx_expr(&e, 0, None), "p.x");
     }
 
     #[test]
@@ -2036,7 +2163,7 @@ mod tests {
             to: Typ::TChar,
         };
         assert_eq!(
-            cxx_expr(&e, 0),
+            cxx_expr(&e, 0, None),
             "static_cast<mvp_builtin_byte>(static_cast<mvp_builtin_int>(65))"
         );
     }
@@ -2053,7 +2180,7 @@ mod tests {
             left: Box::new(left),
             right: Box::new(right),
         };
-        assert_eq!(cxx_expr(&e, 0), "(a + b)");
+        assert_eq!(cxx_expr(&e, 0, None), "(a + b)");
     }
 
     #[test]
@@ -2066,7 +2193,7 @@ mod tests {
             left: Box::new(left),
             right: Box::new(right),
         };
-        assert_eq!(cxx_expr(&e, 0), "(a - b)");
+        assert_eq!(cxx_expr(&e, 0, None), "(a - b)");
     }
 
     #[test]
@@ -2079,7 +2206,7 @@ mod tests {
             left: Box::new(left),
             right: Box::new(right),
         };
-        assert_eq!(cxx_expr(&e, 0), "(a * b)");
+        assert_eq!(cxx_expr(&e, 0, None), "(a * b)");
     }
 
     #[test]
@@ -2092,7 +2219,7 @@ mod tests {
             left: Box::new(left),
             right: Box::new(right),
         };
-        assert_eq!(cxx_expr(&e, 0), "(a == b)");
+        assert_eq!(cxx_expr(&e, 0, None), "(a == b)");
     }
 
     #[test]
@@ -2105,14 +2232,14 @@ mod tests {
             left: Box::new(left),
             right: Box::new(right),
         };
-        assert_eq!(cxx_expr(&e, 0), "(a != b)");
+        assert_eq!(cxx_expr(&e, 0, None), "(a != b)");
     }
 
     // ===== cxx_call =====
 
     #[test]
     fn test_cxx_call_no_args() {
-        let result = cxx_call("foo", &[], &[], 0);
+        let result = cxx_call("foo", &[], &[], 0, None);
         assert_eq!(result, "foo()");
     }
 
@@ -2122,7 +2249,7 @@ mod tests {
             Expr::EVar { loc: loc(), name: "x".into() },
             Expr::EInt { loc: loc(), value: 1 },
         ];
-        let result = cxx_call("add", &args, &[], 0);
+        let result = cxx_call("add", &args, &[], 0, None);
         assert_eq!(result, "add(x, static_cast<mvp_builtin_int>(1))");
     }
 
@@ -2131,7 +2258,7 @@ mod tests {
         let args = vec![
             Expr::EString { loc: loc(), value: "hello".into() },
         ];
-        let result = cxx_call("print", &args, &[], 0);
+        let result = cxx_call("print", &args, &[], 0, None);
         assert_eq!(result, "mvp_print(mvp_builtin_string(\"hello\"))");
     }
 
@@ -2147,7 +2274,7 @@ mod tests {
             then: Box::new(then),
             else_: None,
         };
-        let result = cxx_expr(&e, 0);
+        let result = cxx_expr(&e, 0, None);
         assert!(result.starts_with("([&]() { if ("));
         assert!(result.contains("true"));
         assert!(result.contains("1"));
@@ -2164,7 +2291,7 @@ mod tests {
             then: Box::new(then),
             else_: Some(Box::new(else_)),
         };
-        let result = cxx_expr(&e, 0);
+        let result = cxx_expr(&e, 0, None);
         assert!(result.contains("else"));
     }
 
@@ -2191,7 +2318,7 @@ mod tests {
             }],
             otherwise: Some(Box::new(Expr::EInt { loc: loc(), value: 0 })),
         };
-        let result = cxx_expr(&e, 0);
+        let result = cxx_expr(&e, 0, None);
         assert!(result.contains("&&"), "expected guard && in: {}", result);
         assert!(result.contains("x >"), "expected guard comparison in: {}", result);
     }
@@ -2204,6 +2331,7 @@ mod tests {
             &Expr::EBool { loc: loc(), value: true },
             &Expr::EVoid { loc: loc() },
             0,
+            None,
         );
         assert!(result.starts_with("([&]() { while ("));
     }
@@ -2212,7 +2340,7 @@ mod tests {
 
     #[test]
     fn test_cxx_loop_basic() {
-        let result = cxx_loop(&Expr::EVoid { loc: loc() }, 0);
+        let result = cxx_loop(&Expr::EVoid { loc: loc() }, 0, None);
         assert!(result.starts_with("([&]() { for (;;) {"));
     }
 
@@ -2225,6 +2353,7 @@ mod tests {
             &Expr::EVar { loc: loc(), name: "range".into() },
             &Expr::EVoid { loc: loc() },
             0,
+            None,
         );
         assert!(result.starts_with("([&]() { for (const auto& i : range) {"));
     }
@@ -2233,7 +2362,7 @@ mod tests {
 
     #[test]
     fn test_cxx_array_lit_empty() {
-        assert_eq!(cxx_array_lit(&[], 0), "std::vector{}");
+        assert_eq!(cxx_array_lit(&[], 0, None), "std::vector{}");
     }
 
     #[test]
@@ -2242,7 +2371,7 @@ mod tests {
             Expr::EInt { loc: loc(), value: 1 },
             Expr::EInt { loc: loc(), value: 2 },
         ];
-        let result = cxx_array_lit(&values, 0);
+        let result = cxx_array_lit(&values, 0, None);
         assert_eq!(
             result,
             "std::vector{static_cast<mvp_builtin_int>(1), static_cast<mvp_builtin_int>(2)}"
@@ -2260,7 +2389,7 @@ mod tests {
             expr: Box::new(Expr::EInt { loc: loc(), value: 5 }),
         };
         assert_eq!(
-            cxx_stmt(0, &stmt),
+            cxx_stmt(0, &stmt, None),
             "auto x = static_cast<mvp_builtin_int>(5);\n"
         );
     }
@@ -2274,7 +2403,7 @@ mod tests {
             expr: Box::new(Expr::EInt { loc: loc(), value: 5 }),
         };
         assert_eq!(
-            cxx_stmt(0, &stmt),
+            cxx_stmt(0, &stmt, None),
             "const auto x = static_cast<mvp_builtin_int>(5);\n"
         );
     }
@@ -2286,7 +2415,7 @@ mod tests {
             expr: Box::new(Expr::EInt { loc: loc(), value: 0 }),
         };
         assert_eq!(
-            cxx_stmt(0, &stmt),
+            cxx_stmt(0, &stmt, None),
             "return static_cast<mvp_builtin_int>(0);\n"
         );
     }
@@ -2306,7 +2435,7 @@ mod tests {
             }),
         };
         assert_eq!(
-            cxx_stmt(0, &stmt),
+            cxx_stmt(0, &stmt, None),
             "mvp_print(mvp_builtin_string(\"hi\"));\n"
         );
     }
@@ -2319,7 +2448,7 @@ mod tests {
             expr: Box::new(Expr::EInt { loc: loc(), value: 10 }),
         };
         assert_eq!(
-            cxx_stmt(0, &stmt),
+            cxx_stmt(0, &stmt, None),
             "x = static_cast<mvp_builtin_int>(10);\n"
         );
     }
@@ -2333,7 +2462,7 @@ mod tests {
             expr: Box::new(Expr::EInt { loc: loc(), value: 5 }),
         };
         assert_eq!(
-            cxx_stmt(0, &stmt),
+            cxx_stmt(0, &stmt, None),
             "mvp_builtin_int x = static_cast<mvp_builtin_int>(5);\n"
         );
     }
@@ -2364,7 +2493,7 @@ mod tests {
             Expr::EVar { loc: loc(), name: "Box".into() },
             Expr::EInt { loc: loc(), value: 5 },
         ];
-        let result = cxx_call("Value", &args, &[Typ::TInt], 0);
+        let result = cxx_call("Value", &args, &[Typ::TInt], 0, None);
         assert_eq!(result, "Box_Value<mvp_builtin_int>(static_cast<mvp_builtin_int>(5))");
     }
 }

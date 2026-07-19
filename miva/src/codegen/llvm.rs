@@ -294,7 +294,15 @@ struct LlvmCtx {
     tmp_counter: usize,
     string_constants: String,
     current_module: Option<String>,
-    var_decls: HashMap<String, usize>,
+    /// Per-variable counter used to generate unique local SSA names for
+    /// allocas and reloads (`s.addr.N` / `s.r.N`). Bumped on every fresh
+    /// alloca or reload so the same variable can be re-declared or
+    /// re-assigned without name collisions. Single global counter — earlier
+    /// the per-name `var_decls` map and the global `tmp_counter` were both
+    /// used to produce `.reload.N` suffixes, which could collide when the
+    /// 20th `SLet` for `s` (suffix 19) shared a number with an earlier
+    /// `SAssign` reload that also landed on suffix 19.
+    var_seq: HashMap<String, usize>,
     var_addrs: HashMap<String, String>,
     var_reloads: HashMap<String, String>,
     struct_field_map: HashMap<String, HashMap<String, usize>>,
@@ -324,7 +332,7 @@ impl LlvmCtx {
             tmp_counter: 0,
             string_constants: String::new(),
             current_module: None,
-            var_decls: HashMap::new(),
+            var_seq: HashMap::new(),
             var_addrs: HashMap::new(),
             var_reloads: HashMap::new(),
             struct_field_map: HashMap::new(),
@@ -348,7 +356,7 @@ impl LlvmCtx {
             tmp_counter: 0,
             string_constants: String::new(),
             current_module: module.map(|m| m.to_string()),
-            var_decls: HashMap::new(),
+            var_seq: HashMap::new(),
             var_addrs: HashMap::new(),
             var_reloads: HashMap::new(),
             struct_field_map: HashMap::new(),
@@ -377,7 +385,7 @@ impl LlvmCtx {
             tmp_counter: 0,
             string_constants: String::new(),
             current_module: module.map(|m| m.to_string()),
-            var_decls: HashMap::new(),
+            var_seq: HashMap::new(),
             var_addrs: HashMap::new(),
             var_reloads: HashMap::new(),
             struct_field_map,
@@ -406,10 +414,16 @@ impl LlvmCtx {
         "  ".repeat(self.indent)
     }
 
+    /// Reserve a fresh alloca + initial reload name for `name`. Every call
+    /// (SLet, for-loop iteration, etc.) gets a unique `(addr, reload)` pair
+    /// driven by the per-variable `var_seq` counter so re-declarations of the
+    /// same name in the same function never collide with each other or with
+    /// reloads produced by SAssign / emit_fresh_loads (which all live in the
+    /// same `s.r.N` namespace).
     fn declare_var(&mut self, name: &str) -> (String, String) {
-        let count = self.var_decls.entry(name.to_string()).or_insert(0);
+        let count = self.var_seq.entry(name.to_string()).or_insert(0);
         let addr = format!("{}.addr.{}", name, count);
-        let reload = format!("{}.reload.{}", name, count);
+        let reload = format!("{}.r.{}", name, count);
         self.var_addrs.insert(name.to_string(), addr.clone());
         self.var_reloads.insert(name.to_string(), reload.clone());
         *count += 1;
@@ -609,8 +623,12 @@ fn expr_numeric_kind(expr: &Expr, ctx: &LlvmCtx) -> NumKind {
 fn emit_fresh_loads(ctx: &mut LlvmCtx, body: &mut String, before: &HashMap<String, String>, names: &[String]) {
     for name in names {
         let addr = ctx.get_var_addr(name);
-        let new_reload = format!("{}.reload.{}", name, ctx.tmp_counter);
-        ctx.tmp_counter += 1;
+        // Use the per-variable seq counter so we stay inside the same
+        // `s.r.N` namespace that `declare_var` and `SAssign` use, avoiding
+        // collisions with `tmp_counter`-derived names.
+        let count = ctx.var_seq.entry(name.to_string()).or_insert(0);
+        let new_reload = format!("{}.r.{}", name, count);
+        *count += 1;
         body.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", new_reload, addr));
         ctx.var_reloads.insert(name.clone(), new_reload.clone());
         if before.get(name).map_or(false, |r| ctx.string_regs.contains(r)) {
@@ -708,6 +726,7 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
                 }
                 BinOp::Sub => { let tmp = ctx.gen_tmp("sub"); body.push_str(&format!("{}{} = sub i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); tmp }
                 BinOp::Mul => { let tmp = ctx.gen_tmp("mul"); body.push_str(&format!("{}{} = mul i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); tmp }
+                BinOp::Div => { let tmp = ctx.gen_tmp("div"); body.push_str(&format!("{}{} = sdiv i64 {}, {}\n", ctx.indent_str(), tmp, l, r)); tmp }
                 BinOp::Eq => {
                     if is_enum_value_expr(left.as_ref()) || is_enum_value_expr(right.as_ref()) {
                         let lt = load_enum_tag(ctx, body, &l);
@@ -1527,8 +1546,12 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut LlvmCtx, body: &mut String) {
             let val = gen_expr(expr, ctx, body);
             let addr = ctx.get_var_addr(name);
             body.push_str(&format!("  store i64 {}, ptr %{}, align 8\n", val, addr));
-            let reload_name = format!("{}.reload.{}", name, ctx.tmp_counter);
-            ctx.tmp_counter += 1;
+            // Stay inside the `s.r.N` namespace so re-declares of `s` (SLet
+            // via `var_seq`) and other fresh loads (`emit_fresh_loads`) can't
+            // land on the same suffix. `tmp_counter` would collide.
+            let count = ctx.var_seq.entry(name.to_string()).or_insert(0);
+            let reload_name = format!("{}.r.{}", name, count);
+            *count += 1;
             body.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", reload_name, addr));
             ctx.var_reloads.insert(name.clone(), reload_name.clone());
             if binding_is_string(expr, ctx) {

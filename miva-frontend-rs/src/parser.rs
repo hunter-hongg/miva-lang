@@ -512,6 +512,7 @@ impl<'input> Parser<'input> {
                         Token::OpAdd => ImplOp::ImAdd,
                         Token::OpSub => ImplOp::ImSub,
                         Token::OpMul => ImplOp::ImMul,
+                        Token::OpDiv => ImplOp::ImDiv,
                         Token::OpEq => ImplOp::ImEq,
                         Token::OpNeq => ImplOp::ImNeq,
                         _ => unreachable!(),
@@ -1338,7 +1339,7 @@ impl<'input> Parser<'input> {
             Token::AndAnd => 2,
             Token::EqEq | Token::Neq | Token::Lt | Token::Gt | Token::LtEq | Token::GtEq => 3,
             Token::Plus | Token::Minus => 4,
-            Token::Star => 5,
+            Token::Star | Token::Slash => 5,
             _ => 0,
         }
     }
@@ -1358,7 +1359,8 @@ impl<'input> Parser<'input> {
                 | Some(&Token::GtEq)
                 | Some(&Token::Plus)
                 | Some(&Token::Minus)
-                | Some(&Token::Star) => {
+                | Some(&Token::Star)
+                | Some(&Token::Slash) => {
                     let tok = self.peek_token()?.unwrap().clone();
                     tok
                 }
@@ -1380,6 +1382,7 @@ impl<'input> Parser<'input> {
                 Token::Plus => BinOp::Add,
                 Token::Minus => BinOp::Sub,
                 Token::Star => BinOp::Mul,
+                Token::Slash => BinOp::Div,
                 Token::EqEq => BinOp::Eq,
                 Token::Neq => BinOp::Neq,
                 Token::Lt => BinOp::Lt,

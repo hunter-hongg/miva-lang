@@ -91,6 +91,8 @@ pub enum BinOp {
     Sub,
     #[serde(rename = "mul")]
     Mul,
+    #[serde(rename = "div")]
+    Div,
     #[serde(rename = "eq")]
     Eq,
     #[serde(rename = "neq")]
@@ -183,6 +185,8 @@ pub enum ImplOp {
     ImSub,
     #[serde(rename = "op_mul")]
     ImMul,
+    #[serde(rename = "op_div")]
+    ImDiv,
     #[serde(rename = "op_eq")]
     ImEq,
     #[serde(rename = "op_neq")]

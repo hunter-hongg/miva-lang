@@ -62,7 +62,7 @@ inline mvp_builtin_string mvp_to_string(mvp_builtin_string const &v) {
     return v;
 }
 
-inline mvp_builtin_unit mvp_panic(mvp_builtin_string const &str) {
+[[noreturn]] inline mvp_builtin_unit mvp_panic(mvp_builtin_string const &str) {
   throw std::runtime_error(str);
 }
 
