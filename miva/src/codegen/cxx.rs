@@ -512,7 +512,7 @@ fn cxx_choose(
         {
             // Destructuring pattern: `when (Enum.Variant(x, y))`.
             // Compare tags, then bind each payload field to its name.
-            let disc = format!("{}_{}()", enum_name, variant);
+            let disc = format!("{}.__tag == {}_{}_tag()", var_str, enum_name, variant);
             let bind_str: String = bindings
                 .iter()
                 .enumerate()
@@ -532,10 +532,9 @@ fn cxx_choose(
                 Some(g) => {
                     let guard_expr = cxx_expr(g, inner);
                     format!(
-                        "{}{}if ({} == {}) {{\n{}{}if ({}) {{\n{}{}return {};\n{}}}\n{}}}\n",
+                        "{}{}if ({}) {{\n{}{}if ({}) {{\n{}{}return {};\n{}}}\n{}}}\n",
                         acc,
                         ind,
-                        var_str,
                         disc,
                         bind_str,
                         indent_str(inner),
@@ -549,10 +548,9 @@ fn cxx_choose(
                 }
                 None => {
                     format!(
-                        "{}{}if ({} == {}) {{\n{}{}return {};\n{}}}\n",
+                        "{}{}if ({}) {{\n{}{}return {};\n{}}}\n",
                         acc,
                         ind,
-                        var_str,
                         disc,
                         bind_str,
                         indent_str(inner),
@@ -799,6 +797,11 @@ fn cxx_enum_def(
         "{}{}struct {} {{\n{}mvp_builtin_int __tag;\n{}struct {{\n{}{}}} __payload;\n{}bool operator==(const {}& o) const {{ return __tag == o.__tag; }}\n{}bool operator!=(const {}& o) const {{ return __tag != o.__tag; }}\n{}}};\n\n",
         template, ind, name, indent_str(inner), indent_str(inner), payload_fields, indent_str(inner), indent_str(inner), name, indent_str(inner), name, ind
     );
+    let ret_ty = if type_params.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}<{}>", name, type_params.join(", "))
+    };
     let mut ctors = String::new();
     for (idx, v) in variants.iter().enumerate() {
         let params: Vec<String> = v
@@ -811,14 +814,14 @@ fn cxx_enum_def(
             .map(|i| format!("v.__payload.field{} = __a{};", i, i))
             .collect();
         let ctor = format!(
-            "{}inline {} {}_{}({}) {{\n{} {} v;\n{} v.__tag = {};\n{} {};\n{} return v;\n{}}}\n\n",
-            ind,
-            name,
+            "{}{}inline {} {}_{}({}) {{\n{} {} v;\n{} v.__tag = {};\n{} {};\n{} return v;\n{}}}\n\n",
+            template, ind,
+            ret_ty,
             name,
             v.name,
             params.join(", "),
             indent_str(inner),
-            name,
+            ret_ty,
             indent_str(inner),
             idx,
             indent_str(inner),
@@ -837,12 +840,22 @@ fn cxx_enum_def(
             continue;
         }
         let disc = format!(
-            "{}inline {} {}_{}() {{\n{} {} v;\n{} v.__tag = {};\n{} return v;\n{}}}\n\n",
-            ind, name, name, v.name, indent_str(inner), name, indent_str(inner), idx, indent_str(inner), ind
+            "{}{}inline {} {}_{}() {{\n{} {} v;\n{} v.__tag = {};\n{} return v;\n{}}}\n\n",
+            template, ind, ret_ty, name, v.name, indent_str(inner), ret_ty, indent_str(inner), idx, indent_str(inner), ind
         );
         ctors.push_str(&disc);
     }
-    struct_str + &ctors
+    // Tag accessor functions for pattern matching: `{name}_{variant}_tag()`
+    // returns the discriminant tag (i64) without needing type arguments, so
+    // generic enums can be matched in `when` without inferring `T`.
+    let mut tag_fns = String::new();
+    for (idx, v) in variants.iter().enumerate() {
+        tag_fns.push_str(&format!(
+            "{}inline mvp_builtin_int {}_{}_tag() {{ return {}; }}\n\n",
+            ind, name, v.name, idx
+        ));
+    }
+    struct_str + &ctors + &tag_fns
 }
 
 fn cxx_main_func(ind: String, inner: usize, body: &Expr) -> String {
@@ -2323,5 +2336,35 @@ mod tests {
             cxx_stmt(0, &stmt),
             "mvp_builtin_int x = static_cast<mvp_builtin_int>(5);\n"
         );
+    }
+
+    #[test]
+    fn test_cxx_generic_enum_def() {
+        use crate::ast::*;
+        let def = Def::DEnum {
+            loc: Loc { line: 1, col: 1 },
+            name: "Box".into(),
+            variants: vec![
+                EnumVariant { name: "Value".into(), payload: vec![Typ::TGenericParam { name: "T".into() }] },
+                EnumVariant { name: "Empty".into(), payload: vec![] },
+            ],
+            type_params: vec!["T".into()],
+        };
+        let out = cxx_def(&def, 0);
+        assert!(out.contains("template<typename T>"), "expected template header in:\n{}", out);
+        assert!(out.contains("struct Box"), "expected struct Box in:\n{}", out);
+        assert!(out.contains("inline Box<T> Box_Value(T __a0)"), "expected generic ctor in:\n{}", out);
+        assert!(out.contains("Box_Value_tag()"), "expected tag accessor in:\n{}", out);
+    }
+
+    #[test]
+    fn test_cxx_generic_enum_ctor_call() {
+        use crate::ast::*;
+        let args = vec![
+            Expr::EVar { loc: loc(), name: "Box".into() },
+            Expr::EInt { loc: loc(), value: 5 },
+        ];
+        let result = cxx_call("Value", &args, &[Typ::TInt], 0);
+        assert_eq!(result, "Box_Value<mvp_builtin_int>(static_cast<mvp_builtin_int>(5))");
     }
 }

@@ -3403,4 +3403,144 @@ mod tests {
         assert!(!errs.is_empty());
         assert!(errs.iter().any(|e| e.code == "E0016"));
     }
+
+    #[test]
+    fn test_generic_enum_typecheck_construct_and_match() {
+        use crate::ast::*;
+        let defs = vec![
+            Def::DEnum {
+                loc: Loc { line: 1, col: 1 },
+                name: "Box".into(),
+                variants: vec![
+                    EnumVariant { name: "Value".into(), payload: vec![Typ::TGenericParam { name: "T".into() }] },
+                    EnumVariant { name: "Empty".into(), payload: vec![] },
+                ],
+                type_params: vec!["T".into()],
+            },
+            Def::DFunc {
+                loc: Loc { line: 2, col: 1 },
+                name: "main".into(),
+                type_params: vec![],
+                params: vec![],
+                returns: Some(Typ::TInt),
+                body: Box::new(Expr::EBlock {
+                    loc: Loc { line: 3, col: 1 },
+                    stmts: vec![
+                        Stmt::SLetTyped {
+                            loc: Loc { line: 4, col: 1 },
+                            name: "b".into(),
+                            typ: Typ::TStruct { name: "Box".into(), fields: vec![], type_args: vec![Typ::TInt] },
+                            expr: Box::new(Expr::ECall {
+                                loc: Loc { line: 4, col: 1 },
+                                name: "Value".into(),
+                                type_args: vec![Typ::TInt],
+                                args: vec![
+                                    Expr::EVar { loc: Loc { line: 4, col: 1 }, name: "Box".into() },
+                                    Expr::EInt { loc: Loc { line: 4, col: 1 }, value: 1 },
+                                ],
+                            }),
+                        },
+                        Stmt::SExpr {
+                            loc: Loc { line: 5, col: 1 },
+                            expr: Box::new(Expr::EChoose {
+                                loc: Loc { line: 5, col: 1 },
+                                var: Box::new(Expr::EVar { loc: Loc { line: 5, col: 1 }, name: "b".into() }),
+                                cases: vec![
+                                    WhenCase {
+                                        when: Box::new(Expr::EEnumPattern {
+                                            loc: Loc { line: 6, col: 1 },
+                                            enum_name: "Box".into(),
+                                            variant: "Value".into(),
+                                            bindings: vec!["v".into()],
+                                        }),
+                                        guard: None,
+                                        then: Box::new(Expr::EVar { loc: Loc { line: 6, col: 1 }, name: "v".into() }),
+                                    },
+                                ],
+                                otherwise: Some(Box::new(Expr::EInt { loc: Loc { line: 7, col: 1 }, value: 0 })),
+                            }),
+                        },
+                        Stmt::SReturn {
+                            loc: Loc { line: 8, col: 1 },
+                            expr: Box::new(Expr::EInt { loc: Loc { line: 8, col: 1 }, value: 1 }),
+                        },
+                    ],
+                    result: Some(Box::new(Expr::EInt { loc: Loc { line: 9, col: 1 }, value: 0 })),
+                }),
+                safety: Safety::Safe,
+                is_async: false,
+            },
+        ];
+        let errs = check_program(&defs);
+        assert!(errs.is_empty(), "unexpected errors: {:?}", errs);
+    }
+
+    #[test]
+    fn test_generic_enum_type_mismatch() {
+        use crate::ast::*;
+        let defs = vec![
+            Def::DEnum {
+                loc: Loc { line: 1, col: 1 },
+                name: "Box".into(),
+                variants: vec![
+                    EnumVariant { name: "Value".into(), payload: vec![Typ::TGenericParam { name: "T".into() }] },
+                ],
+                type_params: vec!["T".into()],
+            },
+            Def::DFunc {
+                loc: Loc { line: 2, col: 1 },
+                name: "f".into(),
+                type_params: vec![],
+                params: vec![Param::POwn {
+                    name: "b".into(),
+                    typ: Typ::TStruct { name: "Box".into(), fields: vec![], type_args: vec![Typ::TInt] },
+                }],
+                returns: Some(Typ::TInt),
+                body: Box::new(Expr::EInt { loc: Loc { line: 3, col: 1 }, value: 0 }),
+                safety: Safety::Safe,
+                is_async: false,
+            },
+            Def::DFunc {
+                loc: Loc { line: 4, col: 1 },
+                name: "main".into(),
+                type_params: vec![],
+                params: vec![],
+                returns: Some(Typ::TInt),
+                body: Box::new(Expr::EBlock {
+                    loc: Loc { line: 5, col: 1 },
+                    stmts: vec![
+                        Stmt::SLetTyped {
+                            loc: Loc { line: 6, col: 1 },
+                            name: "b".into(),
+                            typ: Typ::TStruct { name: "Box".into(), fields: vec![], type_args: vec![Typ::TString] },
+                            expr: Box::new(Expr::ECall {
+                                loc: Loc { line: 6, col: 1 },
+                                name: "Value".into(),
+                                type_args: vec![Typ::TString],
+                                args: vec![
+                                    Expr::EVar { loc: Loc { line: 6, col: 1 }, name: "Box".into() },
+                                    Expr::EString { loc: Loc { line: 6, col: 1 }, value: "x".into() },
+                                ],
+                            }),
+                        },
+                        Stmt::SExpr {
+                            loc: Loc { line: 7, col: 1 },
+                            expr: Box::new(Expr::ECall {
+                                loc: Loc { line: 7, col: 1 },
+                                name: "f".into(),
+                                type_args: vec![],
+                                args: vec![Expr::EVar { loc: Loc { line: 7, col: 1 }, name: "b".into() }],
+                            }),
+                        },
+                    ],
+                    result: Some(Box::new(Expr::EInt { loc: Loc { line: 8, col: 1 }, value: 0 })),
+                }),
+                safety: Safety::Safe,
+                is_async: false,
+            },
+        ];
+        let errs = check_program(&defs);
+        assert!(!errs.is_empty(), "expected a type error but got none");
+        assert!(errs.iter().any(|e| e.code == "E0016"));
+    }
 }

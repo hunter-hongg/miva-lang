@@ -1,0 +1,24 @@
+module main;
+
+Box[T] = enum {
+    Value(T),
+    Empty
+}
+
+main = () => {
+    let b Box[int] = Box.Value(42);
+    choose (b) {
+        when (Box.Value(v)) { printlns!("got ", v); }
+        otherwise { printlns!("empty"); }
+    };
+    let s Box[string] = Box.Value("hi");
+    choose (s) {
+        when (Box.Value(v)) { printlns!("got ", v); }
+        otherwise { printlns!("empty"); }
+    };
+    let inferred Box[int] = Box.Value(7);
+    choose (inferred) {
+        when (Box.Value(v)) { printlns!("inferred ", v); }
+        otherwise { printlns!("empty"); }
+    }
+}
