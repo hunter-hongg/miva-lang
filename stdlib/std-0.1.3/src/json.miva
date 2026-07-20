@@ -1,0 +1,87 @@
+module std.json;
+
+// ── JSON parsing and serialization ───────────────────────────────────────────────
+//
+// A parsed JSON document is represented by an opaque handle (ptrany) backed by a
+// MivaJson tree allocated by the runtime. This module is a friendly wrapper over
+// the `json_*` built-in functions.
+//
+// Handle kinds (returned by `kind`):
+//   0 = null   1 = bool   2 = number   3 = string   4 = array   5 = object
+//   -1 = invalid handle (e.g. a null pointer)
+//
+// Memory ownership: only the root handle owns the whole tree's memory.
+// Handles returned by `array_get` / `object_get` / `object_find` are "borrowed
+// views" into the tree's interior and MUST NOT be passed to `free`; call `free`
+// exactly once, only on the root handle returned by `parse`.
+
+// Parse JSON text and return the root handle. Panics on invalid input.
+parse = (ref s: string): ptrany => json_parse(s)
+
+// Return the handle's kind tag (see above).
+kind = (ref v: ptrany): int => json_kind(v)
+
+// Kind predicates.
+is_null = (ref v: ptrany): bool => json_kind(v) == 0
+is_bool = (ref v: ptrany): bool => json_kind(v) == 1
+is_number = (ref v: ptrany): bool => json_kind(v) == 2
+is_string = (ref v: ptrany): bool => json_kind(v) == 3
+is_array = (ref v: ptrany): bool => json_kind(v) == 4
+is_object = (ref v: ptrany): bool => json_kind(v) == 5
+
+// Extract values (panics on type mismatch).
+unsafe as_bool = (ref v: ptrany): bool => json_bool(v)
+unsafe as_number = (ref v: ptrany): float64 => json_number(v)
+unsafe as_string = (ref v: ptrany): string => json_string(v)
+
+// Length of an array or object; returns 0 for other types.
+len = (ref v: ptrany): int => {
+  k := json_kind(v);
+  mut res := 0;
+  if (k == 4) {
+    res = json_array_len(v);
+  };
+  if (k == 5) {
+    res = json_object_len(v);
+  };
+  return res;
+}
+
+// Access an array element by index (panics on out-of-bounds).
+array_get = (ref v: ptrany, i: int): ptrany => json_array_get(v, i)
+
+// Access an object member by index (panics on out-of-bounds).
+object_get = (ref v: ptrany, i: int): ptrany => json_object_get(v, i)
+
+// Access an object key name by index.
+object_key = (ref v: ptrany, i: int): string => json_object_key(v, i)
+
+// Look up an object member by key name; returns a null handle if not found.
+object_find = (ref v: ptrany, key: string): ptrany => json_object_find(v, key)
+
+// Re-serialize the parsed JSON tree into compact JSON text.
+stringify = (ref v: ptrany): string => json_stringify(v)
+
+// Free the entire tree owned by the root handle returned by `parse`.
+// Each root handle should be freed exactly once.
+free = (ref v: ptrany) => json_free(v)
+
+export parse;
+export kind;
+export is_null;
+export is_bool;
+export is_number;
+export is_string;
+export is_array;
+export is_object;
+export as_bool;
+export as_number;
+export as_string;
+export len;
+export array_get;
+export object_get;
+export object_key;
+export object_find;
+export stringify;
+export free;
+

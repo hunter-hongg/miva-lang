@@ -52,7 +52,7 @@ dev = \"miva run -b mvm\"
 release = \"miva build -b llvm --release\"
 
 [dependencies]
-std = \"0.1.2\"
+std = \"0.1.3\"
 "
     )
 }

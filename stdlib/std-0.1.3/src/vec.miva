@@ -1,0 +1,203 @@
+module std.vec;
+import "std/mem";
+
+// ── A growable, owned array backed by raw memory ───────────────────────────────
+//
+// `Vec[T]` is a heap-allocated, dynamically-sized sequence of `T` values. It is
+// implemented on top of the `std.mem` allocator API (`alloc`, `realloc`, `free`,
+// `offset`): the backing storage is an opaque `ptrany` buffer whose byte size is
+// `capacity * elem_size[T]()`. Reads and writes go through typed `ptr<T>`
+// arithmetic plus `ptr_set`.
+//
+// Ownership: each `Vec[T]` owns exactly one buffer. The buffer must be released
+// by calling `free` exactly once; dropping the struct without freeing leaks the
+// buffer. `copy` produces an independent deep copy that must be freed
+// separately.
+//
+// Safety: most operations are `unsafe` because they dereference raw pointers.
+// The caller is responsible for:
+//   - calling `free` exactly once on a live `Vec[T]`;
+//   - not using a `Vec[T]` after it has been freed;
+//   - only storing copyable `T` (the runtime reads/writes raw `T` bytes).
+//
+// `elem_size[T]()` is the element byte size used by the allocator arithmetic
+// below. Hard-coded to 8 (the size of `int64_t` / `double`, the two most common
+// element types). Extend the dispatch table to support additional element types.
+
+Vec[T] = struct {
+  data: ptrany,
+  len: int,
+  cap: int,
+}
+
+// Per-type element byte size used by the allocator arithmetic below. Hard-coded
+// to 8 (matching C++ `sizeof(int64_t)`/`sizeof(double)`). Extend this dispatch
+// table to support additional element types.
+elem_size[T] = (): int => 8
+
+// Create an empty `Vec[T]` with no allocation. `push` will allocate on first
+// use. The result still must be passed to `free` (which is a no-op on an empty
+// vec with a null buffer).
+new[T] = (): Vec[T] => struct Vec[T] { data = 0 as ptrany, len = 0, cap = 0 }
+
+// Create a `Vec[T]` with `cap` pre-allocated slots and `len = 0`. The backing
+// buffer is allocated via `std.mem.alloc` and must be freed via `free`.
+unsafe with_capacity[T] = (cap: int): Vec[T] => {
+  if (cap <= 0) {
+    return new[T]();
+  };
+  mut bytes := cap * elem_size[T]();
+  let p ptrany = std.mem.alloc(bytes);
+  struct Vec[T] { data = p, len = 0, cap = cap };
+}
+
+// Internal: grow the backing buffer so it can hold at least `min_cap` elements.
+// Reallocates via `std.mem.realloc` and updates `cap`. Does not change `len`.
+unsafe grow[T] = (ref v: Vec[T], min_cap: int) => {
+  if (v.cap >= min_cap) {
+    return;
+  };
+  mut new_cap := v.cap;
+  if (new_cap < 1) {
+    new_cap := 1;
+  };
+  while (new_cap < min_cap) {
+    new_cap := new_cap * 2;
+  };
+  mut bytes := new_cap * elem_size[T]();
+  let p ptrany = std.mem.realloc(v.data, bytes);
+  v.data := p;
+  v.cap := new_cap;
+}
+
+// Append `x` to the end of the vec, growing the buffer if needed.
+unsafe push[T] = (ref v: Vec[T], x: T) => {
+  if (v.len >= v.cap) {
+    grow[T](v, v.len + 1);
+  };
+  let slot ptr<T> = (std.mem.offset(v.data, v.len * elem_size[T]())) as ptr<T>;
+  ptr_set(slot, x);
+  v.len := v.len + 1;
+}
+
+// Remove and return the last element. Panics if the vec is empty. The length is
+// decremented but the buffer is not shrunk; call `shrink_to_fit` to release the
+// unused tail.
+unsafe pop[T] = (ref v: Vec[T]): T => {
+  if (v.len <= 0) {
+    panic("vec.pop: empty vec");
+  };
+  v.len := v.len - 1;
+  let slot ptr<T> = (std.mem.offset(v.data, v.len * elem_size[T]())) as ptr<T>;
+  return deref slot;
+}
+
+// Read the element at index `i` without bounds checking. The caller must ensure
+// `0 <= i < len`. Use `get` for a checked variant.
+unsafe get_unchecked[T] = (ref v: Vec[T], i: int): T => {
+  let slot ptr<T> = (std.mem.offset(v.data, i * elem_size[T]())) as ptr<T>;
+  return deref slot;
+}
+
+// Read the element at index `i`. Panics on out-of-bounds.
+unsafe get[T] = (ref v: Vec[T], i: int): T => {
+  if (i < 0 || i >= v.len) {
+    panic("vec.get: index out of range");
+  };
+  return get_unchecked[T](v, i);
+}
+
+// Write `x` to the slot at index `i`. Panics on out-of-bounds.
+unsafe set[T] = (ref v: Vec[T], i: int, x: T) => {
+  if (i < 0 || i >= v.len) {
+    panic("vec.set: index out of range");
+  };
+  let slot ptr<T> = (std.mem.offset(v.data, i * elem_size[T]())) as ptr<T>;
+  ptr_set(slot, x);
+}
+
+// Number of elements currently in the vec.
+len[T] = (ref v: Vec[T]): int => v.len
+
+// Number of elements the backing buffer can hold without reallocating.
+capacity[T] = (ref v: Vec[T]): int => v.cap
+
+// Is the vec empty?
+is_empty[T] = (ref v: Vec[T]): bool => v.len == 0
+
+// Release the backing buffer. After this the vec is in an "empty" state (null
+// data, len = 0, cap = 0) and must not be used except to be freed again (which
+// is harmless because `std.mem.mem_free(0)` is a no-op at the C level).
+unsafe free[T] = (ref v: Vec[T]) => {
+  if (v.data != (0 as ptrany)) {
+    std.mem.mem_free(v.data);
+  };
+  v.data := 0 as ptrany;
+  v.len := 0;
+  v.cap := 0;
+}
+
+// Release any excess capacity, reallocating the buffer down to exactly `len`
+// elements. If `len == 0` the buffer is freed entirely. No-op if already tight.
+unsafe shrink_to_fit[T] = (ref v: Vec[T]) => {
+  if (v.len == 0) {
+    free[T](v);
+    return;
+  };
+  if (v.cap <= v.len) {
+    return;
+  };
+  mut bytes := v.len * elem_size[T]();
+  let p ptrany = std.mem.realloc(v.data, bytes);
+  v.data := p;
+  v.cap := v.len;
+}
+
+// Clear all elements without releasing the backing buffer. `len` becomes 0 but
+// `cap` and `data` are unchanged, so subsequent `push`es reuse the allocation.
+unsafe clear[T] = (ref v: Vec[T]) => {
+  v.len := 0;
+}
+
+// Produce an independent deep copy of the vec: a new allocation of `len` slots
+// whose bytes are copied from the source. The caller must `free` the result.
+unsafe copy[T] = (ref v: Vec[T]): Vec[T] => {
+  mut out := with_capacity[T](v.len);
+  mut i := 0;
+  while (i < v.len) {
+    push[T](out, get_unchecked[T](v, i));
+    i := i + 1;
+  };
+  return out;
+}
+
+// Truncate the vec to at most `new_len` elements. If `new_len >= len` this is a
+// no-op. Otherwise `len` is reduced; the buffer is not reallocated.
+unsafe truncate[T] = (ref v: Vec[T], new_len: int) => {
+  mut n := new_len;
+  if (n < 0) {
+    n := 0;
+  };
+  if (n < v.len) {
+    v.len := n;
+  };
+}
+
+export Vec;
+export elem_size;
+export new;
+export with_capacity;
+export push;
+export pop;
+export get;
+export get_unchecked;
+export set;
+export len;
+export capacity;
+export is_empty;
+export free;
+export shrink_to_fit;
+export clear;
+export copy;
+export truncate;
+export grow;

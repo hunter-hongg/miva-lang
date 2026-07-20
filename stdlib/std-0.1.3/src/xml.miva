@@ -1,0 +1,93 @@
+module std.xml;
+
+// ── XML parsing and serialization ───────────────────────────────────────────────
+//
+// A parsed XML document is represented by an opaque handle (ptrany) backed by a
+// runtime tree allocated by the runtime. This module is a friendly wrapper over
+// the `xml_*` built-in functions, mirroring `std.json`.
+//
+// Handle kinds (returned by `kind`):
+//   0 = Null       (invalid handle)
+//   1 = Element    (tag, attrs, children)
+//   2 = Text       (text)
+//   3 = Comment    (text)
+//   4 = CData      (text)
+//   5 = PI         (pi_target, pi_data)
+//   6 = Document   (children; the root returned by `parse`)
+//
+// Memory ownership: only the root handle (the Document returned by `parse`)
+// owns the whole tree's memory. Handles returned by `child_get` are "borrowed
+// views" into the tree's interior and MUST NOT be passed to `free`; call `free`
+// exactly once, only on the root handle returned by `parse`.
+
+// Parse XML text and return the Document root handle. Panics on invalid input.
+parse = (ref s: string): ptrany => xml_parse(s)
+
+// Return the handle's kind tag (see above). Returns -1 for an invalid handle.
+kind = (ref v: ptrany): int => xml_kind(v)
+
+// Kind predicates.
+is_element = (ref v: ptrany): bool => xml_kind(v) == 1
+is_text = (ref v: ptrany): bool => xml_kind(v) == 2
+is_comment = (ref v: ptrany): bool => xml_kind(v) == 3
+is_cdata = (ref v: ptrany): bool => xml_kind(v) == 4
+is_pi = (ref v: ptrany): bool => xml_kind(v) == 5
+is_document = (ref v: ptrany): bool => xml_kind(v) == 6
+
+// Element tag (qualified name, e.g. `ns:book`). Panics if not an element.
+unsafe tag = (ref v: ptrany): string => xml_tag(v)
+
+// Number of attributes (0 for non-elements).
+attr_count = (ref v: ptrany): int => xml_attr_count(v)
+
+// Attribute name / value by index. Panics if not an element or out of bounds.
+unsafe attr_name = (ref v: ptrany, i: int): string => xml_attr_name(v, i)
+unsafe attr_value = (ref v: ptrany, i: int): string => xml_attr_value(v, i)
+
+// Look up an attribute by name; returns "" if missing or not an element.
+attr_find = (ref v: ptrany, key: string): string => xml_attr_find(v, key)
+
+// Number of children (element/document; 0 otherwise).
+child_count = (ref v: ptrany): int => xml_child_count(v)
+
+// Child node by index (borrowed handle). Panics if not element/document or OOB.
+unsafe child_get = (ref v: ptrany, i: int): ptrany => xml_child_get(v, i)
+
+// Text / comment / cdata content. Panics if the node has no such field.
+unsafe text = (ref v: ptrany): string => xml_text(v)
+unsafe comment = (ref v: ptrany): string => xml_comment(v)
+unsafe cdata = (ref v: ptrany): string => xml_cdata(v)
+
+// Processing-instruction target / data. Panics if the node is not a PI.
+unsafe pi_target = (ref v: ptrany): string => xml_pi_target(v)
+unsafe pi_data = (ref v: ptrany): string => xml_pi_data(v)
+
+// Serialize the node and its subtree back into XML text.
+stringify = (ref v: ptrany): string => xml_stringify(v)
+
+// Free the entire tree owned by the root handle returned by `parse`.
+// Each root handle should be freed exactly once.
+free = (ref v: ptrany) => xml_free(v)
+
+export parse;
+export kind;
+export is_element;
+export is_text;
+export is_comment;
+export is_cdata;
+export is_pi;
+export is_document;
+export tag;
+export attr_count;
+export attr_name;
+export attr_value;
+export attr_find;
+export child_count;
+export child_get;
+export text;
+export comment;
+export cdata;
+export pi_target;
+export pi_data;
+export stringify;
+export free;
