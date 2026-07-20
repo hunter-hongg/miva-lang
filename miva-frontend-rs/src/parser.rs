@@ -1788,7 +1788,8 @@ fn expr_loc(e: &Expr) -> Loc {
         | Expr::EDeref { loc, .. }
         | Expr::EMethodCall { loc, .. }
         | Expr::EMacroVar { loc, .. }
-        | Expr::EEnumPattern { loc, .. } => loc.clone(),
+        | Expr::EEnumPattern { loc, .. }
+        | Expr::ELambda { loc, .. } => loc.clone(),
     }
 }
 
