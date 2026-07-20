@@ -94,6 +94,13 @@ pub enum Typ {
     TInvalid,
     #[serde(rename = "genericParam")]
     TGenericParam { name: String },
+    #[serde(rename = "func")]
+    TFunc {
+        #[serde(rename = "params")]
+        params: Vec<Typ>,
+        #[serde(rename = "returns")]
+        returns: Box<Typ>,
+    },
 }
 
 #[allow(dead_code)]
@@ -314,6 +321,16 @@ pub enum Expr {
         enum_name: String,
         variant: String,
         bindings: Vec<String>,
+    },
+    #[serde(rename = "lambda")]
+    ELambda {
+        loc: Loc,
+        params: Vec<Param>,
+        #[serde(rename = "type")]
+        ret: Typ,
+        #[serde(default)]
+        captures: Vec<(String, Typ)>,
+        body: Box<Expr>,
     },
 }
 
