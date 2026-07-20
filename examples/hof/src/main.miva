@@ -1,0 +1,12 @@
+module main;
+
+apply = (f: fn(int): int, x: int): int => { return f(x); }
+
+main = () => {
+    y := 13;
+    add := (x: int): int => { return x + y; };
+    printlns!("add(2) = ", add(2));
+    printlns!("y = ", y);
+    printlns!("add(29) = ", add(29));
+    printlns!("apply(add, 15) = ", apply(add, 15));
+}

@@ -129,6 +129,17 @@ pub enum Opcode {
     /// Store through pointer (pop value, pop ptr)
     PtrStore = 0x65,
 
+    // --- Closure operations (0x66-0x67) ---
+    /// Build a closure value: read a 4-byte LE u32 capture count, pop that
+    /// many capture values (in declaration order), then read a 4-byte LE u32
+    /// thunk function index, and push a closure value carrying the captures
+    /// and the thunk index.
+    MakeClosure = 0x66,
+    /// Call a closure value: pop `argc` argument values, then pop the closure
+    /// value. Push the closure's captures, then the arguments, then call the
+    /// thunk function index (arity = captures + arguments).
+    CallClosure = 0x67,
+
     // --- Type conversions (0x70-0x7F) ---
     I64ToF64 = 0x70,
     F64ToI64 = 0x71,
@@ -259,6 +270,8 @@ impl Opcode {
             0x63 => Some(Addr),
             0x64 => Some(PtrLoad),
             0x65 => Some(PtrStore),
+            0x66 => Some(MakeClosure),
+            0x67 => Some(CallClosure),
             0x70 => Some(I64ToF64),
             0x71 => Some(F64ToI64),
             0x72 => Some(I64ToChar),
@@ -315,6 +328,7 @@ impl Opcode {
             CallBuiltin => 1,
             StructNew | StructGet | StructSet | StructDupAt | EnumNew | EnumGet => 4,
             Addr => 4,
+            MakeClosure => 8,
             CallHost => 5,
             _ => 0,
         }
@@ -389,6 +403,8 @@ impl Opcode {
             Addr => "addr",
             PtrLoad => "ptr_load",
             PtrStore => "ptr_store",
+            MakeClosure => "make_closure",
+            CallClosure => "call_closure",
             I64ToF64 => "i64_to_f64",
             F64ToI64 => "f64_to_i64",
             I64ToChar => "i64_to_char",

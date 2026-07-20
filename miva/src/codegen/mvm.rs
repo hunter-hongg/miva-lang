@@ -23,6 +23,19 @@ pub struct HostDef {
     pub code: String,
 }
 
+/// A lambda (closure) thunk registered during expression compilation and
+/// compiled into a fresh function-table slot after the enclosing function's
+/// body is generated. The thunk's first `captures.len()` locals hold the
+/// captured environment values (in `captures` order); the remaining locals
+/// hold its own parameters.
+struct ClosureThunk {
+    captures: Vec<(String, Typ)>,
+    params: Vec<Param>,
+    body: Expr,
+    ret: Typ,
+    func_idx: usize,
+}
+
 /// Miva VM bytecode code generator.
 pub struct MvmCodegen {
     // --- String pool ---
@@ -72,6 +85,15 @@ pub struct MvmCodegen {
 
     // --- Current function info ---
     current_func_name: String,
+
+    // --- Closure support ---
+    /// For each variable name, its static type. Used to detect closure-typed
+    /// variables at call sites so they are invoked via `CallClosure` rather
+    /// than the ordinary `Call` (function-index) path.
+    var_types: HashMap<String, Typ>,
+    /// Lambda thunks registered during expression compilation, flushed into
+    /// the function table once the enclosing function body is complete.
+    pending_thunks: Vec<ClosureThunk>,
 }
 
 impl MvmCodegen {
@@ -134,6 +156,8 @@ impl MvmCodegen {
             labels: HashMap::new(),
             next_label: 0,
             current_func_name: String::new(),
+            var_types: HashMap::new(),
+            pending_thunks: Vec::new(),
         }
     }
     fn resolve_string(&mut self, s: &str) -> u32 {
@@ -430,6 +454,7 @@ impl MvmCodegen {
                 Param::PRef { name, typ, .. } | Param::POwn { name, typ, .. } => {
                     self.declare_local(name);
                     self.param_types.insert(name.clone(), typ.clone());
+                    self.var_types.insert(name.clone(), typ.clone());
                 }
             }
         }
@@ -499,11 +524,88 @@ impl MvmCodegen {
         }
         self.last_emitted = None;
 
+        // Save this function's code, since compile_thunk reuses `self.code`
+        // and takes it for each thunk it emits.
+        let mut func_code = std::mem::take(&mut self.code);
+        // Save locals count: thunk compilation resets and rebases it.
+        let saved_locals = self.locals_count;
+
+        // Flush any lambda thunks registered during this function's body.
+        // Nested lambdas may register further thunks, so loop to completion.
+        while let Some(thunk) = self.pending_thunks.pop() {
+            self.compile_thunk(thunk);
+        }
+
+        self.code = func_code;
+        self.locals_count = saved_locals;
+
         // Update function in table
         let arity = params.len() as u32;
         self.functions[func_idx].arity = arity;
         self.functions[func_idx].locals = self.locals_count;
         self.functions[func_idx].code = std::mem::take(&mut self.code);
+    }
+
+    /// Compile a lambda thunk into its own function-table slot. Captures become
+    /// the leading locals (in `captures` order); the lambda's own parameters
+    /// follow. The body is compiled in this fresh scope.
+    fn compile_thunk(&mut self, thunk: ClosureThunk) {
+        let func_idx = thunk.func_idx;
+        let body = thunk.body;
+        let ret = thunk.ret;
+        // Reset per-function state (mirrors compile_function setup).
+        self.code = Vec::new();
+        self.locals_count = 0;
+        self.local_indices.clear();
+        self.scope_stack.clear();
+        self.labels.clear();
+        self.next_label = 0;
+        self.param_types.clear();
+        self.var_types.clear();
+
+        // Declare captures as leading locals.
+        for (name, typ) in &thunk.captures {
+            let idx = self.declare_local(name);
+            self.var_types.insert(name.clone(), typ.clone());
+            let _ = idx;
+        }
+        // Declare the lambda's own parameters (after the captures).
+        for param in &thunk.params {
+            match param {
+                Param::PRef { name, typ, .. } | Param::POwn { name, typ, .. } => {
+                    self.declare_local(name);
+                    self.var_types.insert(name.clone(), typ.clone());
+                }
+            }
+        }
+
+        // Compile the thunk body. If the body is a bare expression (not a
+        // block), wrap it so its value is returned.
+        let body_expr: Expr = match &body {
+            Expr::EBlock { .. } => body.clone(),
+            other => Expr::EBlock {
+                stmts: Vec::new(),
+                result: Some(Box::new(other.clone())),
+                loc: crate::ast::Loc { line: 0, col: 0 },
+            },
+        };
+
+        self.push_scope();
+        self.compile_expr(&body_expr);
+        self.pop_scope();
+
+        let needs_ret = !self.code.is_empty()
+            && !matches!(self.last_emitted, Some(MvmOp::Ret | MvmOp::RetVal));
+        if needs_ret {
+            self.emit_op(MvmOp::RetVal);
+        }
+        self.last_emitted = None;
+
+        let total_params = (thunk.captures.len() + thunk.params.len()) as u32;
+        self.functions[func_idx].arity = total_params;
+        self.functions[func_idx].locals = self.locals_count;
+        self.functions[func_idx].code = std::mem::take(&mut self.code);
+        let _ = ret;
     }
 
     // --- Expression compilation ---
@@ -726,6 +828,28 @@ impl MvmCodegen {
                     self.emit_u32(func_idx as u32);
                     // Async functions are spawned by the VM on call; the returned
                     // value is already a future[T], so no wrapping is needed.
+                } else if let Some(typ) = self.var_types.get(lookup_name) {
+                    if let Typ::TFunc { .. } = typ {
+                        // Calling a closure-typed variable: push the arguments,
+                        // then load the closure value, then invoke CallClosure.
+                        // The VM reads the thunk index and capture count from the
+                        // closure value itself.
+                        let closure_idx = self.resolve_local(lookup_name)
+                            .unwrap_or_else(|| panic!("Closure variable '{}' not found in scope", lookup_name));
+                        for arg in args {
+                            self.compile_expr(arg);
+                        }
+                        self.emit_op(MvmOp::LoadLocal);
+                        self.emit_u32(closure_idx);
+                        self.emit_op(MvmOp::CallClosure);
+                    } else {
+                        // Unknown function; compile args and push unit
+                        for arg in args {
+                            self.compile_expr(arg);
+                            self.emit_op(MvmOp::Drop);
+                        }
+                        self.emit_op(MvmOp::PushUnit);
+                    }
                 } else {
                     // Unknown function; compile args and push unit
                     for arg in args {
@@ -999,9 +1123,37 @@ impl MvmCodegen {
             Expr::EEnumPattern { .. } => {
                 unreachable!("EEnumPattern is handled inline in the EChoose arm")
             }
-            Expr::ELambda { .. } => {
-                // TODO: full closure lowering implemented in Task 9
-                self.emit_op(MvmOp::PushUnit);
+            Expr::ELambda { params, ret, captures, body, .. } => {
+                // Lower a lambda to a closure value. Register a fresh thunk
+                // function in the function table (compiled after the enclosing
+                // function body), capture the listed variables by value, then
+                // build the closure value.
+                let thunk_idx = self.functions.len();
+                self.functions.push(MvmFunction {
+                    name_idx: 0,
+                    arity: (captures.len() + params.len()) as u32,
+                    locals: 0,
+                    is_async: false,
+                    code: Vec::new(),
+                });
+                self.pending_thunks.push(ClosureThunk {
+                    captures: captures.clone(),
+                    params: params.clone(),
+                    body: (**body).clone(),
+                    ret: ret.clone(),
+                    func_idx: thunk_idx,
+                });
+                // Evaluate each capture expression (in declaration order) and
+                // push its value onto the stack for MakeClosure.
+                for (cap_name, _) in captures {
+                    self.compile_expr(&Expr::EVar {
+                        name: cap_name.clone(),
+                        loc: crate::ast::Loc { line: 0, col: 0 },
+                    });
+                }
+                self.emit_op(MvmOp::MakeClosure);
+                self.emit_u32(captures.len() as u32);
+                self.emit_u32(thunk_idx as u32);
             }
         }
     }
@@ -1010,8 +1162,24 @@ impl MvmCodegen {
 
     fn compile_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::SLet { name, expr, .. } | Stmt::SLetTyped { name, expr, .. } => {
+            Stmt::SLet { name, expr, .. } => {
                 let idx = self.declare_local(name);
+                // An untyped binding of a lambda is a closure-typed variable.
+                if let Expr::ELambda { params, ret, .. } = &**expr {
+                    self.var_types.insert(name.clone(), Typ::TFunc {
+                        params: params.iter().map(|p| match p {
+                            Param::PRef { typ, .. } | Param::POwn { typ, .. } => typ.clone(),
+                        }).collect(),
+                        returns: Box::new(ret.clone()),
+                    });
+                }
+                self.compile_expr(expr);
+                self.emit_op(MvmOp::StoreLocal);
+                self.emit_u32(idx);
+            }
+            Stmt::SLetTyped { name, typ, expr, .. } => {
+                let idx = self.declare_local(name);
+                self.var_types.insert(name.clone(), typ.clone());
                 self.compile_expr(expr);
                 self.emit_op(MvmOp::StoreLocal);
                 self.emit_u32(idx);

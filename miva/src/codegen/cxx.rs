@@ -6,6 +6,35 @@ use std::collections::HashMap;
 thread_local! {
     static ENUM_DEFS: RefCell<HashMap<String, Vec<crate::ast::EnumVariant>>> =
         RefCell::new(HashMap::new());
+    static CLOSURE_DEFS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static CLOSURE_ID: RefCell<usize> = RefCell::new(0);
+}
+
+fn next_closure_id() -> usize {
+    CLOSURE_ID.with(|c| {
+        let mut id = c.borrow_mut();
+        let v = *id;
+        *id += 1;
+        v
+    })
+}
+
+fn reset_closure_registry() {
+    CLOSURE_DEFS.with(|c| c.borrow_mut().clear());
+    CLOSURE_ID.with(|c| *c.borrow_mut() = 0);
+}
+
+fn emit_closure_def(def: String) {
+    CLOSURE_DEFS.with(|c| c.borrow_mut().push(def));
+}
+
+fn take_closure_defs() -> String {
+    CLOSURE_DEFS.with(|c| {
+        let mut v = c.borrow_mut();
+        let out = v.join("\n\n");
+        v.clear();
+        out
+    })
 }
 
 fn record_enum_defs(defs: &[Def]) {
@@ -105,7 +134,11 @@ pub fn cxx_type(typ: &Typ) -> String {
         Typ::TFunc { params, returns } => {
             let ps: Vec<String> = params.iter().map(|p| cxx_type(p)).collect();
             let r = cxx_type(returns);
-            format!("mvp_closure<{}, {}>", ps.join(", "), r)
+            if ps.is_empty() {
+                format!("mvp_closure<{}>", r)
+            } else {
+                format!("mvp_closure<{}, {}>", r, ps.join(", "))
+            }
         }
     }
 }
@@ -430,11 +463,109 @@ fn cxx_expr(expr: &Expr, depth: usize, expected_type: Option<&str>) -> String {
         Expr::EEnumPattern { .. } => {
             unreachable!("EEnumPattern is handled inline in the EChoose arm")
         }
-        Expr::ELambda { .. } => {
-            // TODO: full closure lowering implemented in Task 7
-            "// lambda".to_string()
-        }
+        Expr::ELambda {
+            params,
+            ret,
+            captures,
+            body,
+            ..
+        } => cxx_lambda_lower(params, ret, captures, body),
     }
+}
+
+/// Lower a Miva lambda (closure) literal to C++.
+///
+/// Emits a top-level struct holding the captured environment, plus a static
+/// thunk that reconstructs the captures from `void* env` and runs the body.
+/// Returns an expression that constructs an `mvp_closure<R, A...>` value
+/// (env pointer + thunk pointer) representing the closure.
+fn cxx_lambda_lower(
+    params: &[Param],
+    ret: &Typ,
+    captures: &[(String, Typ)],
+    body: &Expr,
+) -> String {
+    let id = next_closure_id();
+    let env_name = format!("__closure_env_{}", id);
+    let thunk_name = format!("__closure_thunk_{}", id);
+    let ret_cxx = cxx_type(ret);
+    let param_strs: Vec<String> = params.iter().map(cxx_param).collect();
+    let param_list = param_strs.join(", ");
+
+    let env_fields: Vec<String> = captures
+        .iter()
+        .map(|(n, t)| format!("  {} {};", cxx_type(t), n))
+        .collect();
+    let env_struct = if env_fields.is_empty() {
+        format!("struct {} {{}};", env_name)
+    } else {
+        format!("struct {} {{\n{}\n}};", env_name, env_fields.join("\n"))
+    };
+
+    let capture_bindings: Vec<String> = captures
+        .iter()
+        .map(|(n, _)| format!("  auto& {} = __env.{};", n, n))
+        .collect();
+    let env_cast = format!("  auto& __env = *static_cast<{}*>(__env_ptr);", env_name);
+    let capture_bind_str = if capture_bindings.is_empty() {
+        format!("{}\n", env_cast)
+    } else {
+        format!("{}\n{}\n", env_cast, capture_bindings.join("\n"))
+    };
+
+    let body_str = match body {
+        Expr::EBlock { stmts, result, .. } => {
+            let inner = 2;
+            let stmt_strs: String = stmts.iter().fold(String::new(), |acc, s| {
+                format!("{}{}", acc, cxx_stmt(inner, s, None))
+            });
+            let result_str = match result {
+                Some(expr) => format!("{}return {};\n", indent_str(inner), cxx_expr(expr, inner, Some(&ret_cxx))),
+                None => String::new(),
+            };
+            format!("{{\n{}{}{}}}", capture_bind_str, stmt_strs, result_str)
+        }
+        other => format!(
+            "{{\n{}  return {};\n}}",
+            capture_bind_str,
+            cxx_expr(other, 1, Some(&ret_cxx))
+        ),
+    };
+
+    let thunk = format!(
+        "static {} {}(void* __env_ptr, {}) {}\n",
+        ret_cxx, thunk_name, param_list, body_str
+    );
+
+    let capture_exprs: Vec<String> = captures
+        .iter()
+        .map(|(n, _)| format!("{},", n))
+        .collect();
+    let capture_init = if capture_exprs.is_empty() {
+        String::new()
+    } else {
+        format!("{{{}}}", capture_exprs.join(" "))
+    };
+
+    emit_closure_def(format!("{}", env_struct));
+    emit_closure_def(thunk);
+
+    let inner_tys: Vec<String> = params
+        .iter()
+        .map(|p| match p {
+            Param::PRef { typ, .. } | Param::POwn { typ, .. } => cxx_type(typ),
+        })
+        .collect();
+    let closure_ty = if inner_tys.is_empty() {
+        format!("mvp_closure<{}>", ret_cxx)
+    } else {
+        format!("mvp_closure<{}, {}>", ret_cxx, inner_tys.join(", "))
+    };
+
+    format!(
+        "({} {{ new {}{}, &{} }})",
+        closure_ty, env_name, capture_init, thunk_name
+    )
 }
 
 fn cxx_binop(op: &BinOp, left: &Expr, right: &Expr, depth: usize, expected_type: Option<&str>) -> String {
@@ -1633,12 +1764,14 @@ fn is_main_func(def: &Def) -> bool {
 
 pub fn build_ir(defs: &[Def]) -> [String; 3] {
     record_enum_defs(defs);
+    reset_closure_registry();
     let header_content = generate_header(defs);
     let ScopeParts {
         includes,
         defs_str: module_content,
         main_functions,
     } = generate_with_scope(defs, None);
+    let closure_defs = take_closure_defs();
     let preamble = "\
 #include <iostream>
 #include <string>
@@ -1646,13 +1779,20 @@ pub fn build_ir(defs: &[Def]) -> [String; 3] {
 #include <cstdint>
 #include <mvp_builtin.h>
 
+template<class R, class... A>
+struct mvp_closure {
+    void* env;
+    R (*fn)(void*, A...);
+    R operator()(A... a) const { return fn(env, a...); }
+};
+
 
 using namespace std;
 
 ";
     let program = format!(
-        "{}{}{}{}\n",
-        preamble, includes, module_content, main_functions
+        "{}{}{}\n{}\n{}\n",
+        preamble, includes, closure_defs, module_content, main_functions
     );
     let test = generate_test(defs);
     [program, header_content, test]

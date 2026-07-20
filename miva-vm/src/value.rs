@@ -39,6 +39,10 @@ pub enum Value {
     Future(Arc<MvmFuture>),
     Json(Box<JsonValue>),
     Xml(Arc<XmlNode>),
+    /// A closure value: a captured environment (vector of values) plus the
+    /// index of the thunk function in the program's function table. The thunk
+    /// takes `env.len()` leading capture locals followed by its own parameters.
+    Closure(Arc<Vec<Value>>, usize),
 }
 
 impl Value {
@@ -61,6 +65,7 @@ impl Value {
             Value::Unit => "unit",
             Value::Future(_) => "future",
             Value::Json(_) => "json",
+            Value::Closure(_, _) => "closure",
             Value::Xml(_) => "xml",
         }
     }
@@ -86,6 +91,7 @@ impl Value {
             Value::Future(_) => true,
             Value::Json(j) => !j.is_null(),
             Value::Xml(n) => n.kind != XmlKind::Null,
+            Value::Closure(_, _) => true,
         }
     }
 
@@ -144,6 +150,7 @@ impl Value {
             Value::Unit => "".to_string(),
             Value::Future(_) => "<future>".to_string(),
             Value::Json(j) => j.to_string(),
+            Value::Closure(env, idx) => format!("<closure #{} ({} capture(s))>", idx, env.len()),
             Value::Xml(n) => crate::xml::stringify(n),
             Value::Enum(tag, fields) => {
                 let items: Vec<String> = fields.iter().map(|v| v.display()).collect();

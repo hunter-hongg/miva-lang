@@ -755,6 +755,83 @@ impl Mvm {
                     self.pc += 1;
                     self.call_builtin(builtin_idx)?;
                 }
+                Opcode::MakeClosure => {
+                    let capture_count = Self::read_u32(code, self.pc) as usize;
+                    self.pc += 4;
+                    let thunk_idx = Self::read_u32(code, self.pc) as usize;
+                    self.pc += 4;
+                    let mut captures: Vec<Value> = Vec::with_capacity(capture_count);
+                    for _ in 0..capture_count {
+                        captures.push(self.pop());
+                    }
+                    captures.reverse();
+                    self.push(Value::Closure(Arc::new(captures), thunk_idx));
+                }
+                Opcode::CallClosure => {
+                    // The closure value is on top; its captures precede the
+                    // actual argument values on the stack.
+                    let closure = match self.pop() {
+                        Value::Closure(env, thunk_idx) => (env, thunk_idx),
+                        v => return Err(format!("CallClosure expected closure, got {}", v.type_name())),
+                    };
+                    let (env, thunk_idx) = closure;
+                    let (arity, call_locals_count, is_async) = {
+                        let f = &self.program.functions[thunk_idx];
+                        (f.arity as usize, f.locals as usize, f.is_async)
+                    };
+                    let n_params = arity.saturating_sub(env.len());
+                    let arg_start = if self.stack.len() >= n_params { self.stack.len() - n_params } else { 0 };
+                    let mut params: Vec<Value> = self.stack.drain(arg_start..).collect();
+                    let mut args: Vec<Value> = Vec::with_capacity(arity);
+                    args.extend(env.iter().cloned());
+                    args.append(&mut params);
+                    if is_async {
+                        let prog = self.program.clone();
+                        let result = Arc::new(Mutex::new(None));
+                        let result_thread = result.clone();
+                        let handle = std::thread::spawn(move || {
+                            let mut vm = Mvm::with_program(prog);
+                            match vm.run_function(thunk_idx, args) {
+                                Ok(v) => { *result_thread.lock().unwrap() = Some(v); }
+                                Err(e) => {
+                                    *result_thread.lock().unwrap() =
+                                        Some(Value::String(Arc::new(format!("async error: {}", e))));
+                                }
+                            }
+                        });
+                        self.push(Value::Future(Arc::new(MvmFuture {
+                            result,
+                            handle: Mutex::new(Some(handle)),
+                        })));
+                    } else {
+                        let frame = CallFrame {
+                            func_idx: self.current_func,
+                            return_pc: self.pc,
+                            stack_base: 0,
+                            locals: self.current_locals.clone(),
+                        };
+                        self.current_func = thunk_idx;
+                        self.current_locals = Arc::new(Mutex::new(Vec::with_capacity(call_locals_count)));
+                        self.pc = 0;
+                        {
+                            let mut locals = self.current_locals.lock().unwrap();
+                            locals.extend(args);
+                            while locals.len() < call_locals_count {
+                                locals.push(Value::Unit);
+                            }
+                        }
+                        self.call_stack.push(frame);
+                        self.execute_loop()?;
+                        if self.halted {
+                            return Ok(());
+                        }
+                        if let Some(prev_frame) = self.call_stack.pop() {
+                            self.current_func = prev_frame.func_idx;
+                            self.current_locals = prev_frame.locals;
+                            self.pc = prev_frame.return_pc;
+                        }
+                    }
+                }
                 Opcode::CallHost => {
                     let name_idx = Self::read_u32(code, self.pc) as usize;
                     self.pc += 4;

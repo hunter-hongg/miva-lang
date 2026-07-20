@@ -10,6 +10,12 @@ static STR_CONST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 static EXTERN_DECLS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
+/// Accumulated LLVM IR for closure thunk functions, emitted at module level
+/// after all user functions. Reset at the start of each `build_ir` call.
+static CLOSURE_THUNK_DEFS: Mutex<Option<String>> = Mutex::new(None);
+
+static CLOSURE_THUNK_ID: AtomicUsize = AtomicUsize::new(0);
+
 fn module_parts(name: &str) -> Vec<String> {
     let parts: Vec<&str> = name.split('.').collect();
     if parts.first() == Some(&"std") || parts.first() == Some(&"mvp_std") {
@@ -330,6 +336,10 @@ struct LlvmCtx {
     /// Transient: the payload indices of the most recently codegen'd enum
     /// constructor call result, to be attached to the binding that stores it.
     pending_string_payloads: Vec<usize>,
+    /// Per-variable static type. Used to detect closure-typed variables at
+    /// call sites so they are invoked through a function pointer (indirect
+    /// call) rather than as a top-level function.
+    var_types: HashMap<String, Typ>,
 }
 
 impl LlvmCtx {
@@ -349,6 +359,7 @@ impl LlvmCtx {
             enum_defs: HashMap::new(),
             string_payloads: HashMap::new(),
             pending_string_payloads: Vec::new(),
+            var_types: HashMap::new(),
         }
     }
 
@@ -373,6 +384,7 @@ impl LlvmCtx {
             enum_defs: HashMap::new(),
             string_payloads: HashMap::new(),
             pending_string_payloads: Vec::new(),
+            var_types: HashMap::new(),
         }
     }
 
@@ -402,6 +414,7 @@ impl LlvmCtx {
             enum_defs,
             string_payloads: HashMap::new(),
             pending_string_payloads: Vec::new(),
+            var_types: HashMap::new(),
         }
     }
 
@@ -1274,9 +1287,48 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
         Expr::EEnumPattern { .. } => {
             unreachable!("EEnumPattern is handled inline in the EChoose arm")
         }
-        Expr::ELambda { .. } => {
-            // TODO: full closure lowering implemented in Task 8
-            "0".to_string()
+        Expr::ELambda { params, ret, captures, body: lambda_body, .. } => {
+            // Lower a lambda to a closure value: a pointer to a heap struct
+            // `{ i64 env, i64 fn }` where `env` points to the captured values
+            // and `fn` is the thunk function pointer.
+            let thunk_name = gen_closure_thunk(
+                captures,
+                params,
+                ret,
+                lambda_body,
+                &ctx.struct_field_map,
+                &ctx.func_sigs,
+                &ctx.enum_defs,
+            );
+
+            // Allocate the capture environment struct and store each capture.
+            let env_size = (captures.len() as i64) * 8;
+            let env_ptr = ctx.gen_tmp("cenv");
+            body.push_str(&format!("  {} = call ptr @miva_alloc(i64 {})\n", env_ptr, env_size));
+            for (i, (cap_name, _)) in captures.iter().enumerate() {
+                let cap_val = gen_expr(&Expr::EVar { name: cap_name.clone(), loc: Loc { line: 0, col: 0 } }, ctx, body);
+                let gep = ctx.gen_tmp("cgep");
+                body.push_str(&format!("  {} = getelementptr i64, ptr {}, i64 {}\n", gep, env_ptr, i));
+                body.push_str(&format!("  store i64 {}, ptr {}\n", cap_val, gep));
+            }
+
+            // Allocate the closure struct and store (env, fn).
+            let clo_ptr = ctx.gen_tmp("clo");
+            body.push_str(&format!("  {} = call ptr @miva_alloc(i64 16)\n", clo_ptr));
+            let fn_int = ctx.gen_tmp("fnint");
+            body.push_str(&format!("  {} = ptrtoint i64 (...) * @{} to i64\n", fn_int, thunk_name));
+            let env_int = ctx.gen_tmp("envint");
+            body.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", env_int, env_ptr));
+            let clo_gep0 = ctx.gen_tmp("clogep0");
+            body.push_str(&format!("  {} = getelementptr i64, ptr {}, i64 0\n", clo_gep0, clo_ptr));
+            body.push_str(&format!("  store i64 {}, ptr {}\n", env_int, clo_gep0));
+            let clo_gep1 = ctx.gen_tmp("clogep1");
+            body.push_str(&format!("  {} = getelementptr i64, ptr {}, i64 1\n", clo_gep1, clo_ptr));
+            body.push_str(&format!("  store i64 {}, ptr {}\n", fn_int, clo_gep1));
+
+            let clo_int = ctx.gen_tmp("clo_int");
+            body.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", clo_int, clo_ptr));
+            clo_int
         }
     }
 }
@@ -1342,6 +1394,34 @@ fn ret_type(func_name: &str) -> &'static str {
 }
 
 fn gen_call(name: &str, args: &[Expr], type_args: &[Typ], ctx: &mut LlvmCtx, body: &mut String) -> String {
+    let lookup = name.rsplit('.').next().unwrap_or(name);
+    // Calling a closure-typed variable: load the closure struct, extract the
+    // environment pointer and the thunk function pointer, then call the thunk
+    // indirectly with `(env, args...)`.
+    if let Some(Typ::TFunc { .. }) = ctx.var_types.get(lookup) {
+        let clo_int = gen_expr(&Expr::EVar { name: lookup.to_string(), loc: Loc { line: 0, col: 0 } }, ctx, body);
+        let clo_ptr = ctx.gen_tmp("cloptr");
+        body.push_str(&format!("  {} = inttoptr i64 {} to ptr\n", clo_ptr, clo_int));
+        let env_gep = ctx.gen_tmp("cenvgep");
+        body.push_str(&format!("  {} = getelementptr i64, ptr {}, i64 0\n", env_gep, clo_ptr));
+        let env_val = ctx.gen_tmp("cenvval");
+        body.push_str(&format!("  {} = load i64, ptr {}\n", env_val, env_gep));
+        let fn_gep = ctx.gen_tmp("cngep");
+        body.push_str(&format!("  {} = getelementptr i64, ptr {}, i64 1\n", fn_gep, clo_ptr));
+        let fn_int = ctx.gen_tmp("cnfn");
+        body.push_str(&format!("  {} = load i64, ptr {}\n", fn_int, fn_gep));
+        let fn_ptr = ctx.gen_tmp("cnfnptr");
+        body.push_str(&format!("  {} = inttoptr i64 {} to ptr\n", fn_ptr, fn_int));
+
+        let mut arg_strs = vec![format!("i64 {}", env_val)];
+        for a in args {
+            let t = gen_expr(a, ctx, body);
+            arg_strs.push(format!("i64 {}", t));
+        }
+        let tmp = ctx.gen_tmp("ccl");
+        body.push_str(&format!("  {} = call i64 {}({})\n", tmp, fn_ptr, arg_strs.join(", ")));
+        return tmp;
+    }
     // An enum constructor is `Enum.Variant` (exactly one dot, e.g. `Option.Some`).
     // A module-qualified function call (e.g. `mvp_std.option.contains`,
     // `pkg.lib.foo`) has two or more dots and must be resolved as a function
@@ -1646,6 +1726,15 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut LlvmCtx, body: &mut String) {
             if binding_is_string(expr, ctx) {
                 ctx.string_regs.insert(reload);
             }
+            // An untyped binding of a lambda is a closure-typed variable.
+            if let Expr::ELambda { params, ret, .. } = &**expr {
+                ctx.var_types.insert(name.clone(), Typ::TFunc {
+                    params: params.iter().map(|p| match p {
+                        Param::PRef { typ, .. } | Param::POwn { typ, .. } => typ.clone(),
+                    }).collect(),
+                    returns: Box::new(ret.clone()),
+                });
+            }
             record_string_payloads(name, expr, ctx);
         }
         Stmt::SLetTyped { name, typ, expr, .. } => {
@@ -1657,6 +1746,7 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut LlvmCtx, body: &mut String) {
             if binding_is_string(expr, ctx) {
                 ctx.string_regs.insert(reload);
             }
+            ctx.var_types.insert(name.clone(), typ.clone());
             if let Some(idxs) = enum_string_payloads_from_typ(typ, &ctx.enum_defs) {
                 if !idxs.is_empty() {
                     ctx.string_payloads.insert(name.clone(), idxs);
@@ -1751,6 +1841,7 @@ fn gen_func_def(
                     ctx.string_payloads.insert(pname.to_string(), idxs);
                 }
             }
+            ctx.var_types.insert(pname.to_string(), ptyp.clone());
         }
     }
     let mut body_str = String::new();
@@ -1783,6 +1874,89 @@ fn gen_func_def(
     out.push_str(&format!("  ret i64 {}\n", ret_val));
     out.push_str("}\n\n");
     out
+}
+
+/// Lower a lambda (closure) to an LLVM thunk function plus a closure value.
+///
+/// Emits a thunk `define i64 @__closure_thunk_N(ptr %env, i64 %arg0, ...)` that
+/// reconstructs the captured variables from `%env` and runs the lambda body,
+/// appending it to the module-level `CLOSURE_THUNK_DEFS` buffer. Returns the
+/// thunk's global name so the call site can build the closure value (a pointer
+/// to a `{ i64 env, i64 fn }` struct).
+fn gen_closure_thunk(
+    captures: &[(String, Typ)],
+    params: &[Param],
+    ret: &Typ,
+    body: &Expr,
+    struct_field_map: &HashMap<String, HashMap<String, usize>>,
+    func_sigs: &HashMap<String, crate::codegen::FuncSig>,
+    enum_defs: &HashMap<String, (Vec<String>, HashMap<String, Vec<Typ>>)>,
+) -> String {
+    let id = CLOSURE_THUNK_ID.fetch_add(1, Ordering::Relaxed);
+    let thunk_name = format!("__closure_thunk_{}", id);
+
+    let mut ctx = LlvmCtx::with_module_and_fields(None, struct_field_map.clone(), enum_defs.clone())
+        .with_func_sigs(func_sigs);
+    ctx.indent = 1;
+
+    let mut body_prefix = String::new();
+
+    // Load captures from %env (a pointer to a heap struct of i64 values).
+    for (i, (cap_name, cap_typ)) in captures.iter().enumerate() {
+        let (addr, reload) = ctx.declare_var(cap_name);
+        let gep = ctx.gen_tmp("cgep");
+        body_prefix.push_str(&format!("  {} = getelementptr i64, ptr %env, i64 {}\n", gep, i));
+        let loaded = ctx.gen_tmp("cload");
+        body_prefix.push_str(&format!("  {} = load i64, ptr {}\n", loaded, gep));
+        body_prefix.push_str(&format!("  %{} = alloca i64, align 8\n", addr));
+        body_prefix.push_str(&format!("  store i64 {}, ptr %{}, align 8\n", loaded, addr));
+        body_prefix.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", reload, addr));
+        ctx.var_types.insert(cap_name.clone(), cap_typ.clone());
+    }
+
+    // Declare the lambda's own parameters (env, then arg0, arg1, ...).
+    let param_strs: Vec<String> = std::iter::once("ptr %env".to_string())
+        .chain(params.iter().enumerate().map(|(i, _)| format!("i64 %arg{}", i)))
+        .collect();
+    for (i, p) in params.iter().enumerate() {
+        let (pname, ptyp) = match p {
+            Param::PRef { name, typ, .. } | Param::POwn { name, typ, .. } => (name.as_str(), typ),
+        };
+        let (addr, reload) = ctx.declare_var(pname);
+        body_prefix.push_str(&format!("  %{} = alloca i64, align 8\n", addr));
+        body_prefix.push_str(&format!("  store i64 %arg{}, ptr %{}, align 8\n", i, addr));
+        body_prefix.push_str(&format!("  %{} = load i64, ptr %{}, align 8\n", reload, addr));
+        ctx.var_types.insert(pname.to_string(), ptyp.clone());
+    }
+
+    let mut body_str = String::new();
+    let ret_val = if let Expr::EBlock { stmts, result: None, .. } = body {
+        if let Some((Stmt::SExpr { expr, .. }, leading)) = stmts.split_last() {
+            for s in leading {
+                gen_stmt(s, &mut ctx, &mut body_str);
+            }
+            gen_expr(expr.as_ref(), &mut ctx, &mut body_str)
+        } else {
+            gen_expr(body, &mut ctx, &mut body_str)
+        }
+    } else {
+        gen_expr(body, &mut ctx, &mut body_str)
+    };
+
+    let mut out = String::new();
+    out.push_str(&ctx.string_constants);
+    out.push_str(&format!("define i64 @{} ({}) {{\n", thunk_name, param_strs.join(", ")));
+    out.push_str("entry:\n");
+    out.push_str(&body_prefix);
+    out.push_str(&body_str);
+    out.push_str(&format!("  ret i64 {}\n", ret_val));
+    out.push_str("}\n\n");
+
+    if let Ok(mut guard) = CLOSURE_THUNK_DEFS.lock() {
+        guard.get_or_insert_with(String::new).push_str(&out);
+    }
+    let _ = ret;
+    thunk_name
 }
 
 fn gen_main_func(body_expr: &Expr, struct_field_map: &HashMap<String, HashMap<String, usize>>, func_sigs: &HashMap<String, crate::codegen::FuncSig>, enum_defs: &HashMap<String, (Vec<String>, HashMap<String, Vec<Typ>>)>) -> String {
@@ -2089,6 +2263,8 @@ fn generate_bridge(_defs: &[Def]) -> String {
 
 pub fn build_ir(defs: &[Def], func_sigs: &HashMap<String, crate::codegen::FuncSig>) -> crate::codegen::GeneratedOutput {
     *EXTERN_DECLS.lock().unwrap() = Some(HashSet::new());
+    *CLOSURE_THUNK_DEFS.lock().unwrap() = Some(String::new());
+    CLOSURE_THUNK_ID.store(0, Ordering::Relaxed);
     let struct_types = collect_struct_types(defs);
     let struct_field_map = build_struct_field_map(defs);
     let (struct_defs, defs_str, main_functions, defined) = generate_with_scope(defs, None, &struct_field_map, func_sigs);
@@ -2133,6 +2309,11 @@ pub fn build_ir(defs: &[Def], func_sigs: &HashMap<String, crate::codegen::FuncSi
     program.push_str(&struct_defs);
     program.push_str(&defs_str);
     program.push_str(&main_functions);
+    if let Ok(guard) = CLOSURE_THUNK_DEFS.lock() {
+        if let Some(thunks) = guard.as_ref() {
+            program.push_str(thunks);
+        }
+    }
 
     // Declare miva_host_* functions (from libhost.c) for inline unsafe functions
     for hd in &host_defs {

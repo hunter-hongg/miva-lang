@@ -268,7 +268,7 @@ fn compile_file_to_src(
     let ast = json_ast::from_str(&json_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse JSON AST from {}: {}", file, e))?;
 
-    let defs = macro_expand::expand_macros(&ast.defs, macro_table)?;
+    let mut defs = macro_expand::expand_macros(&ast.defs, macro_table)?;
 
     let source = std::fs::read_to_string(file).unwrap_or_default();
 
@@ -299,6 +299,8 @@ fn compile_file_to_src(
         }
         anyhow::bail!("type errors found");
     }
+
+    typecheck::annotate_lambda_captures(&mut defs);
 
     let magical_flags = magical::get_magical_flags(&defs);
     let warnings = warning::get_warnings(&defs);
@@ -851,6 +853,9 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
                 all_defs.extend(defs);
             }
 
+            // Annotate lambda captures so the MVM backend can lower closures.
+            typecheck::annotate_lambda_captures(&mut all_defs);
+
             // Generate combined MVM bytecode
             let output = codegen::build_ir_with_backend(&all_defs, backend, &all_func_sigs);
 
@@ -929,6 +934,7 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
             let defs = macro_expand::expand_macros(&ast.defs, &macro_table)?;
             all_defs.extend(defs);
         }
+        typecheck::annotate_lambda_captures(&mut all_defs);
         let output = codegen::build_ir_with_backend(&all_defs, backend, &all_func_sigs);
         if !output.host_defs.is_empty() {
             let libhost_c = build_dir.join("libhost.c");

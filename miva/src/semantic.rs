@@ -175,6 +175,8 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
                                 name
                             ),
                         ));
+                    } else if ctx.vars.contains_key(name.as_str()) {
+                        // Variable of closure type called as function — OK.
                     } else if symbol_table.imports.is_empty() {
                         // Only report unknown function if no imports are present
                         // (cross-module functions are resolved during C++ compilation)
