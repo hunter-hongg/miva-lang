@@ -64,6 +64,17 @@ mod tests {
     }
 
     #[test]
+    fn test_json_lambda_roundtrip() {
+        let input = "main = () => { g := (x: int): int => { return x + 1; }; return 0; }";
+        let json = parse_to_json(input, "test.miva").unwrap();
+        assert!(json.contains("\"func\""), "expected func type in JSON");
+        assert!(json.contains("\"lambda\""), "expected lambda expr in JSON");
+        // round-trip: re-parse the serialized JSON
+        let defs: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(defs["defs"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn test_parse_struct() {
         let input = "Point = struct { x: int, y: float64 }";
         let defs = parse(input, "test.miva").unwrap();
