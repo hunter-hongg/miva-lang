@@ -1,6 +1,6 @@
 # Miva Programming Language
 
-Miva is a compiled systems programming language. The compiler transpiles Miva source to C++ (the default backend), or to LLVM IR, or to Miva Virtual Machine (MVM) bytecode, and compiles to native binaries or runs directly on the interpreter. It features a strong static type system, generic programming, pattern matching, move semantics, a safety system, macros, and zero-cost C FFI.
+Miva is a compiled systems programming language. The compiler transpiles Miva source to C++ (the default backend), or to LLVM IR, or to Miva Virtual Machine (MVM) bytecode, and compiles to native binaries or runs directly on the interpreter. It features a strong static type system, generic programming, algebraic data types (enums), pattern matching, closures, move semantics, a safety system, macros, and zero-cost C FFI.
 
 ## Table of Contents
 
@@ -16,7 +16,9 @@ Miva is a compiled systems programming language. The compiler transpiles Miva so
 - [Statements](#statements)
 - [Control Flow](#control-flow)
 - [Functions](#functions)
+- [Closures](#closures)
 - [Structs](#structs)
+- [Enums](#enums)
 - [Generics](#generics)
 - [Safety Levels](#safety-levels)
 - [Move Semantics & Ownership](#move-semantics--ownership)
@@ -55,8 +57,8 @@ Miva supports three backends, selectable per-build via the `-b` flag or the `[pr
 
 | Backend | `-b` value | Output | Notes |
 |---------|------------|--------|-------|
-| **C++** (`cxx`) | `cxx` | Native executable / `.so` | Default. Emits C++20 compiled by `g++`. |
-| **LLVM** (`llvm`) | `llvm` | Native executable / `.so` | Emits LLVM IR compiled via `llc` + `g++` linker. |
+| **C++** (`cxx`) | `cxx` / `c++` / `cpp` | Native executable / `.so` | Default. Emits C++20 compiled by `g++`. |
+| **LLVM** (`llvm`) | `llvm` / `ll` | Native executable / `.so` | Emits LLVM IR compiled via `llc` + `g++` linker. |
 | **MVM** (`mvm`) | `mvm` | `.mvm` bytecode | Emits Miva Virtual Machine bytecode, run by the `mvm` interpreter (no native linker needed). |
 
 The `cxx` and `llvm` backends both produce native binaries. The `mvm` backend produces portable bytecode executed by the bundled `mvm` interpreter (`miva-vm`), which is useful for quick iteration and cross-platform runs.
@@ -328,12 +330,70 @@ Pair[T, U] = struct {
 }
 ```
 
+### Enums
+
+```miva
+// Simple enum
+Shape = enum {
+  Circle(int),
+  Rect(int, int),
+  Empty
+}
+
+// Generic enum
+Option[T] = enum {
+  Some(T),
+  None
+}
+
+Result[T, E] = enum {
+  Ok(T),
+  Err(E)
+}
+```
+
+Enumerations are algebraic data types (tagged unions). Each variant can carry a payload of zero or more values. Enum types are matched with `choose`/`when` (see [Control Flow](#control-flow)).
+
 ### Struct Literals
 
 ```miva
 let p Point = struct Point { x = 10, y = 20 };
 let b Box[int] = struct Box[int] { value = 42 };
 ```
+
+### Enum Constructors
+
+Enums are constructed by calling the variant name:
+
+```miva
+let circle Shape = Shape.Circle(5);
+let rect Shape = Shape.Rect(3, 4);
+let empty Shape = Shape.Empty;
+
+// With explicit type arguments (for generic enums)
+let some_val Box[int] = Box.Value(42);
+let no_val Box[int] = Box.Empty;
+let s Box[string] = Box[string].Value("hello");
+
+// Type inference from arguments
+let inferred Box[int] = Box.Value(7);
+
+// Multiple type parameters
+let p Pair[int, string] = Pair.Both(1, "one");
+let q Pair[int, string] = Pair[int, string].First(99);
+```
+
+The enum variant name is called as a function. For generic enums, type arguments can be specified on the variant call (e.g., `Box[int].Value(42)`) or inferred from the payload.
+
+### Enum Field Access
+
+Enum variant payload values can be accessed positionally:
+
+```miva
+payload_value = s.0;  // First payload field
+```
+
+This works with `choose`/`when` destructuring or directly on enum values.
 
 ### Tests
 
@@ -354,7 +414,7 @@ Tests are compiled separately as test executables. They must return `int`.
 
 | Type | Description | C++ Mapping |
 |------|-------------|-------------|
-| `int` | Signed integer | `mvp_builtin_int` |
+| `int` | Signed 64-bit integer | `mvp_builtin_int` (int64_t) |
 | `bool` | Boolean | `mvp_builtin_boolean` |
 | `float32` | 32-bit float | `mvp_builtin_float` |
 | `float64` | 64-bit float | `mvp_builtin_float` |
@@ -368,8 +428,10 @@ Tests are compiled separately as test executables. They must return `int`.
 | `array<T>` | Array/Vector of T | `std::vector<T>` |
 | `ptr<T>` | Pointer to T | `T*` |
 | `box<T>` | Heap-allocated box of T | `mvp_builtin_box<T>` |
+| `future[T]` | Handle to an async task of T | `mvp_future<T>` |
 | `ptrany` | Void pointer | `mvp_builtin_ptrany` |
 | `null` | Void/no value | `void` |
+| `fn(T1, T2): R` | Function type | Function pointer / closure thunk |
 
 ### Struct Types
 
@@ -380,6 +442,28 @@ let p Point;
 let b Box[int];
 let pair Pair[int, string];
 ```
+
+### Enum Types
+
+Enum types are referenced by their name, like structs:
+
+```miva
+let shape Shape;
+let opt Option[int];
+let res Result[int, string];
+```
+
+### Function Types
+
+Function types use the `fn(T1, T2): R` syntax for closures and higher-order functions:
+
+```miva
+f: fn(int): int              // Function taking int, returning int
+g: fn(int, string): bool     // Function taking int and string, returning bool
+h: fn(): null                // Function taking nothing, returning void
+```
+
+These are used with lambda expressions (see [Closures](#closures)).
 
 ---
 
@@ -403,6 +487,7 @@ mut count := 0;
 let x int = 42;
 let name string = "Miva";
 let p Point = struct Point { x = 1, y = 2 };
+let s Shape = Shape.Circle(5);
 ```
 
 ### Assignment
@@ -414,6 +499,13 @@ x = 20;     // OK: x is mutable
 // Error: cannot assign to immutable variable
 y := 10;
 y = 20;     // Compile error
+```
+
+### Field Assignment
+
+```miva
+mut p := struct Point { x = 1, y = 2 };
+p.x = 10;   // Field assignment
 ```
 
 ### Move and Clone
@@ -441,10 +533,11 @@ true          // bool
 false         // bool
 'a'           // char
 "hello"       // string
-"""           // multi-line string literal
+"""           // multi-line string literal (raw, no escape processing)
 line one
 line two
 """           // (content between """ markers)
+[v1, v2, v3]  // array literal
 ```
 
 ### Binary Operators
@@ -454,13 +547,24 @@ line two
 | `+` | Addition / String concatenation | int, float32, float64, string |
 | `-` | Subtraction | int, float32, float64 |
 | `*` | Multiplication | int, float32, float64 |
+| `/` | Division | int, float32, float64 |
 | `==` | Equality | All comparable types |
 | `!=` | Inequality | All comparable types |
+| `<` | Less than | int, float32, float64 |
+| `>` | Greater than | int, float32, float64 |
+| `<=` | Less than or equal | int, float32, float64 |
+| `>=` | Greater than or equal | int, float32, float64 |
+| `&&` | Logical AND | bool |
+| `\|\|` | Logical OR | bool |
 
 Operator precedence (low to high):
-1. `==`, `!=`
-2. `+`, `-`
-3. `*`
+1. `||`
+2. `&&`
+3. `==` `!=` `<` `>` `<=` `>=`
+4. `+` `-`
+5. `*` `/`
+
+All binary operators are left-associative.
 
 ### Unary Operators
 
@@ -504,16 +608,47 @@ result := if (condition) {
 ### Choose (Pattern Matching)
 
 ```miva
+// Simple value matching
 choose (x) {
   when (1) { println("one"); }
   when (2) { println("two"); }
   otherwise { println("other"); }
+};
+
+// Enum pattern matching
+choose (shape) {
+  when (Shape.Circle(r)) { return r * r; }
+  when (Shape.Rect(w, h)) { return w + h; }
+  otherwise { return 0; }
+};
+
+// Generic enum pattern matching
+choose (opt) {
+  when (Option.Some(v)) { process(v); }
+  when (Option.None) { handle_missing(); }
+};
+
+// Pattern matching with guards
+choose (opt) {
+  when (Option.Some(n)) if (n > 0)  { return n; }
+  when (Option.Some(n)) if (n == 0) { return 0; }
+  when (Option.Some(n))            { return n * -1; }
+  otherwise { return -1; }
+};
+
+// Enum destructuring without payload capture (type-check only)
+choose (opt) {
+  when (Option.Some) { return true; }
+  otherwise { return false; }
 };
 ```
 
 - The variable being matched and the `when` values must have the same type.
 - All branches must have the same type.
 - `otherwise` is **required** — compiler error E0011 if omitted.
+- Enum patterns destructure the variant payload into named variables (e.g., `r`, `w`, `h`).
+- Guards (`when (Pattern) if (cond)`) add additional conditions to a pattern.
+- Enum variants can be matched without binding payloads (e.g., `when (Option.Some)`).
 
 ### Blocks
 
@@ -571,6 +706,10 @@ return;       // Return void
 ```miva
 // Variable must be mutable
 x = x + 1;
+
+// Field assignment
+target.field = expr;
+target.field := expr;
 ```
 
 ### Empty Statement
@@ -641,7 +780,33 @@ factorial = (n: int): int => {
     return n * factorial(n - 1);
   };
 }
+
+// Single-expression function (no braces)
+double = (x: int): int => x * 2
 ```
+
+### Function Safety
+
+```miva
+// Safe function (default)
+safe_func = () => { ... }
+
+// Unsafe function
+unsafe unsafe_func = () => { ... }
+
+// Trusted function
+trusted trusted_func = () => { ... }
+```
+
+### Async Functions
+
+```miva
+async async_func = (x: int): future[int] => {
+  return x * x;
+}
+```
+
+See [Async](#async) for more details.
 
 ### Parameters
 
@@ -697,19 +862,193 @@ let x = identity[int](42);   // Explicit
 let y = identity(42);        // Inferred (if the compiler can deduce T)
 ```
 
-### Nested Functions (Functions as Top-Level Definitions Only)
-
-All function definitions are top-level. There are no nested function expressions in blocks.
-
 ### Recursion
 
 Functions can be recursive (calling themselves). Full tail-call optimization is not guaranteed.
 
 ---
 
+## Closures
+
+Miva supports lambda expressions (anonymous functions) with captures and function types.
+
+### Lambda Syntax
+
+```miva
+// Lambda with block body
+add_one = (x: int): int => {
+  return x + 1;
+};
+
+// Lambda with single expression
+double = (x: int): int => x * 2;
+```
+
+### Lambda with Captures
+
+Lambdas can capture variables from the enclosing scope:
+
+```miva
+main = () => {
+  y := 13;
+  add := (x: int): int => { return x + y; };
+  printlns!(add(2));     // 15
+  printlns!(add(29));    // 42
+};
+```
+
+### Function Types
+
+Lambda types are expressed with `fn(T1, T2): R`:
+
+```miva
+apply = (f: fn(int): int, x: int): int => { return f(x); }
+
+main = () => {
+  y := 13;
+  add := (x: int): int => { return x + y; };
+  printlns!(apply(add, 15));  // 28
+};
+```
+
+### Closure Compilation
+
+- Closures with captures are compiled to heap-allocated thunks that store captured variables alongside a function pointer.
+- On the MVM backend, `MakeClosure` and `CallClosure` bytecodes handle closure creation and invocation.
+- On the C++ backend, closures use lambda expressions generating C++ lambdas with capture lists.
+
+---
+
+## Structs
+
+### Struct Definition
+
+```miva
+Point = struct {
+  x: int,
+  y: int,
+}
+```
+
+### Generic Structs
+
+```miva
+Box[T] = struct {
+  value: T,
+}
+
+Pair[T, U] = struct {
+  first: T,
+  second: U,
+}
+```
+
+### Struct Field Access
+
+```miva
+let p Point = struct Point { x = 10, y = 20 };
+printlns!(p.x);
+```
+
+### Field Assignment
+
+```miva
+mut p := struct Point { x = 1, y = 2 };
+p.x = 42;
+```
+
+---
+
+## Enums
+
+Enumerations are algebraic data types (tagged unions) that can represent one of several variants, each optionally carrying a payload.
+
+### Enum Definition
+
+```miva
+// Simple enum with payload variants
+Shape = enum {
+  Circle(int),
+  Rect(int, int),
+  Empty
+}
+
+// Generic enum
+Option[T] = enum {
+  Some(T),
+  None
+}
+
+Result[T, E] = enum {
+  Ok(T),
+  Err(E)
+}
+```
+
+### Enum Construction
+
+Enum values are constructed by calling the variant name as a function:
+
+```miva
+let c Shape = Shape.Circle(5);
+let r Shape = Shape.Rect(3, 4);
+let e Shape = Shape.Empty;
+```
+
+For generic enums, type arguments can be specified or inferred:
+
+```miva
+// Explicit type args on the constructor
+let b Box[string] = Box[string].Value("hello");
+
+// Type inferred from payload
+let b2 Box[int] = Box.Value(42);
+
+// Multiple type args
+let p Pair[int, string] = Pair.Both(1, "one");
+```
+
+### Enum Destructuring
+
+Enums are destructured with `choose`/`when` patterns:
+
+```miva
+area = (s: Shape): int => choose (s) {
+  when (Shape.Circle(r)) { return r * r; }
+  when (Shape.Rect(w, h)) { return w + h; }
+  otherwise { return 0; }
+}
+```
+
+### Enum Guards
+
+Patterns can be refined with `if` guards:
+
+```miva
+describe = (opt: Option[int]): int => choose (opt) {
+  when (Option.Some(n)) if (n > 0)  { return n; }
+  when (Option.Some(n)) if (n == 0) { return 0; }
+  when (Option.Some(n))            { return n * -1; }
+  otherwise { return -1; }
+}
+```
+
+### Enum without Payload Binding
+
+Variants can be matched without binding payload values:
+
+```miva
+is_some[T] = (ref o: Option[T]): bool => choose (o) {
+  when (Option.Some) { return true; }
+  otherwise { return false; }
+}
+```
+
+---
+
 ## Generics
 
-Miva supports generics on structs and functions.
+Miva supports generics on structs, enums, and functions.
 
 ### Generic Structs
 
@@ -727,6 +1066,21 @@ Pair[T, U] = struct {
 Empty[T] = struct {}
 ```
 
+### Generic Enums
+
+```miva
+Option[T] = enum {
+  Some(T),
+  None
+}
+
+Pair[A, B] = enum {
+  Both(A, B),
+  First(A),
+  None
+}
+```
+
 ### Generic Functions
 
 ```miva
@@ -742,7 +1096,7 @@ mk_nested[T, U] = (a: T, b: U): Box[Pair[T, U]] => struct Box[Pair[T, U]] { valu
 
 Type arguments use bracket syntax: `func[T, U](args)`.
 
-Generic functions are compiled to C++ templates. Generic structs become C++ template structs. Both must be fully defined in headers, so exported generic functions are emitted inline.
+Generic functions are compiled to C++ templates. Generic structs become C++ template structs. Generic enums become C++ tagged unions with a discriminant field. Both must be fully defined in headers, so exported generic functions are emitted inline.
 
 ---
 
@@ -1067,60 +1421,152 @@ macro assert_eq = ($got: int, $expected: int) => {
 
 ## Built-in Functions
 
+Miva provides ~80 built-in functions. These are available in all programs without import.
+
 ### Output Functions
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `print` | `(s: string)` | Print string |
-| `prints` | `(s: string)` | Print string (deprecated, use `prints!`) |
-| `println` | `(s: string)` | Print string with newline |
-| `printlns` | `(s: string)` | Print string with newline (deprecated, use `printlns!`) |
-| `error` | `(s: string)` | Print to stderr |
-| `errors` | `(s: string)` | Print to stderr (deprecated) |
-| `errorln` | `(s: string)` | Print to stderr with newline |
-| `errorlns` | `(s: string)` | Print to stderr with newline (deprecated) |
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `print` | `(s: string)` | Safe | Print string |
+| `prints` | `(s: string)` | Safe | Print string (deprecated, use `prints!` macro) |
+| `println` | `(s: string)` | Safe | Print string with newline |
+| `printlns` | `(s: string)` | Safe | Print string with newline (deprecated, use `printlns!` macro) |
+| `error` | `(s: string)` | Safe | Print to stderr |
+| `errors` | `(s: string)` | Safe | Print to stderr (deprecated) |
+| `errorln` | `(s: string)` | Safe | Print to stderr with newline |
+| `errorlns` | `(s: string)` | Safe | Print to stderr with newline (deprecated) |
+
+### I/O Functions
+
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `read_int` | `(): int` | Safe | Read integer from stdin |
+| `read_line` | `(): string` | Safe | Read line from stdin |
 
 ### Control Functions
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `exit` | `(code: int)` | Exit process with code |
-| `abort` | `()` | Abort process |
-| `panic` | `(msg: string)` | Panic with message (abort with message) |
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `exit` | `(code: int)` | Safe | Exit process with code |
+| `abort` | `()` | Safe | Abort process |
+| `panic` | `(msg: string)` | Safe | Panic with message (abort with message) |
 
 ### String Functions
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `string_concat` | `(a: string, b: string): string` | Concatenate strings (deprecated) |
-| `string_parse` | `(s: string): int` | Parse string to int (deprecated) |
-| `string_length` | `(s: string): int` | Get string length (deprecated) |
-| `string_make` | `(s: string, n: int): string` | Make string (deprecated) |
-| `string_from` | `(x: T): string` | Convert value to string |
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `string_concat` | `(a: string, b: string): string` | Safe | Concatenate strings (deprecated, use `std.str.concat`) |
+| `string_parse` | `(s: string): int` | Safe | Parse string to int (deprecated, use `std.str.parse_int`) |
+| `string_length` | `(s: string): int` | Safe | Get string length (deprecated, use `std.str.len`) |
+| `string_make` | `(s: string, n: int): string` | Safe | Make string (deprecated, use `std.str.make`) |
+| `string_from` | `(x: T): string` | Safe | Convert value to string |
+| `string_get` | `(s: string, i: int): char` | Safe | Get character from string at index |
+| `to_string` | `(x: T): string` | Safe | Convert to string (MVM builtin) |
 
 ### Box Functions
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `box_new` | `(x: T): box<T>` | Create a new box |
-| `box_deref` | `(b: box<T>): T` | Dereference a box |
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `box_new` | `(x: T): box<T>` | Safe | Create a new box |
+| `box_deref` | `(b: box<T>): T` | Safe | Dereference a box |
+| `box_set` | `(b: box<T>, x: T)` | Safe | Set box contents |
 
 ### Range Function
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `range` | `(n: int): array<int>` | Create array `[0, 1, ..., n-1]` |
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `range` | `(n: int): array<int>` | Safe | Create array `[0, 1, ..., n-1]` |
+
+### Async Function
+
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `await` | `(f: future<T>): T` | Safe | Await future result |
 
 ### Unsafe Pointer Functions
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `ptr_alloc` | `(size: int): ptrany` | Allocate memory |
-| `ptr_realloc` | `(p: ptrany, size: int): ptrany` | Reallocate memory |
-| `ptr_free` | `(p: ptrany)` | Free memory |
-| `ptr_set` | `(p: ptrany, v: int)` | Write to pointer |
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `ptr_alloc` | `(size: int): ptrany` | Unsafe | Allocate memory (deprecated, use `std.mem.alloc`) |
+| `ptr_realloc` | `(p: ptrany, size: int): ptrany` | Unsafe | Reallocate memory (deprecated, use `std.mem.realloc`) |
+| `ptr_free` | `(p: ptrany)` | Unsafe | Free memory (deprecated, use `std.mem.mem_free`) |
+| `ptr_set` | `(p: ptr<T>, v: T)` | Unsafe | Write value to pointer |
+| `ptr_offset` | `(p: ptrany, n: int): ptrany` | Unsafe | Offset pointer by n bytes |
 
-All pointer functions are **unsafe** and can only be used in `unsafe` or `trusted` functions.
+### JSON Built-in Functions
+
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `json_parse` | `(s: string): ptrany` | Safe | Parse JSON string into opaque tree |
+| `json_kind` | `(v: ptrany): int` | Safe | JSON node kind (0=null, 1=bool, 2=number, 3=string, 4=array, 5=object, -1=invalid) |
+| `json_bool` | `(v: ptrany): bool` | Safe | Extract bool value |
+| `json_number` | `(v: ptrany): float64` | Safe | Extract number value |
+| `json_string` | `(v: ptrany): string` | Safe | Extract string value |
+| `json_array_len` | `(v: ptrany): int` | Safe | Array length |
+| `json_array_get` | `(v: ptrany, i: int): ptrany` | Safe | Array element by index |
+| `json_object_len` | `(v: ptrany): int` | Safe | Object key count |
+| `json_object_key` | `(v: ptrany, i: int): string` | Safe | Object key name by index |
+| `json_object_get` | `(v: ptrany, i: int): ptrany` | Safe | Object value by index |
+| `json_object_find` | `(v: ptrany, key: string): ptrany` | Safe | Object value by key |
+| `json_free` | `(v: ptrany)` | Safe | Free JSON tree |
+| `json_stringify` | `(v: ptrany): string` | Safe | Serialize JSON tree to string |
+
+### XML Built-in Functions
+
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `xml_parse` | `(s: string): ptrany` | Safe | Parse XML string into opaque tree |
+| `xml_kind` | `(v: ptrany): int` | Safe | XML node kind (0=null, 1=element, 2=text, 3=comment, 4=cdata, 5=pi, 6=document) |
+| `xml_tag` | `(v: ptrany): string` | Safe | Element tag name |
+| `xml_attr_count` | `(v: ptrany): int` | Safe | Attribute count |
+| `xml_attr_name` | `(v: ptrany, i: int): string` | Safe | Attribute name by index |
+| `xml_attr_value` | `(v: ptrany, i: int): string` | Safe | Attribute value by index |
+| `xml_attr_find` | `(v: ptrany, key: string): string` | Safe | Find attribute value by name |
+| `xml_child_count` | `(v: ptrany): int` | Safe | Child node count |
+| `xml_child_get` | `(v: ptrany, i: int): ptrany` | Safe | Child node by index |
+| `xml_text` | `(v: ptrany): string` | Safe | Text content |
+| `xml_comment` | `(v: ptrany): string` | Safe | Comment content |
+| `xml_cdata` | `(v: ptrany): string` | Safe | CDATA content |
+| `xml_pi_target` | `(v: ptrany): string` | Safe | Processing-instruction target |
+| `xml_pi_data` | `(v: ptrany): string` | Safe | Processing-instruction data |
+| `xml_stringify` | `(v: ptrany): string` | Safe | Serialize XML tree to string |
+| `xml_free` | `(v: ptrany)` | Safe | Free XML tree |
+
+### TOML Built-in Functions
+
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `toml_parse` | `(s: string): ptrany` | Safe | Parse TOML string into opaque tree |
+| `toml_kind` | `(v: ptrany): int` | Safe | TOML node kind (same as JSON: 0=null..5=object) |
+| `toml_bool` | `(v: ptrany): bool` | Safe | Extract bool value |
+| `toml_number` | `(v: ptrany): float64` | Safe | Extract number value |
+| `toml_string` | `(v: ptrany): string` | Safe | Extract string value |
+| `toml_array_len` | `(v: ptrany): int` | Safe | Array length |
+| `toml_array_get` | `(v: ptrany, i: int): ptrany` | Safe | Array element by index |
+| `toml_object_len` | `(v: ptrany): int` | Safe | Object key count |
+| `toml_object_key` | `(v: ptrany, i: int): string` | Safe | Object key name by index |
+| `toml_object_get` | `(v: ptrany, i: int): ptrany` | Safe | Object value by index |
+| `toml_object_find` | `(v: ptrany, key: string): ptrany` | Safe | Object value by key |
+| `toml_free` | `(v: ptrany)` | Safe | Free TOML tree |
+| `toml_stringify` | `(v: ptrany): string` | Safe | Serialize TOML tree to string |
+
+### YAML Built-in Functions
+
+| Function | Signature | Safety | Description |
+|----------|-----------|--------|-------------|
+| `yaml_parse` | `(s: string): ptrany` | Safe | Parse YAML string into opaque tree |
+| `yaml_kind` | `(v: ptrany): int` | Safe | YAML node kind (same as JSON: 0=null..5=object) |
+| `yaml_bool` | `(v: ptrany): bool` | Safe | Extract bool value |
+| `yaml_number` | `(v: ptrany): float64` | Safe | Extract number value |
+| `yaml_string` | `(v: ptrany): string` | Safe | Extract string value |
+| `yaml_array_len` | `(v: ptrany): int` | Safe | Array length |
+| `yaml_array_get` | `(v: ptrany, i: int): ptrany` | Safe | Array element by index |
+| `yaml_object_len` | `(v: ptrany): int` | Safe | Object key count |
+| `yaml_object_key` | `(v: ptrany, i: int): string` | Safe | Object key name by index |
+| `yaml_object_get` | `(v: ptrany, i: int): ptrany` | Safe | Object value by index |
+| `yaml_object_find` | `(v: ptrany, key: string): ptrany` | Safe | Object value by key |
+| `yaml_free` | `(v: ptrany)` | Safe | Free YAML tree |
+| `yaml_stringify` | `(v: ptrany): string` | Safe | Serialize YAML tree to string |
 
 ### FFI (Foreign Function Interface)
 
@@ -1137,21 +1583,19 @@ There is no automatic C binding generation; the C function must be linked manual
 
 ## Standard Library
 
-The Miva standard library (`std-0.1.2`) provides:
+The Miva standard library (`std-0.1.2`) provides the following modules:
 
 ### `std.str` — String Utilities
 
 ```miva
 import "std/str";
 
-std.str.concat(ref a, ref b)      // String concatenation
-std.str.parse_int(ref s)           // String to int parsing
-std.str.len(ref s)                 // String length
-std.str.make(ref s, ref size)     // String repeat
-std.str.from[T](x)                // Value to string (generic)
+std.str.concat(ref a, ref b)       // String concatenation
+std.str.parse_int(ref s)            // String to int parsing
+std.str.len(ref s)                  // String length
+std.str.make(ref s, ref size)       // String repeat
+std.str.from[T](x)                  // Value to string (generic)
 ```
-
-Type parameters are exported for `from[T]`, making it available across modules.
 
 ### `std.io` — Colored I/O
 
@@ -1164,14 +1608,17 @@ std.io.eprint(ref x, ref color)     // Error print with color
 std.io.eprintln(ref x, ref color)   // Error print line with color
 ```
 
+Color strings come from `std.term` (see below).
+
 ### `std.mem` — Memory Management
 
 ```miva
 import "std/mem";
 
-std.mem.alloc(ref size)             // Allocate (ptrany)
-std.mem.realloc(ref p, size)        // Reallocate
-std.mem.free(ref p)                 // Free
+std.mem.alloc(ref size): ptrany        // Allocate memory
+std.mem.realloc(ref p, size): ptrany    // Reallocate memory
+std.mem.mem_free(ref p)                 // Free memory
+std.mem.offset(ref p, n): ptrany        // Offset pointer by n bytes
 ```
 
 ### `std.term` — Terminal Color Codes
@@ -1190,26 +1637,109 @@ std.term.color_cyan()     // "\x1b[0;36m"
 std.term.color_white()    // "\x1b[0;37m"
 ```
 
-### `std.vec` — Vector
+### `std.vec` — Growable Array (Vector)
 
 ```miva
 import "std/vec";
 
-std.vec.new[T]()                  // Create an empty vector
-std.vec.push[T](ref v, x)         // Append element
-std.vec.get[T](ref v, i)          // Get element by index
-std.vec.len[T](ref v)             // Number of elements
-std.vec.pop[T](ref v)             // Remove and return last element
+// Types
+Vec[T] = struct { data: ptrany, len: int, cap: int }
+
+// Construction
+std.vec.new[T]()                        // Create empty vec (no allocation)
+std.vec.with_capacity[T](cap)           // Create vec with pre-allocated capacity
+
+// Querying
+std.vec.len[T](ref v)                   // Number of elements
+std.vec.capacity[T](ref v)              // Current capacity (without realloc)
+std.vec.is_empty[T](ref v)              // Is the vec empty?
+std.vec.elem_size[T](): int             // Element byte size
+
+// Access
+std.vec.get[T](ref v, i)                // Get element by index (panics on OOB)
+std.vec.get_unchecked[T](ref v, i)      // Get element by index (no bounds check)
+
+// Mutation
+std.vec.push[T](ref v, x)               // Append element
+std.vec.pop[T](ref v): T                // Remove and return last element
+std.vec.set[T](ref v, i, x)             // Write element at index
+
+// Memory management
+std.vec.free[T](ref v)                  // Release backing buffer
+std.vec.shrink_to_fit[T](ref v)         // Release excess capacity
+std.vec.clear[T](ref v)                 // Clear without freeing buffer
+std.vec.copy[T](ref v): Vec[T]          // Deep copy
+std.vec.truncate[T](ref v, new_len)     // Reduce len without realloc
+
+// Internal
+std.vec.grow[T](ref v, min_cap)         // Grow buffer to at least min_cap
 ```
+
+Most `std.vec` operations are `unsafe` as they dereference raw pointers.
 
 ### `std.box` — Boxed Values
 
 ```miva
 import "std/box";
+```
 
-std.box.new[T](x)                 // Create a boxed value
-std.box.get[T](ref b)             // Dereference a box
-std.box.set[T](ref b, x)          // Update boxed value
+The `std.box` module is currently a stub (empty). Use the built-in functions `box_new`, `box_deref`, `box_set` instead.
+
+### `std.option` — Optional Values
+
+```miva
+import "std/option";
+
+// Generic optional value type
+Option[T] = enum { Some(T), None }
+
+// Construction
+std.option.some[T](v)                   // Wrap value in Some
+std.option.none[T](_dummy)              // Create None (needs dummy T value)
+
+// Querying
+std.option.is_some[T](ref o): bool      // Is it a Some?
+std.option.is_none[T](ref o): bool      // Is it None?
+
+// Unwrapping
+std.option.expect[T](ref o, msg): T     // Unwrap or panic with message
+std.option.unwrap[T](ref o): T          // Unwrap or panic
+std.option.unwrap_or[T](ref o, default): T  // Unwrap or return default
+
+// Comparison
+std.option.contains[T](ref o, x): bool  // Is it Some containing x?
+
+// Conversion
+std.option.flatten[T](ref o): Option[T] // Flatten Option[Option[T]] → Option[T]
+```
+
+### `std.result` — Result Values
+
+```miva
+import "std/result";
+
+// Generic result type
+Result[T, E] = enum { Ok(T), Err(E) }
+
+// Construction
+std.result.ok[T, E](v)                  // Wrap value in Ok
+std.result.err[T, E](e)                 // Wrap error in Err
+
+// Querying
+std.result.is_ok[T, E](ref r): bool     // Is it Ok?
+std.result.is_err[T, E](ref r): bool    // Is it Err?
+
+// Unwrapping
+std.result.expect[T, E](ref r, msg): T  // Unwrap or panic with message
+std.result.unwrap[T, E](ref r): T       // Unwrap Ok or panic
+std.result.unwrap_or[T, E](ref r, fallback): T  // Unwrap or return fallback
+
+// Transformation
+std.result.map_err[T, E, F](ref r, e): Result[T, F]  // Map error to new type
+
+// Combination
+std.result.and[T, E, U](ref r, other): Result[U, E]   // Chain on Ok
+std.result.or[T, E, F](ref r, other): Result[T, F]    // Fallback on Err
 ```
 
 ### `std.json` — JSON Parsing
@@ -1217,17 +1747,29 @@ std.box.set[T](ref b, x)          // Update boxed value
 ```miva
 import "std/json";
 
-std.json.parse(ref s)             // Parse string -> ptrany (JSON tree)
-std.json.object_get(ref v, i)     // Get object/array element by index
-std.json.object_len(ref v)        // Number of keys/elements
-std.json.object_key(ref v, i)     // Get object key by index
-std.json.object_find(ref v, k)    // Find object value by key
-std.json.kind(ref v)              // JSON node kind (bool/number/string/array/object)
-std.json.bool(ref v)              // Extract bool value
-std.json.number(ref v)            // Extract number value
-std.json.string(ref v)            // Extract string value
-std.json.stringify(ref v)         // Serialize JSON tree to string
-std.json.free(ref v)              // Free the JSON tree
+// Kind tags: 0=null 1=bool 2=number 3=string 4=array 5=object
+
+std.json.parse(ref s): ptrany               // Parse JSON string → opaque handle
+std.json.kind(ref v): int                   // Node kind tag
+std.json.is_null(ref v): bool               // Kind predicate
+std.json.is_bool(ref v): bool               // Kind predicate
+std.json.is_number(ref v): bool             // Kind predicate
+std.json.is_string(ref v): bool             // Kind predicate
+std.json.is_array(ref v): bool              // Kind predicate
+std.json.is_object(ref v): bool             // Kind predicate
+
+std.json.as_bool(ref v): bool               // Extract bool (panics on mismatch)
+std.json.as_number(ref v): float64          // Extract number (panics on mismatch)
+std.json.as_string(ref v): string           // Extract string (panics on mismatch)
+
+std.json.len(ref v): int                    // Array length or object key count
+std.json.array_get(ref v, i): ptrany         // Array element by index
+std.json.object_get(ref v, i): ptrany        // Object value by index
+std.json.object_key(ref v, i): string        // Object key name by index
+std.json.object_find(ref v, key): ptrany     // Object value by key
+
+std.json.stringify(ref v): string           // Serialize to compact JSON
+std.json.free(ref v)                        // Free the tree
 ```
 
 ### `std.xml` — XML Parsing
@@ -1235,35 +1777,78 @@ std.json.free(ref v)              // Free the JSON tree
 ```miva
 import "std/xml";
 
-std.xml.parse(ref s)              // Parse string -> ptrany (XML tree)
-std.xml.kind(ref v)               // Node kind (element/text/comment/cdata/pi)
-std.xml.tag(ref v)                // Element tag name
-std.xml.attr_count(ref v)         // Number of attributes
-std.xml.attr_name(ref v, i)       // Attribute name by index
-std.xml.attr_value(ref v, i)      // Attribute value by index
-std.xml.attr_find(ref v, k)       // Find attribute value by name
-std.xml.child_count(ref v)        // Number of child nodes
-std.xml.child_get(ref v, i)       // Child node by index
-std.xml.text(ref v)               // Text content of a text node
-std.xml.comment(ref v)            // Comment content
-std.xml.cdata(ref v)              // CDATA content
-std.xml.pi_target(ref v)          // Processing-instruction target
-std.xml.pi_data(ref v)            // Processing-instruction data
-std.xml.stringify(ref v)          // Serialize XML tree to string
-std.xml.free(ref v)              // Free the XML tree
+// Kind tags: 0=null 1=element 2=text 3=comment 4=cdata 5=pi 6=document
+
+std.xml.parse(ref s): ptrany                // Parse XML string → opaque handle
+std.xml.kind(ref v): int                    // Node kind tag
+std.xml.is_element(ref v): bool             // Kind predicate
+std.xml.is_text(ref v): bool                // Kind predicate
+std.xml.is_comment(ref v): bool             // Kind predicate
+std.xml.is_cdata(ref v): bool               // Kind predicate
+std.xml.is_pi(ref v): bool                  // Kind predicate
+std.xml.is_document(ref v): bool            // Kind predicate
+
+std.xml.tag(ref v): string                  // Element tag name
+std.xml.attr_count(ref v): int              // Number of attributes
+std.xml.attr_name(ref v, i): string          // Attribute name by index
+std.xml.attr_value(ref v, i): string         // Attribute value by index
+std.xml.attr_find(ref v, key): string        // Find attribute value by name
+std.xml.child_count(ref v): int             // Number of child nodes
+std.xml.child_get(ref v, i): ptrany          // Child node by index
+
+std.xml.text(ref v): string                 // Text content
+std.xml.comment(ref v): string              // Comment content
+std.xml.cdata(ref v): string                // CDATA content
+std.xml.pi_target(ref v): string            // Processing instruction target
+std.xml.pi_data(ref v): string              // Processing instruction data
+
+std.xml.stringify(ref v): string            // Serialize to XML text
+std.xml.free(ref v)                         // Free the tree
 ```
 
-### `std.toml` / `std.yaml` — TOML & YAML Parsing
+### `std.toml` — TOML Parsing
 
-Both expose the same tree API as JSON (parse → `ptrany`, then `object_get`/`object_len`/etc.) and reuse the JSON node representation.
+Same tree API shape as `std.json`:
 
 ```miva
 import "std/toml";
+
+std.toml.parse(ref s): ptrany
+std.toml.kind(ref v): int
+std.toml.is_null/bool/number/string/array/object(ref v): bool
+std.toml.as_bool/number/string(ref v)
+std.toml.len(ref v): int
+std.toml.array_get(ref v, i): ptrany
+std.toml.object_get/object_key/object_find(ref v, ...)
+std.toml.stringify(ref v): string
+std.toml.free(ref v)
+```
+
+### `std.yaml` — YAML Parsing
+
+Same tree API shape as `std.json`:
+
+```miva
 import "std/yaml";
 
-std.toml.parse(ref s)             // Parse TOML string -> ptrany
-std.yaml.parse(ref s)             // Parse YAML string -> ptrany
+std.yaml.parse(ref s): ptrany
+std.yaml.kind(ref v): int
+std.yaml.is_null/bool/number/string/array/object(ref v): bool
+std.yaml.as_bool/number/string(ref v)
+std.yaml.len(ref v): int
+std.yaml.array_get(ref v, i): ptrany
+std.yaml.object_get/object_key/object_find(ref v, ...)
+std.yaml.stringify(ref v): string
+std.yaml.free(ref v)
 ```
+
+### `std.future` — Future Utilities
+
+```miva
+import "std/future";
+```
+
+The `std.future` module is currently a stub (empty). Use the built-in `await` function and the `future[T]` type directly.
 
 ---
 
@@ -1304,12 +1889,13 @@ impl Point {
   op_add my_add,    // my_add(a, b) → a + b
   op_sub my_sub,    // my_sub(a, b) → a - b
   op_mul my_mul,    // my_mul(a, b) → a * b
+  op_div my_div,    // my_div(a, b) → a / b
   op_eq my_eq,      // my_eq(a, b) → a == b
   op_neq my_neq,    // my_neq(a, b) → a != b
 }
 ```
 
-This generates C++ `operator+`, `operator-`, `operator*`, `operator==`, and `operator!=` functions for the struct type, delegating to the named functions.
+This generates C++ `operator+`, `operator-`, `operator*`, `operator/`, `operator==`, and `operator!=` functions for the struct type, delegating to the named functions.
 
 ---
 
@@ -1323,6 +1909,7 @@ Source (.miva)
 JSON AST
   ↓ Collect macros project-wide
   ↓ Macro expansion (built-in + user-defined)
+  ↓ Collect function signatures (cross-module type resolution)
   ↓ Symbol table construction
   ↓ Semantic analysis
     • Variable resolution
@@ -1332,6 +1919,7 @@ JSON AST
   ↓ Type checking
     • Type inference
     • Generic type substitution
+    • Lambda capture annotation
     • Type consistency verification
   ↓ Warning generation & filtering
   ↓ Code generation (C++ / LLVM IR / MVM bytecode)
@@ -1399,7 +1987,7 @@ build/debug/cache/
 | Code | Description |
 |------|-------------|
 | E0001 | Use of moved value |
-| E0002 | Cannot move ref parameter / assign to immutable variable |
+| E0002 | Cannot move ref parameter / cannot assign to immutable variable |
 | E0004 | Duplicate function or struct definition |
 | E0005 | Module declaration must be at top / only one module / duplicate module |
 | E0007 | Variable not found |
@@ -1412,11 +2000,12 @@ build/debug/cache/
 
 | Code | Description |
 |------|-------------|
-| E0014 | Type mismatch / void value where non-void expected |
-| E0016 | Function argument count or type mismatch |
-| E0017 | Return type mismatch |
+| E0014 | Type mismatch / void value where non-void expected / binop type mismatch / if condition not bool / branch type mismatch / deref non-pointer / field access on non-struct |
+| E0016 | Function argument count or type mismatch / enum variant payload length mismatch |
+| E0017 | Return type mismatch / async function body vs declared future element type |
 | E0018 | Struct literal error (unknown struct / wrong field type / missing field) |
-| E0019 | Unknown field in struct |
+| E0019 | Unknown field in struct / unknown variant in enum / payload index out of bounds |
+| E0020 | Lambda body type does not match declared return type / async function must return future[T] |
 | E0021 | Invalid cast |
 | E0022 | Type mismatch in let declaration or assignment |
 | E0024 | All array elements must have the same type |
@@ -1431,7 +2020,7 @@ build/debug/cache/
 | W0001 | Naming convention violation (non-snake_case function/variable, non-lowercase module) |
 | W0002 | Deprecated function usage (use std library replacements) |
 | W0003 | Invalid intro comment annotation |
-| W0004 | Deprecated keyword usage (`c` → use `inline` instead) |
+| W0004 | Deprecated keyword usage (`c` keyword → use `inline` instead) |
 
 Warnings can be controlled via magical directives:
 
@@ -1454,7 +2043,7 @@ Warnings can be controlled via magical directives:
 | `string_make` | `std.str.make` |
 | `ptr_alloc` | `std.mem.alloc` |
 | `ptr_realloc` | `std.mem.realloc` |
-| `ptr_free` | `std.mem.free` |
+| `ptr_free` | `std.mem.mem_free` |
 
 ## Glossary
 
@@ -1468,3 +2057,6 @@ Warnings can be controlled via magical directives:
 - **Magical** — Compiler directive controlling warnings, release mode, etc.
 - **Intro** — Annotation comment documenting safety/usage of the next definition
 - **Sir (sin-)** — Single file compilation (no project setup needed)
+- **Enum** — Algebraic data type / tagged union with named variants
+- **Closure** — Anonymous function with captured environment
+- **Guard** — Additional condition on a pattern matching branch
