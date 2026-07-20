@@ -647,6 +647,25 @@ impl<'input> Parser<'input> {
 
     fn parse_typ(&mut self) -> Result<Typ, String> {
         match self.peek_token()? {
+            Some(&Token::Fn) => {
+                self.advance()?; // consume "fn"
+                self.expect(&Token::LParen)?;
+                let mut params = Vec::new();
+                if self.peek_token()? != Some(&Token::RParen) {
+                    loop {
+                        params.push(self.parse_typ()?);
+                        if self.peek_token()? == Some(&Token::Comma) {
+                            self.advance()?;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Token::RParen)?;
+                self.expect(&Token::Colon)?;
+                let returns = Box::new(self.parse_typ()?);
+                Ok(Typ::TFunc { params, returns })
+            }
             Some(&Token::Int) => {
                 self.advance()?;
                 Ok(Typ::TInt)
@@ -1327,6 +1346,18 @@ impl<'input> Parser<'input> {
         }
     }
 
+    fn parse_block_expr(&mut self) -> Result<Expr, String> {
+        let start = self.advance()?.0; // "{"
+        let stmts = self.parse_stmt_list()?;
+        let res = self.parse_opt_expr()?;
+        self.expect(&Token::RBrace)?;
+        Ok(Expr::EBlock {
+            loc: self.loc(start),
+            stmts,
+            result: res,
+        })
+    }
+
     // ── Expressions ──────────────────────────────────────────────────
 
     fn parse_expr(&mut self) -> Result<Expr, String> {
@@ -1444,6 +1475,18 @@ impl<'input> Parser<'input> {
 
     fn parse_primary(&mut self) -> Result<Expr, String> {
         match self.peek_token()? {
+            Some(&Token::LParen) => {
+                // Disambiguate `(` grouping `)` from a lambda `(params): ret => {...}`.
+                // Use speculative parsing: try to parse a full lambda head; if it
+                // succeeds (ending at `=>`), this is a lambda.
+                if self.is_lambda_head() {
+                    return self.parse_lambda();
+                }
+                self.advance()?;
+                let expr = self.parse_expr()?;
+                self.expect(&Token::RParen)?;
+                Ok(expr)
+            }
             Some(&Token::IntLit(_)) => {
                 let (start, tok, _) = self.advance()?;
                 if let Token::IntLit(s) = tok {
@@ -1548,17 +1591,7 @@ impl<'input> Parser<'input> {
                 self.expect(&Token::RParen)?;
                 Ok(expr)
             }
-            Some(&Token::LBrace) => {
-                let start = self.advance()?.0; // "{"
-                let stmts = self.parse_stmt_list()?;
-                let res = self.parse_opt_expr()?;
-                self.expect(&Token::RBrace)?;
-                Ok(Expr::EBlock {
-                    loc: self.loc(start),
-                    stmts,
-                    result: res,
-                })
-            }
+            Some(&Token::LBrace) => self.parse_block_expr(),
             Some(&Token::LBracket) => {
                 let start = self.advance()?.0;
                 let mut values = Vec::new();
@@ -1583,6 +1616,112 @@ impl<'input> Parser<'input> {
             Some(tok) => Err(format!("Unexpected token in expression: {:?}", tok)),
             None => Err("Unexpected EOF in expression".to_string()),
         }
+    }
+
+    /// Speculatively check if the input starting at `(` is a lambda head
+    /// `(params): ret => ...`. Uses a clone so live state is untouched.
+    fn is_lambda_head(&mut self) -> bool {
+        let mut probe = self.clone();
+        // consume "("
+        match probe.advance() {
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+        // parse params until ")"
+        let mut ok = true;
+        if probe.peek_token() == Ok(Some(&Token::RParen)) {
+            // empty params
+            if probe.advance().is_err() {
+                return false;
+            }
+        } else {
+            loop {
+                // expect ident
+                match probe.advance() {
+                    Ok((_, Token::Ident(_), _)) => {}
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+                // expect ":"
+                match probe.advance() {
+                    Ok((_, Token::Colon, _)) => {}
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+                // parse type
+                if probe.parse_typ().is_err() {
+                    ok = false;
+                    break;
+                }
+                // expect "," or ")"
+                match probe.peek_token() {
+                    Ok(Some(&Token::Comma)) => {
+                        if probe.advance().is_err() {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    Ok(Some(&Token::RParen)) => {
+                        if probe.advance().is_err() {
+                            ok = false;
+                            break;
+                        }
+                        break;
+                    }
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if !ok {
+            return false;
+        }
+        // After ")" we need ": type =>"
+        if probe.peek_token() != Ok(Some(&Token::Colon)) {
+            return false;
+        }
+        if probe.advance().is_err() {
+            return false;
+        }
+        if probe.parse_typ().is_err() {
+            return false;
+        }
+        probe.peek_token() == Ok(Some(&Token::DArrow))
+    }
+
+    fn parse_lambda(&mut self) -> Result<Expr, String> {
+        let start = self.advance()?.0; // consume "("
+        let mut params = Vec::new();
+        if self.peek_token()? != Some(&Token::RParen) {
+            loop {
+                let (name, _) = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let typ = self.parse_typ()?;
+                params.push(Param::POwn { name, typ });
+                if self.peek_token()? == Some(&Token::Comma) {
+                    self.advance()?;
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(&Token::RParen)?;
+        self.expect(&Token::Colon)?;
+        let ret = self.parse_typ()?;
+        self.expect(&Token::DArrow)?;
+        let body = self.parse_block_expr()?;
+        Ok(Expr::ELambda {
+            loc: self.loc(start),
+            params,
+            ret,
+            body: Box::new(body),
+        })
     }
 
     fn parse_struct_init_expr(&mut self) -> Result<Expr, String> {
@@ -1935,6 +2074,76 @@ mod tests {
             _ => panic!("expected DFunc"),
         }
     }
+
+    #[test]
+    fn test_parse_func_type() {
+        let defs = crate::parse("f = (g: fn(int, int): int): int => { return 0; }", "t.mv").unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Def::DFunc { params, .. } => {
+                assert_eq!(params.len(), 1);
+                if let Param::POwn { typ, .. } = &params[0] {
+                    assert!(matches!(typ, Typ::TFunc { .. }));
+                } else {
+                    panic!("expected POwn param");
+                }
+            }
+            _ => panic!("expected DFunc"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lambda_simple() {
+        let defs = crate::parse("apply = (f: fn(int): int, x: int): int => { return f(x); }", "t.mv").unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Def::DFunc { params, body, .. } => {
+                assert_eq!(params.len(), 2);
+                // body should be an EBlock with a call to f
+                assert!(matches!(body.as_ref(), Expr::EBlock { .. }));
+            }
+            _ => panic!("expected DFunc"),
+        }
+    }
+
+    fn find_lambda_in_block(e: &Expr) -> bool {
+        match e {
+            Expr::ELambda { .. } => true,
+            Expr::EBlock { stmts, result, .. } => {
+                stmts.iter().any(|s| match s {
+                    Stmt::SLet { expr, .. } | Stmt::SLetTyped { expr, .. } => find_lambda_in_block(expr),
+                    Stmt::SExpr { expr, .. } => find_lambda_in_block(expr),
+                    Stmt::SReturn { expr, .. } => find_lambda_in_block(expr),
+                    _ => false,
+                }) || result.as_ref().map_or(false, |r| find_lambda_in_block(r))
+            }
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn test_parse_lambda_inside_block() {
+        let defs = crate::parse("main = () => { g := (x: int): int => { return x + 1; }; return 0; }", "t.mv").unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Def::DFunc { body, .. } => {
+                assert!(find_lambda_in_block(body), "expected a lambda in body");
+            }
+            _ => panic!("expected DFunc"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lambda_empty_params() {
+        let defs = crate::parse("main = () => { f := (): int => { return 42; }; return 0; }", "t.mv").unwrap();
+        assert_eq!(defs.len(), 1);
+        match &defs[0] {
+            Def::DFunc { body, .. } => {
+                assert!(find_lambda_in_block(body), "expected a lambda in body");
+            }
+            _ => panic!("expected DFunc"),
+        }
+    }
 }
 
 // Ensure Lexer is Clone for backtracking
@@ -1944,8 +2153,8 @@ impl<'input> Clone for Parser<'input> {
             lexer: self.lexer.clone(),
             input: self.input,
             file_name: self.file_name,
-            peeked: None, // discard peeked state on clone
-            pending_type_args: vec![],
+            peeked: self.peeked.clone(),
+            pending_type_args: self.pending_type_args.clone(),
         }
     }
 }
