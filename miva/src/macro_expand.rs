@@ -365,7 +365,8 @@ fn expand_expr(expr: &Expr, addf: &mut Vec<Def>, macro_table: &MacroTable) -> Re
         | Expr::EMove { .. }
         | Expr::EClone { .. }
         | Expr::EVoid { .. }
-        | Expr::EEnumPattern { .. } => Ok(expr.clone()),
+        | Expr::EEnumPattern { .. }
+        | Expr::ELambda { .. } => Ok(expr.clone()),
     }
 }
 
@@ -603,7 +604,8 @@ fn substitute_macro_vars(expr: &Expr, args: &[Expr], param_names: &[&str]) -> Ex
         | Expr::EMove { .. }
         | Expr::EClone { .. }
         | Expr::EVoid { .. }
-        | Expr::EEnumPattern { .. } => expr.clone(),
+        | Expr::EEnumPattern { .. }
+        | Expr::ELambda { .. } => expr.clone(),
     }
 }
 

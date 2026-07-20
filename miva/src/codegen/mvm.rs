@@ -999,6 +999,10 @@ impl MvmCodegen {
             Expr::EEnumPattern { .. } => {
                 unreachable!("EEnumPattern is handled inline in the EChoose arm")
             }
+            Expr::ELambda { .. } => {
+                // TODO: full closure lowering implemented in Task 9
+                self.emit_op(MvmOp::PushUnit);
+            }
         }
     }
 

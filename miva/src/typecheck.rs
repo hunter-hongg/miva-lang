@@ -34,6 +34,13 @@ pub(crate) fn normalize_typ(typ: &Typ, type_params: &[String]) -> Typ {
         Typ::TFuture { of } => Typ::TFuture {
             of: Box::new(normalize_typ(of, type_params)),
         },
+        Typ::TFunc { params, returns } => Typ::TFunc {
+            params: params
+                .iter()
+                .map(|p| normalize_typ(p, type_params))
+                .collect(),
+            returns: Box::new(normalize_typ(returns, type_params)),
+        },
         _ => typ.clone(),
     }
 }
@@ -87,6 +94,10 @@ fn resolve_type(typ: &Typ, subst: &HashMap<String, Typ>) -> Typ {
         Typ::TFuture { of } => Typ::TFuture {
             of: Box::new(resolve_type(of, subst)),
         },
+        Typ::TFunc { params, returns } => Typ::TFunc {
+            params: params.iter().map(|p| resolve_type(p, subst)).collect(),
+            returns: Box::new(resolve_type(returns, subst)),
+        },
         _ => typ.clone(),
     }
 }
@@ -115,10 +126,19 @@ fn infer_type_from_arg(param_typ: &Typ, arg_typ: &Typ, subst: &mut HashMap<Strin
                 infer_type_from_arg(pt, at, subst);
             }
         }
+        (Typ::TFunc { params: pp, returns: pr }, Typ::TFunc { params: ap, returns: ar })
+            if pp.len() == ap.len() =>
+        {
+            for (pt, at) in pp.iter().zip(ap.iter()) {
+                infer_type_from_arg(pt, at, subst);
+            }
+            infer_type_from_arg(pr, ar, subst);
+        }
         _ => {}
     }
 }
 
+#[derive(Clone)]
 struct TypeEnv {
     vars: HashMap<String, Typ>,
 }
@@ -379,7 +399,8 @@ fn loc_of(e: &Expr) -> Loc {
         | Expr::EWhile { loc, .. }
         | Expr::ELoop { loc, .. }
         | Expr::EFor { loc, .. }
-        | Expr::EEnumPattern { loc, .. } => loc.clone(),
+        | Expr::EEnumPattern { loc, .. }
+        | Expr::ELambda { loc, .. } => loc.clone(),
         Expr::EMacroVar { loc, .. } => loc.clone(),
         Expr::EMethodCall { loc, .. } => loc.clone(),
     }
@@ -906,6 +927,41 @@ fn infer_type(
                 }
             };
             (typ, errs)
+        }
+        Expr::ELambda {
+            params,
+            ret,
+            body,
+            loc,
+            ..
+        } => {
+            let mut errs = vec![];
+            // Build a child environment with the lambda's own params.
+            let mut child_env = env.clone();
+            for p in params {
+                let (name, typ) = match p {
+                    Param::PRef { name, typ } => (name.clone(), typ.clone()),
+                    Param::POwn { name, typ } => (name.clone(), typ.clone()),
+                };
+                child_env.vars.insert(name, typ);
+            }
+            let (body_typ, body_errs) =
+                infer_type(&mut child_env, func_sigs, structs, struct_type_params, enums, enum_type_params, &Some(ret.clone()), body);
+            errs.extend(body_errs);
+            if !types_equal(&body_typ, ret) {
+                errs.push(Error::new(
+                    "E0020",
+                    loc,
+                    &format!("lambda body type {:?} does not match declared return {:?}", body_typ, ret),
+                ));
+            }
+            let param_typs: Vec<Typ> = params
+                .iter()
+                .map(|p| match p {
+                    Param::PRef { typ, .. } | Param::POwn { typ, .. } => typ.clone(),
+                })
+                .collect();
+            (Typ::TFunc { params: param_typs, returns: Box::new(ret.clone()) }, errs)
         }
         Expr::ECall {
             name,

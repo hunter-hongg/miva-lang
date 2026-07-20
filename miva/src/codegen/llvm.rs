@@ -1274,6 +1274,10 @@ fn gen_expr(expr: &Expr, ctx: &mut LlvmCtx, body: &mut String) -> String {
         Expr::EEnumPattern { .. } => {
             unreachable!("EEnumPattern is handled inline in the EChoose arm")
         }
+        Expr::ELambda { .. } => {
+            // TODO: full closure lowering implemented in Task 8
+            "0".to_string()
+        }
     }
 }
 

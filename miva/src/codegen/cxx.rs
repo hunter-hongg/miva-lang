@@ -102,6 +102,11 @@ pub fn cxx_type(typ: &Typ) -> String {
         Typ::TPtrAny => "mvp_builtin_ptrany".into(),
         Typ::TInvalid => "invalid".into(),
         Typ::TGenericParam { name } => name.clone(),
+        Typ::TFunc { params, returns } => {
+            let ps: Vec<String> = params.iter().map(|p| cxx_type(p)).collect();
+            let r = cxx_type(returns);
+            format!("mvp_closure<{}, {}>", ps.join(", "), r)
+        }
     }
 }
 
@@ -424,6 +429,10 @@ fn cxx_expr(expr: &Expr, depth: usize, expected_type: Option<&str>) -> String {
         Expr::EMethodCall { .. } => unreachable!(),
         Expr::EEnumPattern { .. } => {
             unreachable!("EEnumPattern is handled inline in the EChoose arm")
+        }
+        Expr::ELambda { .. } => {
+            // TODO: full closure lowering implemented in Task 7
+            "// lambda".to_string()
         }
     }
 }

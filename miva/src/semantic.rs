@@ -47,6 +47,7 @@ fn is_copy_type(types: &HashMap<String, Vec<FieldDef>>, t: &Typ) -> bool {
                 false
             }
         }
+        Typ::TFunc { .. } => false,
     }
 }
 
@@ -482,7 +483,8 @@ fn check_expr(ctx: &mut Context, symbol_table: &SymbolTable, e: &Expr) -> Vec<Er
         | Expr::EMacro { .. }
         | Expr::EMacroVar { .. }
         | Expr::EAddr { .. }
-        | Expr::EEnumPattern { .. } => {}
+        | Expr::EEnumPattern { .. }
+        | Expr::ELambda { .. } => {}
         Expr::EMethodCall { .. } => unreachable!(),
     }
 

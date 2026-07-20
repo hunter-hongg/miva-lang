@@ -244,7 +244,8 @@ fn check_expr(expr: &Expr, modname: &str, warnings: &mut Vec<Warning>) {
         | Expr::EClone { .. }
         | Expr::EMove { .. }
         | Expr::EVar { .. }
-        | Expr::EEnumPattern { .. } => {}
+        | Expr::EEnumPattern { .. }
+        | Expr::ELambda { .. } => {}
         Expr::EMethodCall { .. } => unreachable!(),
     }
 }
