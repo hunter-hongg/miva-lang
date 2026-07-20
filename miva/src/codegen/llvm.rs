@@ -12,8 +12,13 @@ static EXTERN_DECLS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 fn module_parts(name: &str) -> Vec<String> {
     let parts: Vec<&str> = name.split('.').collect();
-    if parts.first() == Some(&"std") {
-        let mut result = vec!["mvp_std".into()];
+    if parts.first() == Some(&"std") || parts.first() == Some(&"mvp_std") {
+        let first = if parts.first() == Some(&"std") {
+            "mvp_std".to_string()
+        } else {
+            parts[0].to_string()
+        };
+        let mut result = vec![first];
         result.extend(parts[1..].iter().map(|s| s.to_string()));
         result
     } else {
@@ -283,7 +288,9 @@ fn map_builtin(name: &str, current_module: Option<&str>) -> String {
                 };
                 format!("@{}", full)
             } else {
-                format!("@{}", parts.join("_"))
+                let module = parts[..parts.len() - 1].join(".");
+                let func = parts[parts.len() - 1];
+                format!("@{}", make_global_name(Some(&module), func))
             }
         }
     }
@@ -478,7 +485,7 @@ fn is_enum_value_expr(expr: &Expr) -> bool {
                 && matches!(expr.as_ref(), Expr::EVar { .. })
         }
         Expr::ECall { name, args, .. } => {
-            if name.contains('.') {
+            if name.matches('.').count() == 1 {
                 true
             } else if let Some(Expr::EVar { name: n, .. }) = args.first() {
                 n.chars().next().map_or(false, |c| c.is_uppercase())
@@ -1331,7 +1338,12 @@ fn ret_type(func_name: &str) -> &'static str {
 }
 
 fn gen_call(name: &str, args: &[Expr], type_args: &[Typ], ctx: &mut LlvmCtx, body: &mut String) -> String {
-    if let Some(dot) = name.find('.') {
+    // An enum constructor is `Enum.Variant` (exactly one dot, e.g. `Option.Some`).
+    // A module-qualified function call (e.g. `mvp_std.option.contains`,
+    // `pkg.lib.foo`) has two or more dots and must be resolved as a function
+    // via map_builtin, not treated as an enum constructor.
+    if name.matches('.').count() == 1 {
+        let dot = name.find('.').unwrap();
         let enum_name = &name[..dot];
         let variant = &name[dot + 1..];
         let arg_strs: Vec<String> = args
@@ -1341,7 +1353,7 @@ fn gen_call(name: &str, args: &[Expr], type_args: &[Typ], ctx: &mut LlvmCtx, bod
         let tmp = ctx.gen_tmp("ecall");
         if arg_strs.is_empty() {
             body.push_str(&format!(
-                "{}{} = call i64 @{}_{}_tag()\n",
+                "{}{} = call i64 @{}_{}()\n",
                 ctx.indent_str(),
                 tmp,
                 enum_name,
@@ -1374,7 +1386,7 @@ fn gen_call(name: &str, args: &[Expr], type_args: &[Typ], ctx: &mut LlvmCtx, bod
             let tmp = ctx.gen_tmp("ecall");
             if arg_strs.is_empty() {
                 body.push_str(&format!(
-                    "{}{} = call i64 @{}_{}_tag()\n",
+                    "{}{} = call i64 @{}_{}()\n",
                     ctx.indent_str(),
                     tmp,
                     enum_name,
@@ -1482,11 +1494,6 @@ fn gen_call(name: &str, args: &[Expr], type_args: &[Typ], ctx: &mut LlvmCtx, bod
     }
 
     let func_name = map_builtin(name, ctx.current_module.as_deref());
-    if !func_name.starts_with("@miva_") && !func_name.starts_with("@ffi_") {
-        if let Ok(mut guard) = EXTERN_DECLS.lock() {
-            guard.get_or_insert_with(HashSet::new).insert(func_name.trim_start_matches('@').to_string());
-        }
-    }
 
     let mut arg_strs = Vec::new();
     for (i, a) in args.iter().enumerate() {
@@ -1497,6 +1504,19 @@ fn gen_call(name: &str, args: &[Expr], type_args: &[Typ], ctx: &mut LlvmCtx, bod
             arg_strs.push(format!("ptr {}", ptr_val));
         } else {
             arg_strs.push(format!("i64 {}", t));
+        }
+    }
+
+    if !func_name.starts_with("@miva_") && !func_name.starts_with("@ffi_") {
+        if let Ok(mut guard) = EXTERN_DECLS.lock() {
+            let bare = func_name.trim_start_matches('@').to_string();
+            let param_list = arg_strs
+                .iter()
+                .map(|s| s.split_whitespace().next().unwrap_or("i64").to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let decl = format!("declare i64 @{}({})", bare, param_list);
+            guard.get_or_insert_with(HashSet::new).insert(decl);
         }
     }
     let ret_ty = ret_type(&func_name);
@@ -2097,9 +2117,10 @@ pub fn build_ir(defs: &[Def], func_sigs: &HashMap<String, crate::codegen::FuncSi
     program.push_str(&runtime_declarations());
     if let Ok(guard) = EXTERN_DECLS.lock() {
         if let Some(decls) = guard.as_ref() {
-            for name in decls.iter() {
+            for decl in decls.iter() {
+                let name = decl.trim_start_matches("declare i64 @").split('(').next().unwrap_or("");
                 if !defined.contains(name) {
-                    program.push_str(&format!("declare i64 @{}()\n", name));
+                    program.push_str(&format!("{}\n", decl));
                 }
             }
         }

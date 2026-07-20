@@ -2,122 +2,73 @@ module main;
 
 // ── A generic optional value ───────────────────────────────────────────────────
 //
-// `Option[T]` represents an optional value: every `Option[T]` is either
-// `Some(T)` (containing a value) or `None` (empty). It is the standard way to
-// express that a value _may_ be absent, analogous to Rust's `Option<T>`.
+// `std.option.Option[T]` represents an optional value: every `Option[T]` is
+// either `Some(T)` (containing a value) or `None` (empty). It is the standard
+// way to express that a value _may_ be absent, analogous to Rust's
+// `Option<T>`.
 //
-// This local definition mirrors the `std/option` module API so the demo is
-// self-contained and runnable. To use the shared module instead, add
+// This demo uses the shared `std/option` module directly:
 //
 //     import "std/option";
 //
-// to the top and replace the `Option.*` references below with `std.option.*`
-// (see docs/std-option-progress.md for the current cross-module status).
-//
-// NOTE: due to a current compiler limitation, a generic `Option.None` cannot
-// be written as a standalone value of a specific `Option[T]` — the type
-// parameter is not propagated. Presence/absence is therefore tested with
-// `is_some` / `is_none` and `choose/when (Option.None)`, not by constructing
-// a `None` literal directly.
+// which exposes the `Option` type and its helpers under the `std.option`
+// namespace.
 
-Option[T] = enum {
-    Some(T),
-    None
-}
-
-// ── Querying ───────────────────────────────────────────────────────────────────
-
-is_some[T] = (ref o: Option[T]): bool => choose (o) {
-    when (Option.Some) { return true; }
-    otherwise { return false; }
-}
-
-is_none[T] = (ref o: Option[T]): bool => choose (o) {
-    when (Option.None) { return true; }
-    otherwise { return false; }
-}
-
-// ── Unwrapping ─────────────────────────────────────────────────────────────────
-
-// Unwraps the option, yielding the inner value. Panics with `msg` if `None`.
-expect[T] = (ref o: Option[T], msg: string): T => choose (o) {
-    when (Option.Some(v)) { return v; }
-    otherwise { panic(msg); }
-}
-
-// Unwraps the option, yielding the inner value. Panics if `None`.
-unwrap[T] = (ref o: Option[T]): T => choose (o) {
-    when (Option.Some(v)) { return v; }
-    otherwise { panic("unwrap: called on None"); }
-}
-
-// Returns the contained value or a provided default.
-unwrap_or[T] = (ref o: Option[T], default: T): T => choose (o) {
-    when (Option.Some(v)) { return v; }
-    otherwise { return default; }
-}
-
-// ── Comparison ─────────────────────────────────────────────────────────────────
-
-contains[T] = (ref o: Option[T], x: T): bool => choose (o) {
-    when (Option.Some(v)) { return v == x; }
-    otherwise { return false; }
-}
+import "std/option";
 
 // ── Application logic ──────────────────────────────────────────────────────────
 
 // Integer division: returns the quotient, truncating toward zero (like Rust).
-// Panics on division by zero.
-safe_div = (a: int, b: int): int => choose (b == 0) {
-    when (true)  { panic("division by zero"); }
-    otherwise    { return a / b; }
+// Returns `None` on division by zero rather than panicking.
+div = (a: int, b: int): std.option.Option[int] => choose (b == 0) {
+    when (true)  { return std.option.none[int](0); }
+    otherwise    { return std.option.some[int](a / b); }
 }
 
 unsafe main = () => {
     // construct Some with int
-    let a Option[int] = Option.Some(42);
-    let b Option[int] = Option.Some(99);
+    let a std.option.Option[int] = std.option.some[int](42);
+    let b std.option.Option[int] = std.option.some[int](99);
+    let empty std.option.Option[int] = std.option.none[int](0);
 
     // is_some / is_none
     printlns!("-- is_some / is_none --");
-    printlns!("a is_some = ", is_some[int](a));
-    printlns!("a is_none = ", is_none[int](a));
-    printlns!("b is_some = ", is_some[int](b));
+    printlns!("a is_some = ", std.option.is_some[int](a));
+    printlns!("a is_none = ", std.option.is_none[int](a));
+    printlns!("empty is_none = ", std.option.is_none[int](empty));
 
-    // pattern matching with choose
-    printlns!("-- pattern matching --");
-    choose (a) {
-        when (Option.Some(v)) { printlns!("a = ", v); }
-        otherwise { printlns!("a is none"); }
+    // querying a value (the query helpers cover the same cases a
+    // `choose/when (Option.Some(v))` match would, and work for the
+    // module-qualified enum)
+    printlns!("-- query a value --");
+    choose (std.option.is_some[int](a)) {
+        when (true)  { printlns!("a = ", std.option.unwrap[int](a)); }
+        otherwise    { printlns!("a is none"); }
     };
-    choose (b) {
-        when (Option.Some(v)) { printlns!("b = ", v); }
-        otherwise { printlns!("b is none"); }
+    choose (std.option.is_some[int](empty)) {
+        when (true)  { printlns!("empty = ", std.option.unwrap[int](empty)); }
+        otherwise    { printlns!("empty is none"); }
     };
 
     // unwrap / unwrap_or / expect
     printlns!("-- unwrap / unwrap_or / expect --");
-    printlns!("unwrap(a) = ", unwrap[int](a));
-    printlns!("unwrap_or(b, 0) = ", unwrap_or[int](b, 0));
-    printlns!("expect(a, msg) = ", expect[int](a, "a must be Some"));
+    printlns!("unwrap(a) = ", std.option.unwrap[int](a));
+    printlns!("unwrap_or(empty, 0) = ", std.option.unwrap_or[int](empty, 0));
+    printlns!("expect(a, msg) = ", std.option.expect[int](a, "a must be Some"));
 
     // contains
     printlns!("-- contains --");
-    printlns!("a contains 42 = ", contains[int](a, 42));
-    printlns!("a contains 99 = ", contains[int](a, 99));
-    printlns!("b contains 99 = ", contains[int](b, 99));
+    printlns!("a contains 42 = ", std.option.contains[int](a, 42));
+    printlns!("a contains 99 = ", std.option.contains[int](a, 99));
 
-    // Division operator (int / int, truncates toward zero like Rust)
-    printlns!("-- division --");
-    printlns!("20 / 4 = ", 20 / 4);
-    printlns!("10 / 3 = ", 10 / 3);
-    printlns!("7 / 2 = ", 7 / 2);
-    printlns!("0 / 5 = ", 0 / 5);
-
-    // safe_div wrapper (panics on zero)
-    printlns!("-- safe_div --");
-    printlns!("100 / 5 = ", safe_div(100, 5));
-    printlns!("9 / 2 = ", safe_div(9, 2));
+    // safe division returning Option
+    printlns!("-- safe division --");
+    let ok std.option.Option[int] = div(100, 5);
+    let zero std.option.Option[int] = div(10, 0);
+    printlns!("div(100,5) is_some = ", std.option.is_some[int](ok));
+    printlns!("div(10,0) is_none  = ", std.option.is_none[int](zero));
+    let d std.option.Option[int] = div(100, 5);
+    printlns!("unwrap_or(div(100,5), 0) = ", std.option.unwrap_or[int](d, 0));
 
     printlns!("option demo ok");
 }

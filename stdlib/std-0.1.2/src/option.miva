@@ -26,11 +26,12 @@ Option[T] = enum {
 // ── Construction ───────────────────────────────────────────────────────────────
 
 // Wraps a value in `Some`.
-some[T] = (v: T): Option[T] => Option.Some(v)
+some[T] = (v: T): Option[T] => Option.Some[T](v)
 
-// Creates a `None` value. The type parameter is inferred from the context;
-// the ignored argument is only there to carry the element type `T`.
-none[T] = (_dummy: T): Option[T] => Option.None
+// Creates a `None` value. The type parameter is carried explicitly so the
+// generic enum constructor resolves to `Option[T]` rather than an empty
+// `Option<>`.
+none[T] = (_dummy: T): Option[T] => Option.None[T]()
 
 // ── Querying ───────────────────────────────────────────────────────────────────
 
@@ -80,7 +81,7 @@ contains[T] = (ref o: Option[T], x: T): bool => choose (o) {
 // Flattens one level of nesting.
 flatten[T] = (ref o: Option[Option[T]]): Option[T] => choose (o) {
     when (Option.Some(inner)) { return inner; }
-    otherwise { return Option.None; }
+    otherwise { return Option.None[T](); }
 }
 
 // ── Exports ────────────────────────────────────────────────────────────────────

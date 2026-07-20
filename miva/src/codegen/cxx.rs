@@ -74,15 +74,25 @@ pub fn cxx_type(typ: &Typ) -> String {
         Typ::TStruct {
             name, type_args, ..
         } => {
-            if type_args.is_empty() {
+            // Module-qualified type names are emitted by the frontend already
+            // joined with `::` (e.g. `std::result::Result`). The leading `std`
+            // module must be rewritten to its C++ namespace `mvp_std` so the
+            // reference resolves to the imported header. Local types
+            // (`Shape`, `Vec`) have no `std::` prefix and pass through.
+            let ns_name = if let Some(rest) = name.strip_prefix("std::") {
+                format!("mvp_std::{}", rest)
+            } else {
                 name.clone()
+            };
+            if type_args.is_empty() {
+                ns_name
             } else {
                 let args_str = type_args
                     .iter()
                     .map(cxx_type)
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{}<{}>", name, args_str)
+                format!("{}<{}>", ns_name, args_str)
             }
         }
         Typ::TPtr { to } => format!("{}*", cxx_type(to)),
@@ -450,7 +460,10 @@ fn cxx_call(name: &str, args: &[Expr], type_args: &[Typ], depth: usize, expected
         let tas: Vec<_> = type_args.iter().map(cxx_type).collect();
         format!("<{}>", tas.join(", "))
     };
-    if let Some(dot) = name.find('.') {
+    if name.matches('.').count() == 1 {
+        // Single-dot name: an enum constructor like `Shape.Circle` or a
+        // module-qualified enum variant. Emit the C++ `Enum_Variant(...)` form.
+        let dot = name.find('.').unwrap();
         let enum_name = &name[..dot];
         let variant = &name[dot + 1..];
         return format!("{}_{}{}({})", enum_name, variant, type_arg_str, args_strs.join(", "));
@@ -1442,6 +1455,12 @@ fn collect_exported_rec(
                             .collect();
                         format!("struct {} {{\n{}}};\n\n", s.name, field_strs)
                     }
+                } else if let Some(e) = sym.lookup_enum(symbol) {
+                    if let Some(denum) = find_enum_def(defs, symbol) {
+                        denum
+                    } else {
+                        cxx_enum_def(&e.name, &e.type_params, &e.variants, String::new(), 0)
+                    }
                 } else if let Some(f) = sym.lookup_function(symbol) {
                     if f.type_params.is_empty() {
                         cxx_func_decl(&f.name, &f.params, &f.return_typ)
@@ -1512,6 +1531,28 @@ fn find_struct_def(defs: &[Def], name: &str) -> Option<String> {
             }
             Def::DModule { .. } => {
                 if let Some(found) = find_struct_def(&defs[1..], name) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_enum_def(defs: &[Def], name: &str) -> Option<String> {
+    for def in defs.iter() {
+        match def {
+            Def::DEnum {
+                name: n,
+                variants,
+                type_params,
+                ..
+            } if n == name => {
+                return Some(cxx_enum_def(n, type_params, variants, String::new(), 0));
+            }
+            Def::DModule { .. } => {
+                if let Some(found) = find_enum_def(&defs[1..], name) {
                     return Some(found);
                 }
             }

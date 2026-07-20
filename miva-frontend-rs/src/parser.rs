@@ -785,18 +785,19 @@ impl<'input> Parser<'input> {
             };
             match self.peek_token()? {
                 Some(&Token::ColonEq) => {
-                    // `name := expr` (no `let`/`mut` prefix) is an assignment
-                    // to an existing variable, NOT a const re-declaration.
-                    // Emitting `SLet { mutable: false }` here would make the
-                    // C++ backend re-declare `const auto name = (expr)`
-                    // shadowing the outer binding and referencing the not-yet-
-                    // deducted inner name (g++ error "use of 'i' before
-                    // deduction of 'auto'"). `SAssign` emits `name = (expr);`.
+                    // `name := expr` (no `let`/`mut` prefix) declares and
+                    // assigns a new variable, like `let name = expr`. The
+                    // `:=` shorthand is used pervasively in the std library
+                    // (e.g. `k := json_kind(v)`) for first declaration, so it
+                    // must introduce a binding rather than assign to an
+                    // existing one. Mutability is allowed so a later `=`
+                    // reassignment in the same scope type-checks.
                     self.advance()?; // ":="
                     let expr = self.parse_expr()?;
                     self.expect(&Token::Semi)?;
-                    Ok(Stmt::SAssign {
+                    Ok(Stmt::SLet {
                         loc: self.loc(start),
+                        mutable: true,
                         name,
                         expr: Box::new(expr),
                     })
@@ -1724,22 +1725,30 @@ fn enum_pattern_or_call(
 ) -> Expr {
     // Enum patterns in `when` arms never carry explicit type arguments; if they
     // are present, treat the construct as a normal enum-constructor call.
+    //
+    // A pattern is exactly `Enum.Variant` (two dotted segments). A path with
+    // more segments (e.g. a cross-module call `std.json.parse`, rewritten by
+    // `process_call_path` to `mvp_std.json.parse`) is a function call, not a
+    // destructuring pattern, so it must keep the full module-qualified name.
     if type_args.is_empty() {
-        if let Some((enum_name, variant)) = name.split_once('.') {
-            let bindings: Option<Vec<String>> = args
-                .iter()
-                .map(|a| match a {
-                    Expr::EVar { name, .. } => Some(name.clone()),
-                    _ => None,
-                })
-                .collect();
-            if let Some(bindings) = bindings {
-                return Expr::EEnumPattern {
-                    loc,
-                    enum_name: enum_name.to_string(),
-                    variant: variant.to_string(),
-                    bindings,
-                };
+        let parts: Vec<&str> = name.split('.').collect();
+        if parts.len() == 2 {
+            if let Some((enum_name, variant)) = name.split_once('.') {
+                let bindings: Option<Vec<String>> = args
+                    .iter()
+                    .map(|a| match a {
+                        Expr::EVar { name, .. } => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(bindings) = bindings {
+                    return Expr::EEnumPattern {
+                        loc,
+                        enum_name: enum_name.to_string(),
+                        variant: variant.to_string(),
+                        bindings,
+                    };
+                }
             }
         }
     }
