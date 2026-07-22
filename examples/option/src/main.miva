@@ -15,6 +15,7 @@ module main;
 // namespace.
 
 import "std/option";
+import "std/result";
 
 // ── Application logic ──────────────────────────────────────────────────────────
 
@@ -69,6 +70,44 @@ unsafe main = () => {
     printlns!("div(10,0) is_none  = ", std.option.is_none[int](zero));
     let d std.option.Option[int] = div(100, 5);
     printlns!("unwrap_or(div(100,5), 0) = ", std.option.unwrap_or[int](d, 0));
+
+    // map — transform the contained value
+    printlns!("-- map --");
+    let doubled std.option.Option[int] = std.option.map[int, int](a, (x: int): int => { return x * 2; });
+    printlns!("map(a, double) = ", std.option.unwrap[int](doubled));
+    let mapped_empty std.option.Option[int] = std.option.map[int, int](empty, (x: int): int => { return x * 2; });
+    printlns!("map(empty, double) is_none = ", std.option.is_none[int](mapped_empty));
+
+    // and_then — chain option-producing functions
+    printlns!("-- and_then --");
+    let pos_ok std.option.Option[int] = std.option.and_then[int, int](a, (x: int): Option[int] => {
+        choose (x > 0) {
+            when (true) { return std.option.some[int](x); }
+            otherwise { return std.option.none[int](0); }
+        };
+    });
+    printlns!("and_then(42, safe_pos_fn) = ", std.option.unwrap[int](pos_ok));
+    let pos_fail std.option.Option[int] = std.option.and_then[int, int](std.option.some[int](-1), (x: int): Option[int] => {
+        choose (x > 0) {
+            when (true) { return std.option.some[int](x); }
+            otherwise { return std.option.none[int](0); }
+        };
+    });
+    printlns!("and_then(-1, safe_pos_fn) is_none = ", std.option.is_none[int](pos_fail));
+
+    // filter — keep only values matching a predicate
+    printlns!("-- filter --");
+    let small_a std.option.Option[int] = std.option.filter[int](a, (x: int): bool => { return x < 50; });
+    printlns!("filter(42, is_small) = ", std.option.unwrap[int](small_a));
+    let filtered std.option.Option[int] = std.option.filter[int](b, (x: int): bool => { return x < 50; });
+    printlns!("filter(99, is_small) is_none = ", std.option.is_none[int](filtered));
+
+    // ok_or — convert Option to Result
+    printlns!("-- ok_or --");
+    let ok_or_res std.result.Result[int, string] = std.option.ok_or[int, string](a, "missing value");
+    printlns!("ok_or(a, ...) is_ok = ", std.result.is_ok[int, string](ok_or_res));
+    let err_or_res std.result.Result[int, string] = std.option.ok_or[int, string](empty, "missing value");
+    printlns!("ok_or(empty, ...) is_err = ", std.result.is_err[int, string](err_or_res));
 
     printlns!("option demo ok");
 }

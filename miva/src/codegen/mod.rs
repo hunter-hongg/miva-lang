@@ -1,4 +1,5 @@
 mod cxx;
+pub mod cxx_ir;
 mod llvm;
 pub mod mvm;
 

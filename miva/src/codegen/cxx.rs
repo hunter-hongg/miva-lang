@@ -88,7 +88,7 @@ pub fn cxx_escape_string(s: &str) -> String {
     out
 }
 
-fn indent_str(n: usize) -> String {
+pub(crate) fn indent_str(n: usize) -> String {
     " ".repeat(n * 2)
 }
 
@@ -143,14 +143,14 @@ pub fn cxx_type(typ: &Typ) -> String {
     }
 }
 
-fn cxx_param(param: &Param) -> String {
+pub(crate) fn cxx_param(param: &Param) -> String {
     match param {
-        Param::PRef { name, typ } => format!("{}& {}", cxx_type(typ), mangle_cpp_kw(name)),
+        Param::PRef { name, typ } => format!("{} const& {}", cxx_type(typ), mangle_cpp_kw(name)),
         Param::POwn { name, typ } => format!("{} {}", cxx_type(typ), mangle_cpp_kw(name)),
     }
 }
 
-fn cxx_func_decl(name: &str, params: &[Param], ret: &Option<Typ>) -> String {
+pub(crate) fn cxx_func_decl(name: &str, params: &[Param], ret: &Option<Typ>) -> String {
     let param_list: Vec<_> = params.iter().map(cxx_param).collect();
     let ret_type = ret.as_ref().map_or("mvp_builtin_unit".into(), cxx_type);
     format!("{} {}({});\n", ret_type, mangle_cpp_kw(name), param_list.join(", "))
@@ -178,7 +178,7 @@ fn is_panic(e: &Expr) -> bool {
     }
 }
 
-fn mangle_cpp_kw(name: &str) -> String {
+pub(crate) fn mangle_cpp_kw(name: &str) -> String {
     // Only mangle the bare (last) identifier — qualified names like
     // `mvp_std::mem::offset` have namespace separators we must preserve.
     // Split on '::' and mangle only the trailing segment.
@@ -298,11 +298,11 @@ pub fn map_builtin(name: &str) -> String {
     }
 }
 
-fn cxx_module(name: &str) -> String {
+pub(crate) fn cxx_module(name: &str) -> String {
     module_parts(name).join("::")
 }
 
-fn module_parts(name: &str) -> Vec<String> {
+pub(crate) fn module_parts(name: &str) -> Vec<String> {
     let parts: Vec<&str> = name.split('.').collect();
     if parts.first() == Some(&"std") {
         let mut result = vec!["mvp_std".into()];
@@ -516,12 +516,14 @@ fn cxx_lambda_lower(
     let body_str = match body {
         Expr::EBlock { stmts, result, .. } => {
             let inner = 2;
-            let stmt_strs: String = stmts.iter().fold(String::new(), |acc, s| {
-                format!("{}{}", acc, cxx_stmt(inner, s, None))
-            });
+            let (non_last_strs, last_expr) = take_last_expr(stmts, inner);
+            let stmt_strs = non_last_strs.join("");
             let result_str = match result {
                 Some(expr) => format!("{}return {};\n", indent_str(inner), cxx_expr(expr, inner, Some(&ret_cxx))),
-                None => String::new(),
+                None => match last_expr {
+                    Some(expr) => format!("{}return {};\n", indent_str(inner), cxx_expr(&expr, inner, Some(&ret_cxx))),
+                    None => String::new(),
+                },
             };
             format!("{{\n{}{}{}}}", capture_bind_str, stmt_strs, result_str)
         }
@@ -563,8 +565,8 @@ fn cxx_lambda_lower(
     };
 
     format!(
-        "({} {{ new {}{}, &{} }})",
-        closure_ty, env_name, capture_init, thunk_name
+        "({} {{ new {}{}, &{}, [](void* p) {{ delete static_cast<{}*>(p); }} }})",
+        closure_ty, env_name, capture_init, thunk_name, env_name
     )
 }
 
@@ -1416,7 +1418,7 @@ fn cxx_impl(struct_name: &str, impls: &[ImplExpr], ind: String) -> String {
     ret
 }
 
-fn cxx_include_path(path: &str) -> String {
+pub(crate) fn cxx_include_path(path: &str) -> String {
     if let Some(c_path) = path.strip_prefix("c:") {
         return format!("#include <{}>\n", c_path);
     }
@@ -1443,7 +1445,7 @@ fn cxx_include_path(path: &str) -> String {
     }
 }
 
-fn cxx_include_here(path: &str) -> String {
+pub(crate) fn cxx_include_here(path: &str) -> String {
     let include = cxx_include_path(path);
     if path.starts_with("c:") {
         include
@@ -1559,6 +1561,18 @@ fn generate_header(defs: &[Def]) -> String {
         }
     }
     format!("#pragma once\n\n{}\n{}\n", includes, exported)
+}
+
+fn short_def_name(def: &Def) -> String {
+    match def {
+        Def::DModule { name, .. } => format!("DModule({})", name),
+        Def::DEnum { name, .. } => format!("DEnum({})", name),
+        Def::DFunc { name, .. } => format!("DFunc({})", name),
+        Def::DStruct { name, .. } => format!("DStruct({})", name),
+        Def::SExport { symbol, .. } => format!("SExport({})", symbol),
+        Def::SImport { path, .. } => format!("SImport({})", path),
+        _ => format!("{:?}", def),
+    }
 }
 
 fn collect_exported_rec(
@@ -1763,39 +1777,7 @@ fn is_main_func(def: &Def) -> bool {
 }
 
 pub fn build_ir(defs: &[Def]) -> [String; 3] {
-    record_enum_defs(defs);
-    reset_closure_registry();
-    let header_content = generate_header(defs);
-    let ScopeParts {
-        includes,
-        defs_str: module_content,
-        main_functions,
-    } = generate_with_scope(defs, None);
-    let closure_defs = take_closure_defs();
-    let preamble = "\
-#include <iostream>
-#include <string>
-#include <vector>
-#include <cstdint>
-#include <mvp_builtin.h>
-
-template<class R, class... A>
-struct mvp_closure {
-    void* env;
-    R (*fn)(void*, A...);
-    R operator()(A... a) const { return fn(env, a...); }
-};
-
-
-using namespace std;
-
-";
-    let program = format!(
-        "{}{}{}\n{}\n{}\n",
-        preamble, includes, closure_defs, module_content, main_functions
-    );
-    let test = generate_test(defs);
-    [program, header_content, test]
+    super::cxx_ir::build_ir(defs)
 }
 
 #[cfg(test)]
@@ -2538,7 +2520,7 @@ mod tests {
             else_: None,
         };
         let result = cxx_expr(&e, 0, None);
-        assert!(result.starts_with("([&]() { if ("));
+        assert!(result.starts_with("([&]() -> void { if ("));
         assert!(result.contains("true"));
         assert!(result.contains("1"));
     }

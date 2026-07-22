@@ -31,8 +31,10 @@ unsafe main = () => {
     printlns!("expect(ok_i) = ", std.result.expect[int, string](ok_i, "should be ok"));
 
     printlns!("-- map_err --");
-    let mapped std.result.Result[int, bool] = std.result.map_err[int, string, bool](err_i, false);
-    printlns!("map_err(err_i,false) is_err = ", std.result.is_err[int, bool](mapped));
+    let mapped std.result.Result[int, bool] = std.result.map_err[int, string, bool](err_i, (e: string): bool => { return e == "not found"; });
+    printlns!("map_err(err_i, is_not_found) is_err = ", std.result.is_err[int, bool](mapped));
+    let ok_mapped std.result.Result[int, bool] = std.result.map_err[int, string, bool](ok_i, (e: string): bool => { return e == "not found"; });
+    printlns!("map_err(ok_i, is_not_found) is_ok  = ", std.result.is_ok[int, bool](ok_mapped));
 
     printlns!("-- and --");
     let ok2  std.result.Result[string, string] = std.result.ok[string, string]("next");

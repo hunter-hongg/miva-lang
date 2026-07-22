@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread::JoinHandle;
 
+use crate::jit::{build_vm_context, JitCompiler, JitTable, VmContext};
 use crate::opcode::Opcode;
 use crate::value::{MvmFuture, Value};
 use serde_json::Value as JsonValue;
@@ -176,7 +177,15 @@ pub struct Mvm {
     host_table: HashMap<String, crate::host::HostFn>,
     /// Keeps the dlopen'd library alive for the lifetime of the VM.
     host_lib: Option<libloading::Library>,
+    /// Profiling counters per function (indexed by func_idx).
+    exec_counts: Vec<AtomicU64>,
+    /// Compiled JIT function pointer table.
+    jit_table: JitTable,
+    /// JIT compiler engine.
+    jit_compiler: Option<JitCompiler>,
 }
+
+const HOTNESS_THRESHOLD: u64 = 100;
 
 impl Mvm {
     pub fn new(program: MvmProgram) -> Self {
@@ -232,6 +241,9 @@ impl Mvm {
             memory: Vec::new(),
             host_table: HashMap::new(),
             host_lib: None,
+            exec_counts: Vec::new(),
+            jit_table: JitTable::new(),
+            jit_compiler: JitCompiler::new().ok(),
         }
     }
 
@@ -418,7 +430,55 @@ impl Mvm {
 
         self.call_stack.push(frame);
 
-        let result = self.execute_loop();
+        // Try JIT dispatch if a compiled entry exists
+        let mut result = Ok(());
+        let mut jit_called = false;
+        if let Some(jit_fn_ptr) = self.jit_table.get(func_idx) {
+            let locals_guard = self.current_locals.lock().unwrap();
+            let locals_ptr = locals_guard.as_ptr();
+            let locals_len = locals_guard.len();
+
+            let mut ctx = build_vm_context(
+                self.stack.as_mut_ptr(),
+                self.stack.len(),
+                self.stack.capacity(),
+                locals_ptr as *mut Value,
+                locals_len,
+                self.pc,
+                self.current_func,
+                self.program.functions[self.current_func].code.as_ptr(),
+                self.program.functions[self.current_func].code.len(),
+                self.exit_code,
+                self.halted,
+                self.program.strings.as_ptr(),
+                self.program.strings.len(),
+                self.memory.as_mut_ptr(),
+                self.memory.len(),
+            );
+
+            let jit_fn: extern "C" fn(*mut VmContext) -> i64 =
+                unsafe { std::mem::transmute(jit_fn_ptr) };
+            let exit = jit_fn(&mut ctx as *mut VmContext);
+
+            // Sync back VM state from VmContext
+            unsafe { self.stack.set_len(ctx.stack_len); }
+            self.pc = ctx.pc;
+            self.exit_code = ctx.exit_code;
+            self.halted = ctx.halted;
+            drop(locals_guard);
+
+            if exit != -1 {
+                jit_called = true;
+            }
+            // else: JIT hit unsupported opcode; fall back to interpreter
+        }
+
+        if !jit_called {
+            result = self.execute_loop();
+            self.maybe_compile_hot_function(func_idx);
+        }
+
+        // Restore caller context
 
         // Restore caller context
         if let Some(frame) = self.call_stack.pop() {
@@ -432,6 +492,27 @@ impl Mvm {
 
     /// Run a function to completion and return its result value. Used by the
     /// async spawn path to evaluate a task on its own thread.
+    fn maybe_compile_hot_function(&mut self, func_idx: usize) {
+        let exec_counts_len = self.exec_counts.len();
+        if func_idx >= exec_counts_len {
+            self.exec_counts.resize_with(func_idx + 1, || AtomicU64::new(0));
+        }
+        self.exec_counts[func_idx].fetch_add(1, Ordering::Relaxed);
+        let count = self.exec_counts[func_idx].load(Ordering::Relaxed);
+        if count >= HOTNESS_THRESHOLD {
+            if let Some(ref mut compiler) = self.jit_compiler {
+                if self.jit_table.get(func_idx).is_none() {
+                    if let Ok(jit_ptr) = compiler.compile_function(
+                        &self.program.functions[func_idx],
+                        func_idx,
+                    ) {
+                        self.jit_table.insert(func_idx, jit_ptr);
+                    }
+                }
+            }
+        }
+    }
+
     fn run_function(&mut self, func_idx: usize, args: Vec<Value>) -> Result<Value, String> {
         self.call_internal(func_idx, args)?;
         Ok(self.pop())

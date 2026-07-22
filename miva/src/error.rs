@@ -59,3 +59,47 @@ pub fn format_error_with_source(err: &Error, file_path: &str, source: &str) -> S
 
     output
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_error_with_source() {
+        let err = Error::new(
+            "E0001",
+            &Loc { line: 2, col: 5 },
+            "use of moved value",
+        );
+        let source = "let x = 1;\nlet y = move(x);\nlet z = x;";
+        let result = format_error_with_source(&err, "test.miva", source);
+        assert!(result.contains("error[E0001]: use of moved value"));
+        assert!(result.contains("test.miva:2:5"));
+        assert!(result.contains("let y = move(x);"));
+    }
+
+    #[test]
+    fn test_format_error_without_line() {
+        let err = Error::new(
+            "E0005",
+            &Loc { line: 1, col: 1 },
+            "no module declaration found",
+        );
+        let result = format_error_with_source(&err, "test.miva", "");
+        assert!(result.contains("error[E0005]: no module declaration found"));
+        assert!(result.contains("test.miva:1:1"));
+    }
+
+    #[test]
+    fn test_format_error_caret_at_correct_position() {
+        let err = Error::new(
+            "E0002",
+            &Loc { line: 1, col: 4 },
+            "immutable variable",
+        );
+        let source = "    x = 5";
+        let result = format_error_with_source(&err, "test.miva", source);
+        assert!(result.contains("immutable variable"));
+        assert!(result.contains("^"));
+    }
+}

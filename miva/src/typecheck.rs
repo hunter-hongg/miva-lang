@@ -4080,4 +4080,139 @@ mod tests {
         assert!(!errs.is_empty(), "expected a type error but got none");
         assert!(errs.iter().any(|e| e.code == "E0016"));
     }
+
+    #[test]
+    fn test_func_return_type_mismatch() {
+        let defs = vec![
+            make_module("test"),
+            make_func(
+                "main",
+                vec![],
+                Some(Typ::TInt),
+                Expr::EInt { loc: loc(), value: 42 },
+                Safety::Safe,
+            ),
+            make_func(
+                "bad_return",
+                vec![],
+                Some(Typ::TInt),
+                Expr::EFloat { loc: loc(), value: 3.14 },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(!errs.is_empty(), "returning float from int function should error");
+        assert!(errs.iter().any(|e| e.code == "E0017"));
+    }
+
+    #[test]
+    fn test_func_return_type_void_ok() {
+        let defs = vec![
+            make_module("test"),
+            make_func(
+                "main",
+                vec![],
+                None,
+                Expr::EVoid { loc: loc() },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(errs.is_empty(), "void return should be ok, got: {:?}", errs);
+    }
+
+    #[test]
+    fn test_struct_literal_field_type_mismatch() {
+        let defs = vec![
+            make_module("test"),
+            make_struct(
+                "Point",
+                vec![
+                    FieldDef { name: "x".to_string(), typ: Typ::TInt },
+                    FieldDef { name: "y".to_string(), typ: Typ::TInt },
+                ],
+            ),
+            make_func(
+                "main",
+                vec![],
+                None,
+                Expr::EStructLit {
+                    loc: loc(),
+                    name: "Point".to_string(),
+                    fields: vec![
+                        ValueField {
+                            name: "x".to_string(),
+                            value: Expr::EInt { loc: loc(), value: 1 },
+                        },
+                        ValueField {
+                            name: "y".to_string(),
+                            value: Expr::EBool { loc: loc(), value: true },
+                        },
+                    ],
+                    type_args: vec![],
+                },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(!errs.is_empty(), "struct field type mismatch should error");
+        assert!(errs.iter().any(|e| e.code == "E0018"));
+    }
+
+    #[test]
+    fn test_func_arg_type_mismatch() {
+        let defs = vec![
+            make_module("test"),
+            make_func(
+                "add",
+                vec![Param::POwn { name: "a".to_string(), typ: Typ::TInt }],
+                Some(Typ::TInt),
+                Expr::EVar { loc: loc(), name: "a".to_string() },
+                Safety::Safe,
+            ),
+            make_func(
+                "main",
+                vec![],
+                None,
+                Expr::ECall {
+                    loc: loc(),
+                    name: "add".to_string(),
+                    type_args: vec![],
+                    args: vec![Expr::EBool { loc: loc(), value: true }],
+                },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(!errs.is_empty(), "passing bool to int param should error");
+        assert!(errs.iter().any(|e| e.code == "E0016"));
+    }
+
+    #[test]
+    fn test_valid_func_call_with_correct_types() {
+        let defs = vec![
+            make_module("test"),
+            make_func(
+                "add",
+                vec![Param::POwn { name: "a".to_string(), typ: Typ::TInt }],
+                Some(Typ::TInt),
+                Expr::EVar { loc: loc(), name: "a".to_string() },
+                Safety::Safe,
+            ),
+            make_func(
+                "main",
+                vec![],
+                None,
+                Expr::ECall {
+                    loc: loc(),
+                    name: "add".to_string(),
+                    type_args: vec![],
+                    args: vec![Expr::EInt { loc: loc(), value: 5 }],
+                },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(errs.is_empty(), "valid call should have no errors, got: {:?}", errs);
+    }
 }

@@ -13,3 +13,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
 serde_yaml = "0.9"
 libloading = "0.8"
+cranelift-jit = "0.109"
+cranelift-codegen = "0.109"
+cranelift-module = "0.109"
+cranelift-entity = "0.109"
+target-lexicon = "0.12"

@@ -1,5 +1,7 @@
 module std.option;
 
+import "std/result";
+
 // ── A generic optional value ───────────────────────────────────────────────────
 //
 // `Option[T]` represents an optional value: every `Option[T]` is either
@@ -84,6 +86,42 @@ flatten[T] = (ref o: Option[Option[T]]): Option[T] => choose (o) {
     otherwise { return Option.None[T](); }
 }
 
+// ── Higher-order functions ─────────────────────────────────────────────────────
+
+// Maps an `Option[T]` to `Option[U]` by applying a function to the contained
+// value. Returns `None` if the option is `None`.
+map[T, U] = (ref opt: Option[T], f: fn(T): U): Option[U] => choose (opt) {
+    when (Option.Some(v)) { return Option.Some[U](f(v)); }
+    otherwise { return Option.None[U](); }
+}
+
+// Returns `None` if the option is `None`, otherwise calls `f` with the wrapped
+// value and returns the result. Useful for chaining operations that return
+// `Option` values.
+and_then[T, U] = (ref opt: Option[T], f: fn(T): Option[U]): Option[U] => choose (opt) {
+    when (Option.Some(v)) { return f(v); }
+    otherwise { return Option.None[U](); }
+}
+
+// Returns `Result.Ok[T, E](v)` if the option is `Some(v)`, otherwise returns
+// `Result.Err[T, E](err)`.
+ok_or[T, E] = (ref opt: Option[T], err: E): std.result.Result[T, E] => choose (opt) {
+    when (Option.Some(v)) { return std.result.ok[T, E](v); }
+    otherwise { return std.result.err[T, E](err); }
+}
+
+// Returns `Some(v)` only if the option is `Some(v)` AND the predicate
+// `pred(v)` returns `true`. Otherwise returns `None`.
+filter[T] = (ref opt: Option[T], pred: fn(T): bool): Option[T] => choose (opt) {
+    when (Option.Some(v)) {
+        choose (pred(v)) {
+            when (true) { return opt; }
+            otherwise { return Option.None[T](); }
+        };
+    }
+    otherwise { return Option.None[T](); }
+}
+
 // ── Exports ────────────────────────────────────────────────────────────────────
 
 export Option;
@@ -96,3 +134,7 @@ export unwrap;
 export unwrap_or;
 export contains;
 export flatten;
+export map;
+export and_then;
+export ok_or;
+export filter;

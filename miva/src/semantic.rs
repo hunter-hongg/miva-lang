@@ -1757,9 +1757,209 @@ mod tests {
             .filter(|e| e.code == "E0009" && e.message.contains("unknown function"))
             .collect();
         assert!(
-            unknown_errs.is_empty(),
-            "user-defined 'print' should override builtin, errors: {:?}",
-            errs
-        );
+             unknown_errs.is_empty(),
+             "user-defined 'print' should override builtin, errors: {:?}",
+             errs
+         );
+    }
+
+    #[test]
+    fn test_clone_prevents_move_error() {
+        let defs = vec![
+            make_module("test"),
+            make_func(
+                "main",
+                vec![Param::POwn {
+                    name: "x".to_string(),
+                    typ: Typ::TInt,
+                }],
+                Expr::EBlock {
+                    loc: loc(),
+                    stmts: vec![
+                        Stmt::SLet {
+                            loc: loc(),
+                            mutable: true,
+                            name: "y".to_string(),
+                            expr: Box::new(Expr::EClone {
+                                loc: loc(),
+                                name: "x".to_string(),
+                            }),
+                        },
+                        Stmt::SExpr {
+                            loc: loc(),
+                            expr: Box::new(Expr::EMove {
+                                loc: loc(),
+                                name: "x".to_string(),
+                            }),
+                        },
+                        Stmt::SExpr {
+                            loc: loc(),
+                            expr: Box::new(Expr::EVar {
+                                loc: loc(),
+                                name: "y".to_string(),
+                            }),
+                        },
+                    ],
+                    result: Some(Box::new(Expr::EVoid { loc: loc() })),
+                },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(errs.is_empty(), "clone should prevent move error, got: {:?}", errs);
+    }
+
+    #[test]
+    fn test_multiple_unsafe_calls_from_safe() {
+        let defs = vec![
+            make_module("test"),
+            make_func("unsafe_fn1", vec![], Expr::EVoid { loc: loc() }, Safety::Unsafe),
+            make_func("unsafe_fn2", vec![], Expr::EVoid { loc: loc() }, Safety::Unsafe),
+            make_func(
+                "main",
+                vec![],
+                Expr::EBlock {
+                    loc: loc(),
+                    stmts: vec![
+                        Stmt::SExpr {
+                            loc: loc(),
+                            expr: Box::new(Expr::ECall {
+                                loc: loc(),
+                                name: "unsafe_fn1".to_string(),
+                                type_args: vec![],
+                                args: vec![],
+                            }),
+                        },
+                        Stmt::SExpr {
+                            loc: loc(),
+                            expr: Box::new(Expr::ECall {
+                                loc: loc(),
+                                name: "unsafe_fn2".to_string(),
+                                type_args: vec![],
+                                args: vec![],
+                            }),
+                        },
+                    ],
+                    result: Some(Box::new(Expr::EVoid { loc: loc() })),
+                },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(errs.iter().any(|e| e.code == "E0009" && e.message.contains("unsafe function")));
+    }
+
+    #[test]
+    fn test_nested_block_scoping() {
+        let defs = vec![
+            make_module("test"),
+            make_func(
+                "main",
+                vec![],
+                Expr::EBlock {
+                    loc: loc(),
+                    stmts: vec![
+                        Stmt::SLet {
+                            loc: loc(),
+                            mutable: false,
+                            name: "x".to_string(),
+                            expr: Box::new(Expr::EInt { loc: loc(), value: 1 }),
+                        },
+                        Stmt::SExpr {
+                            loc: loc(),
+                            expr: Box::new(Expr::EBlock {
+                                loc: loc(),
+                                stmts: vec![Stmt::SLet {
+                                    loc: loc(),
+                                    mutable: false,
+                                    name: "x".to_string(),
+                                    expr: Box::new(Expr::EInt { loc: loc(), value: 2 }),
+                                }],
+                                result: Some(Box::new(Expr::EVar {
+                                    loc: loc(),
+                                    name: "x".to_string(),
+                                })),
+                            }),
+                        },
+                    ],
+                    result: Some(Box::new(Expr::EVar {
+                        loc: loc(),
+                        name: "x".to_string(),
+                    })),
+                },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(errs.is_empty(), "nested block should shadow outer var, got: {:?}", errs);
+    }
+
+    #[test]
+    fn test_move_in_different_branches() {
+        let defs = vec![
+            make_module("test"),
+            make_func(
+                "main",
+                vec![Param::POwn {
+                    name: "x".to_string(),
+                    typ: Typ::TInt,
+                }],
+                Expr::EIf {
+                    loc: loc(),
+                    cond: Box::new(Expr::EBool { loc: loc(), value: true }),
+                    then: Box::new(Expr::EMove {
+                        loc: loc(),
+                        name: "x".to_string(),
+                    }),
+                    else_: Some(Box::new(Expr::EMove {
+                        loc: loc(),
+                        name: "x".to_string(),
+                    })),
+                },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(errs.is_empty(), "move in both branches should be ok, got: {:?}", errs);
+    }
+
+    #[test]
+    fn test_struct_field_access_valid() {
+        let defs = vec![
+            make_module("test"),
+            make_struct(
+                "Point",
+                vec![
+                    FieldDef { name: "x".to_string(), typ: Typ::TInt },
+                    FieldDef { name: "y".to_string(), typ: Typ::TInt },
+                ],
+            ),
+            make_func(
+                "main",
+                vec![],
+                Expr::EFieldAccess {
+                    loc: loc(),
+                    expr: Box::new(Expr::EStructLit {
+                        loc: loc(),
+                        name: "Point".to_string(),
+                        fields: vec![
+                            ValueField {
+                                name: "x".to_string(),
+                                value: Expr::EInt { loc: loc(), value: 1 },
+                            },
+                            ValueField {
+                                name: "y".to_string(),
+                                value: Expr::EInt { loc: loc(), value: 2 },
+                            },
+                        ],
+                        type_args: vec![],
+                    }),
+                    field: "x".to_string(),
+                },
+                Safety::Safe,
+            ),
+        ];
+        let errs = check_program(&defs);
+        assert!(errs.is_empty(), "valid field access should have no errors, got: {:?}", errs);
     }
 }

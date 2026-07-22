@@ -337,7 +337,11 @@ fn compile_file_to_src(
 
     let output = codegen::build_ir_with_backend(&defs, backend, func_sigs);
 
-    std::fs::create_dir_all(src_path.parent().unwrap())?;
+    std::fs::create_dir_all(
+        src_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("cannot determine parent directory of {:?}", src_path))?,
+    )?;
     std::fs::write(&src_path, &output.program)?;
 
     if !output.header.is_empty() {
@@ -372,13 +376,18 @@ fn compile_file_to_src(
     Ok((src_path, has_main))
 }
 
-fn include_flag(dir: &[&Path]) -> Vec<String> {
+fn path_to_str(p: &Path) -> Result<&str> {
+    p.to_str()
+        .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {:?}", p))
+}
+
+fn include_flag(dir: &[&Path]) -> Result<Vec<String>> {
     let mut flag = Vec::new();
     for i in dir {
-        let f = format!("-I{}", i.to_str().unwrap());
+        let f = format!("-I{}", path_to_str(i)?);
         flag.push(f);
     }
-    flag
+    Ok(flag)
 }
 
 fn compile_src_to_obj(
@@ -399,7 +408,7 @@ fn compile_src_to_obj(
             let opt_flag = if release { "-O2" } else { "-g" };
             let pic_flag = if project_type == "lib" { "-fPIC" } else { "" };
             let inc_flags = env::get_include_flags();
-            let mut include = include_flag(&[cache_dir, std_include, build_dir]);
+            let mut include = include_flag(&[cache_dir, std_include, build_dir])?;
             for extra in extra_includes {
                 include.push(format!("-I{}", extra.to_string_lossy()));
             }
@@ -408,14 +417,9 @@ fn compile_src_to_obj(
                 opt_flag,
                 "-std=c++20",
                 "-c",
-                src_path.to_str().unwrap(),
+                path_to_str(src_path)?,
                 "-o",
-                obj_path.to_str().unwrap(),
-                // Cross-module template bodies (e.g. vec.miva calling
-                // mvp_std::mem::alloc inside a template) trip g++'s
-                // -Wtemplate-body diagnostic even when the declaration IS
-                // visible via #include. vec's headers emit the include, so
-                // silence this pedantic warning.
+                path_to_str(&obj_path)?,
                 "-Wno-template-body",
             ];
 
@@ -462,9 +466,9 @@ fn compile_src_to_obj(
             let llc_output = Command::new("llc")
                 .args([
                     "-filetype=obj",
-                    src_path.to_str().unwrap(),
+                    path_to_str(src_path)?,
                     "-o",
-                    obj_path.to_str().unwrap(),
+                    path_to_str(&obj_path)?,
                 ])
                 .output()
                 .map_err(|e| anyhow::anyhow!("Failed to run llc: {}", e))?;
@@ -513,10 +517,10 @@ fn link_objects(
         exe_path.clone()
     };
 
-    let mut args = vec!["-O2", "-std=c++20", "-o", final_path.to_str().unwrap()];
+    let mut args = vec!["-O2", "-std=c++20", "-o", path_to_str(&final_path)?];
 
     for obj in obj_files {
-        args.push(obj.to_str().unwrap());
+        args.push(path_to_str(&obj)?);
     }
 
     if project_type == "lib" {
@@ -1018,14 +1022,14 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
             if bridge_src.exists() {
                 let opt_flag = if release { "-O2" } else { "-g" };
                 let inc_flags = env::get_include_flags();
-                let mut include = include_flag(&[&cache_dir, &std_include_dir, &build_dir]);
+                let mut include = include_flag(&[&cache_dir, &std_include_dir, &build_dir])?;
                 for extra in &dep_include_dirs {
                     include.push(format!("-I{}", extra.to_string_lossy()));
                 }
                 let mut args: Vec<String> = vec![opt_flag.to_string(), "-std=c++20".into(), "-c".into()];
-                args.push(bridge_src.to_str().unwrap().to_string());
+                args.push(path_to_str(&bridge_src)?.to_string());
                 args.push("-o".into());
-                args.push(bridge_obj.to_str().unwrap().to_string());
+                args.push(path_to_str(&bridge_obj)?.to_string());
                 for flag in inc_flags.split_whitespace() {
                     if !flag.is_empty() {
                         args.push(flag.to_string());
@@ -1063,14 +1067,14 @@ pub fn exec(verbose: bool, release: bool, cli_backend: Option<String>) -> Result
                 if !bridge_obj.exists() {
                     let opt_flag = if release { "-O2" } else { "-g" };
                     let inc_flags = env::get_include_flags();
-                    let mut include = include_flag(&[&cache_dir, &std_include_dir, &build_dir]);
+                let mut include = include_flag(&[&cache_dir, &std_include_dir, &build_dir])?;
                     for extra in &dep_include_dirs {
                         include.push(format!("-I{}", extra.to_string_lossy()));
                     }
                     let mut args: Vec<String> = vec![opt_flag.to_string(), "-std=c++20".into(), "-c".into()];
-                    args.push(bridge_src.to_str().unwrap().to_string());
+args.push(path_to_str(&bridge_src)?.to_string());
                     args.push("-o".into());
-                    args.push(bridge_obj.to_str().unwrap().to_string());
+                    args.push(path_to_str(&bridge_obj)?.to_string());
                     for flag in inc_flags.split_whitespace() {
                         if !flag.is_empty() {
                             args.push(flag.to_string());

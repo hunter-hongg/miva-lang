@@ -1,6 +1,6 @@
 module std.result;
 
-// ── A generic result value ───────────────────────────────────────────────────
+// ── A generic result value ─────────────────────────────────────────────────────
 //
 // `Result[T, E]` represents a value that is either `Ok(T)` on success or
 // `Err(E)` on failure. It is the standard way to express recoverable errors,
@@ -65,14 +65,39 @@ unwrap_or[T, E] = (ref r: Result[T, E], fallback: T): T => choose (r) {
     otherwise { return fallback; }
 }
 
-// ── Transformation ─────────────────────────────────────────────────────────────
+// ── Higher-order functions ─────────────────────────────────────────────────────
 
-// Maps the error value to a new error type. The success value is unchanged.
-// Because Miva does not yet support function types, the new error value is
-// passed directly and wrapped in `Err` when `r` is an error.
-map_err[T, E, F] = (ref r: Result[T, E], e: F): Result[T, F] => choose (r) {
+// Maps a `Result[T, E]` to `Result[U, E]` by applying a function to the
+// `Ok` value. The error value is unchanged.
+map[T, E, U] = (ref res: Result[T, E], f: fn(T): U): Result[U, E] => choose (res) {
+    when (Result.Ok(v)) { return Result.Ok[U, E](f(v)); }
+    when (Result.Err(e)) { return Result.Err[U, E](e); }
+    otherwise { panic("result.map: unreachable"); }
+}
+
+// Returns `Err` if the result is `Err`, otherwise calls `f` with the `Ok`
+// value and returns the result. Useful for chaining operations that return
+// `Result` values.
+and_then[T, E, U] = (ref res: Result[T, E], f: fn(T): Result[U, E]): Result[U, E] => choose (res) {
+    when (Result.Ok(v)) { return f(v); }
+    when (Result.Err(e)) { return Result.Err[U, E](e); }
+    otherwise { panic("result.and_then: unreachable"); }
+}
+
+// Returns the result if it is `Ok`, otherwise calls `f` with the error value
+// and returns the result.
+or_else[T, E, F] = (ref res: Result[T, E], f: fn(E): Result[T, F]): Result[T, F] => choose (res) {
     when (Result.Ok(v)) { return Result.Ok[T, F](v); }
-    otherwise { return Result.Err[T, F](e); }
+    when (Result.Err(e)) { return f(e); }
+    otherwise { panic("result.or_else: unreachable"); }
+}
+
+// Maps a `Result[T, E]` to `Result[T, F]` by applying a function to the
+// error value. The success value is unchanged.
+map_err[T, E, F] = (ref res: Result[T, E], f: fn(E): F): Result[T, F] => choose (res) {
+    when (Result.Ok(v)) { return Result.Ok[T, F](v); }
+    when (Result.Err(e)) { return Result.Err[T, F](f(e)); }
+    otherwise { panic("result.map_err: unreachable"); }
 }
 
 // ── Combination ────────────────────────────────────────────────────────────────
@@ -101,6 +126,9 @@ export is_err;
 export expect;
 export unwrap;
 export unwrap_or;
+export map;
+export and_then;
+export or_else;
 export map_err;
 export and;
 export or;
